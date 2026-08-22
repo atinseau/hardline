@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.local
+# état local de la machine, jamais versionné
+manifest.json
