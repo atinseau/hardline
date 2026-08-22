@@ -103,8 +103,9 @@ une décision ultérieure, pas une dette de conception.
    affiche la ligne à coller et sert le script d'amorçage.
 3. Sur le PC, dans un PowerShell administrateur, la ligne affichée :
    `irm http://<nom-du-mac>.local:8080/bootstrap.ps1 | iex`
-   Elle installe OpenSSH, dépose la clé publique du Mac dans
-   `administrators_authorized_keys`, ouvre le port 22 et fixe l'adresse du lien direct.
+   Elle relève d'abord l'état d'origine du PC, puis installe OpenSSH, dépose la clé
+   publique du Mac dans `administrators_authorized_keys`, ouvre le port 22 et fixe
+   l'adresse du lien direct.
    Le nom mDNS du Mac est résolu nativement par Windows 11, par Wi-Fi comme par
    Ethernet : aucune adresse à retenir.
 4. `hardline install`, toujours en cours sur le Mac, détecte que le PC répond et
@@ -131,6 +132,23 @@ préexistantes.
 `hardline uninstall` lit ce manifeste et défait dans l'ordre inverse, en restaurant
 l'état antérieur plutôt qu'en supposant des valeurs par défaut. Un désinstalleur qui
 devine est un désinstalleur qui casse la machine.
+
+**L'amorçage est le seul geste que le manifeste ne peut pas observer**, puisqu'il
+précède la toute première session SSH : quand hardline parvient enfin à parler au PC,
+c'est justement parce que l'amorçage a déjà tout changé. Le script d'amorçage relève
+donc lui-même, sur le PC et **avant sa première modification**, ce qu'il a trouvé —
+état de la fonctionnalité OpenSSH, démarrage et état du service sshd, existence de la
+règle de pare-feu, existence du fichier de clés et de la ligne du Mac, adresses IPv4
+et leur origine, client DHCP, catégorie réseau — ainsi que, pour chacun, s'il en est
+l'auteur. Défaire ce que l'amorçage n'a pas fait serait un dégât d'un genre nouveau.
+Ce relevé n'est jamais réécrit par un second amorçage, et une étape le rapatrie dans
+le manifeste dès la première installation qui suit.
+
+**Une seule chose n'est délibérément pas défaite** : la fonctionnalité Windows
+« OpenSSH Server ». La retirer exigerait un redémarrage, et l'utilisateur peut
+légitimement vouloir garder un serveur SSH ; seul le service sshd est rendu à son
+démarrage d'origine. `uninstall` le dit avant de poser sa question, avec le fait que
+réinstaller exigera de refaire le geste manuel d'amorçage.
 
 **L'ordre d'écriture est une contrainte de sûreté, pas un détail.** L'état antérieur
 d'une étape est écrit sur disque *avant* que l'étape ne modifie quoi que ce soit,
@@ -266,7 +284,9 @@ hardline/
 │   │   └── doctor.ts
 │   ├── steps/                    # une étape convergente = un fichier
 │   │   ├── network-mac.ts
+│   │   ├── bootstrap-windows.ts  # relevé d'avant amorçage, et sa restitution
 │   │   ├── network-windows.ts
+│   │   ├── detach.ts             # l'idiome des instructions qui coupent le canal
 │   │   ├── sunshine.ts
 │   │   ├── virtual-display.ts
 │   │   ├── pairing.ts
