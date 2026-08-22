@@ -334,7 +334,7 @@ disque**. Un arrêt en phase distante laisse donc le Mac converge et enregistré
 | `hardline install` | Converge les deux machines vers l'état cible |
 | `hardline uninstall` | Restaure l'état antérieur à partir du manifeste |
 | `hardline up` | Geste quotidien : réveille le PC si besoin, attend le lien, ouvre la session en plein écran |
-| `hardline doctor` | Diagnostic : lien, adresses, service, appairage, latence |
+| `hardline doctor` | Diagnostic : lien, adresses, service, appairage, latence, débit |
 
 **Le code de sortie de `doctor` est fait pour être scripté** : 0 quand la liaison
 fonctionne, 1 quand elle ne fonctionne pas, et rien d'autre. Une précondition
@@ -347,6 +347,34 @@ de sortie inutilisable.
 `doctor` mesure la latence avec `ping`, toujours disponible. Le débit n'est mesuré
 que si `iperf3` est présent sur les deux machines ; son absence produit une ligne
 « non mesuré » et non un échec. `iperf3` n'est pas une dépendance du projet.
+
+**La mesure de débit fait partie du diagnostic ordinaire**, sans option à passer.
+L'argument contraire — la mesure sature le lien pendant deux secondes et gênerait
+une session Moonlight en cours — ne tient pas au regard de ce qu'on y gagne : un
+`doctor` qui ne dit pas le débit ne répond pas à la question qu'on lui pose quand
+l'image saccade. Le coût est mesuré et modeste : `doctor` passe de 9,4 à environ
+12 secondes, l'essentiel étant déjà consommé par les 20 paquets de `ping`. Un
+diagnostic qu'il faut relancer avec une option pour obtenir le chiffre qui compte
+est un diagnostic incomplet.
+
+Le sens de la mesure est **PC vers Mac**, celui du flux vidéo, et le montage tient
+en une phrase : le serveur `iperf3` tourne sur le **Mac**, le client sur le PC via
+la session SSH déjà ouverte. Ce choix n'est pas esthétique, il évite une
+modification du PC. Les deux autres montages ont été essayés et écartés : un
+serveur lancé sur le PC ne survit pas à la fermeture de la session SSH, car
+Windows tue l'arbre de processus, et il aurait de toute façon exigé une règle de
+pare-feu entrante — donc une règle susceptible de rester orpheline après un
+plantage. Un tunnel `ssh -L`, lui, ne demande rien à personne mais mesure le
+chiffrement et le processeur au lieu du câble : il rend 300 à 600 Mbit/s là où le
+lien en fait 947, et ce chiffre ne diagnostique plus rien. Le montage retenu a
+été vérifié sur les machines de référence : 945,9 Mbit/s sur une mesure de deux
+secondes, sans toucher au PC.
+
+L'absence d'`iperf3` et l'échec d'une mesure ne se confondent pas. La première est
+une capacité manquante, marquée « !! », qui laisse le code de sortie à 0 — le lien
+va bien, c'est l'outil qui manque. Le second est une anomalie : marqueur « KO » et
+sortie en 1. Un débit simplement bas, lui, n'influence jamais le code de sortie ;
+un lien lent n'est pas un lien malade.
 
 ## 13. Stack technique
 

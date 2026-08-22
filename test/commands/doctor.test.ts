@@ -172,6 +172,52 @@ describe("formatDiagnostic", () => {
     expect(colonnes.size).toBe(1);
   });
 
+  test("n'affiche aucune ligne de debit quand la mesure n'a pas ete faite", () => {
+    // `throughput` absent : le cas "ping mort", ou tout appelant qui ne
+    // fournit pas le champ. Aucune ligne ne doit apparaitre.
+    expect(formatDiagnostic(HEALTHY).join("\n")).not.toContain("Débit");
+  });
+
+  test("aligne la valeur du debit sur la meme colonne que la latence moyenne", () => {
+    const lines = formatDiagnostic({
+      ...HEALTHY,
+      throughput: { mbitsPerSecond: 946.5, seconds: 3, error: null, unavailable: false },
+    });
+    const latenceLine = lineFor(lines, "Latence moyenne");
+    const debitLine = lineFor(lines, "Débit (PC → Mac)");
+
+    expect(markerOf(debitLine)).toBe("OK  ");
+    expect(debitLine.indexOf("946.5 Mbit/s")).toBe(
+      latenceLine.indexOf(`${HEALTHY.ping.avgMs?.toFixed(2)} ms`),
+    );
+  });
+
+  test("distingue une mesure en echec (KO) de l'absence d'iperf3 (!!)", () => {
+    // Le coeur de la distinction : un debit non mesure (iperf3 absent) n'est
+    // pas une anomalie du lien, une mesure tentee et ratee en est une.
+    const echec = formatDiagnostic({
+      ...HEALTHY,
+      throughput: {
+        mbitsPerSecond: null,
+        seconds: null,
+        error: "unable to connect to server - server may have stopped running",
+        unavailable: false,
+      },
+    });
+    const absence = formatDiagnostic({
+      ...HEALTHY,
+      throughput: {
+        mbitsPerSecond: null,
+        seconds: null,
+        error: "non mesuré : iperf3 absent sur le PC",
+        unavailable: true,
+      },
+    });
+
+    expect(markerOf(lineFor(echec, "Débit (PC → Mac)"))).toBe("KO  ");
+    expect(markerOf(lineFor(absence, "Débit (PC → Mac)"))).toBe("!!  ");
+  });
+
   test("la colonne s'elargit pour le plus long libelle", () => {
     const etroit = columnOf(lineFor(formatDiagnostic(HEALTHY), "ssh"), SSH_DETAIL);
     const large = columnOf(
