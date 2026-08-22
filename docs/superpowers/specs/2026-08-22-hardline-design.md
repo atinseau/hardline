@@ -159,14 +159,21 @@ réinstaller exigera de refaire le geste manuel d'amorçage.
 
 **L'ordre d'écriture est une contrainte de sûreté, pas un détail.** L'état antérieur
 d'une étape est écrit sur disque *avant* que l'étape ne modifie quoi que ce soit,
-jamais après. La raison est concrète : la bibliothèque d'affichage intercepte Ctrl+C
-pendant un indicateur d'activité et termine le processus immédiatement et de façon
-synchrone, sans laisser s'exécuter le moindre traitement de rattrapage asynchrone. Une
-interruption au clavier au mauvais moment tuerait donc le programme entre la
-modification et son enregistrement, laissant une machine modifiée dont plus rien ne
-connaît l'état d'origine. En écrivant d'abord, le pire cas devient une étape
-enregistrée mais non appliquée — situation que `install` corrige de lui-même au
-prochain passage, puisque chaque étape constate avant d'agir.
+jamais après.
+
+La raison n'est pas un comportement particulier de la bibliothèque d'affichage : sur la
+version épinglée, un Ctrl+C pendant un indicateur d'activité ne tue pas le processus —
+le gestionnaire de signal nettoie l'affichage et rend la main. En revanche un Ctrl+C
+pendant une *invite* appelle bien `process.exit(0)` de façon synchrone, et rien n'oblige
+cette bibliothèque à garder ce partage d'une version à l'autre.
+
+La vraie raison est plus simple et ne dépend de personne : **aucun traitement de
+rattrapage n'est garanti.** Une mise à mort du processus, une coupure de courant, un
+plantage du runtime n'exécutent rien du tout. Faire dépendre l'état récupérable de deux
+machines de la bonne volonté d'un gestionnaire de sortie serait une erreur de
+conception, quelle que soit la bibliothèque du moment. En écrivant d'abord, le pire cas
+devient une étape enregistrée mais non appliquée — situation que `install` corrige de
+lui-même au prochain passage, puisque chaque étape constate avant d'agir.
 
 **Le manifeste est protégé par un verrou, pris pour toute la durée d'une exécution.**
 `writeManifest` est atomique — fichier temporaire puis renommage — mais l'atomicité de
