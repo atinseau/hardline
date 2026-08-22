@@ -1,7 +1,11 @@
 import { CONFIG } from "../config";
 import { ALL_STEPS } from "../steps";
 import { pingFrom, type PingStats } from "../lib/shell";
-import { runPreflight, type CheckResult } from "../lib/preflight";
+import {
+  runLocalPreflight,
+  runRemotePreflight,
+  type CheckResult,
+} from "../lib/preflight";
 import { configureOutput, ui, withSpinner } from "../lib/ui";
 import { errorMessage } from "../lib/errors";
 
@@ -84,9 +88,13 @@ export async function doctorCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — diagnostic");
 
-  const checks = await withSpinner("Vérification des machines", async () =>
-    runPreflight(CONFIG),
-  );
+  // Les deux phases, toujours. Le diagnostic doit rester lisible quand le PC
+  // ne repond pas : c'est precisement le cas qu'on vient regarder. La phase
+  // distante rend alors une ligne d'echec, pas une exception.
+  const checks = await withSpinner("Vérification des machines", async () => [
+    ...(await runLocalPreflight(CONFIG)),
+    ...(await runRemotePreflight(CONFIG)),
+  ]);
 
   const steps: StepSummary[] = [];
   for (const step of ALL_STEPS) {
