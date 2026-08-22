@@ -9,7 +9,7 @@ import { errorMessage } from "./lib/errors";
 export const VERSION = "0.1.0";
 
 const NOT_IMPLEMENTED = (name: string) => async () => {
-  console.error(`hardline ${name} : pas encore implémenté`);
+  console.error(`hardline ${name}\u00a0: pas encore implémenté`);
   process.exitCode = 1;
 };
 

@@ -226,6 +226,62 @@ describe("lancer n'est pas restaurer", () => {
   });
 });
 
+describe("une charge que le second saut ne saurait pas transmettre", () => {
+  test("est un ECHEC, rien n'est envoye, et l'enregistrement reste", async () => {
+    // Un guillemet dans la cle publique relevee traverse psQuote sans encombre
+    // et casserait la ligne de commande du processus detache. Refuser est sur
+    // precisement parce que l'enregistrement est conserve : rien n'est perdu,
+    // et une version ulterieure ou un nouvel essai pourra encore s'en servir.
+    const abimee = {
+      ...CAPTURE,
+      authorizedKeys: {
+        ...CAPTURE.authorizedKeys,
+        publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1 "arthur@mac"',
+      },
+    };
+    const now = "2026-08-22T10:00:00.000Z";
+    const dir = await mkdtemp(join(tmpdir(), "hardline-tails-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await writeManifest(path, {
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        order: ["bootstrap-windows"],
+        steps: {
+          "bootstrap-windows": {
+            step: "bootstrap-windows",
+            appliedAt: now,
+            previous: { capture: abimee, acknowledged: true },
+          },
+        },
+      });
+
+      const { unrestored, unconfirmed } = await revertSteps(
+        ALL_STEPS,
+        CONFIG,
+        path,
+        reporter,
+      );
+
+      expect(unrestored).toEqual(["bootstrap-windows"]);
+      expect(unconfirmed).toEqual([]);
+      // Rien n'est parti sur le PC : mieux vaut ne rien envoyer qu'une ligne de
+      // commande dont personne ne sait ce qu'elle fera.
+      expect(remoteScripts).toEqual([]);
+      // Et l'etat anterieur est toujours la, entier.
+      const manifest = await readManifest(path);
+      expect(manifest.order).toEqual(["bootstrap-windows"]);
+      expect(manifest.steps["bootstrap-windows"]?.previous).toEqual({
+        capture: abimee,
+        acknowledged: true,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("une seule queue detachee par desinstallation", () => {
   test("le manifeste complet n'emet qu'une queue, celle de l'amorcage", async () => {
     const scripts = await revert([

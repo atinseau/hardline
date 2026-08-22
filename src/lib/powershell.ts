@@ -38,7 +38,9 @@ export function psInteger(value: unknown, what: string, max: number): number {
   // /0 silencieux, exactement l'inverse de ce que cette fonction existe pour
   // empecher.
   if (typeof value === "string" && value.trim() === "") {
-    throw new Error(`Valeur invalide pour ${what} : entier attendu, valeur vide`);
+    throw new Error(
+      `Valeur invalide pour ${what}\u00a0: entier attendu, valeur vide`,
+    );
   }
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
