@@ -2923,6 +2923,11 @@ C'est la seule partie du projet qu'un humain exécute à la main, une fois par P
 doit donc être irréprochable : idempotente, lisible, et sans aucun piège de
 localisation.
 
+`bootstrap.ps1` est volontairement écrit sans accents : il s'affiche dans une console
+Windows en page de code OEM (cp850 en français), où les accents seraient mutilés. C'est
+la seule exception à la règle des accents du projet, et elle est délibérée — les chaînes
+françaises côté TypeScript, elles, les portent toutes.
+
 Trois écueils y sont traités, tous rencontrés pendant l'exploration. `icacls` refuse
 `"Administrators:F"` sur un Windows français, où le groupe s'appelle « Administrateurs »
 — on passe donc par les identifiants de sécurité, identiques dans toutes les langues.
@@ -2934,6 +2939,7 @@ n'utilise pas `~/.ssh/authorized_keys` mais un fichier commun.
 **Files:**
 - Create: `src/assets/bootstrap.ps1`
 - Create: `src/lib/bootstrap-server.ts`
+- Create: `src/types/assets.d.ts`
 - Test: `test/lib/bootstrap-server.test.ts`
 
 **Interfaces:**
@@ -3030,6 +3036,7 @@ Write-Host ''
 ```ts
 import { test, expect, describe } from "bun:test";
 import {
+  localBootstrapUrl,
   renderBootstrapScript,
   serveBootstrap,
 } from "../../src/lib/bootstrap-server";
@@ -3070,6 +3077,14 @@ describe("renderBootstrapScript", () => {
   });
 });
 
+describe("localBootstrapUrl", () => {
+  test("compose une adresse mDNS complete", () => {
+    expect(localBootstrapUrl(8080)).toMatch(
+      /^http:\/\/[^/:]+:8080\/bootstrap\.ps1$/,
+    );
+  });
+});
+
 describe("serveBootstrap", () => {
   test("sert le script rendu puis s'arrete", async () => {
     const server = await serveBootstrap({ port: 0, template: TEMPLATE, ...VARS });
@@ -3095,9 +3110,19 @@ describe("serveBootstrap", () => {
     const server = await serveBootstrap({ port: 0, template: TEMPLATE, ...VARS });
     const url = server.url;
     server.stop();
-    expect(fetch(`${url}/bootstrap.ps1`)).rejects.toThrow();
+    await expect(fetch(`${url}/bootstrap.ps1`)).rejects.toThrow();
   });
 });
+```
+
+`src/types/assets.d.ts` — sans cette déclaration, `tsc` ne sait pas typer l'import de
+fichier de Bun et échoue sur « Cannot find module » :
+
+```ts
+declare module "*.ps1" {
+  const path: string;
+  export default path;
+}
 ```
 
 - [ ] **Step 3: Lancer les tests et vérifier qu'ils échouent**
@@ -3131,11 +3156,14 @@ export function renderBootstrapScript(
   template: string,
   vars: BootstrapVars,
 ): string {
-  for (const value of Object.values(vars)) {
+  // On n'inspecte que les valeurs reellement substituees : l'appelant passe un objet
+  // plus large (port, gabarit), et le gabarit contient lui-meme des apostrophes.
+  for (const key of Object.values(MARKERS)) {
+    const value = vars[key];
     if (typeof value === "string" && value.includes("'")) {
       // Les marqueurs sont places entre apostrophes cote PowerShell.
       throw new Error(
-        `Valeur invalide : une apostrophe casserait le script PowerShell (${value})`,
+        `Valeur invalide\u00a0: une apostrophe casserait le script PowerShell (${value})`,
       );
     }
   }
@@ -3147,7 +3175,9 @@ export function renderBootstrapScript(
 
   const leftover = script.match(/@@[A-Z_]+@@/);
   if (leftover) {
-    throw new Error(`Marqueur non substitue dans le script d'amorcage : ${leftover[0]}`);
+    throw new Error(
+      `Marqueur non substitué dans le script d'amorçage\u00a0: ${leftover[0]}`,
+    );
   }
 
   return script;
@@ -3191,7 +3221,7 @@ export function localBootstrapUrl(port: number): string {
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/lib/bootstrap-server.test.ts`
-Expected: PASS, six tests.
+Expected: PASS, sept tests.
 
 - [ ] **Step 6: Vérifier que le PC atteint réellement le serveur**
 
@@ -3200,16 +3230,28 @@ la fois la résolution mDNS et l'absence de blocage par le pare-feu du Mac.
 
 Run: `bun -e 'import {serveBootstrap, localBootstrapUrl} from "./src/lib/bootstrap-server"; const s = await serveBootstrap({port:8080, publicKey:"ssh-ed25519 TEST", interfaceAlias:"Ethernet", windowsIp:"10.10.10.1", prefixLength:24}); console.log(localBootstrapUrl(8080)); await Bun.sleep(60000); s.stop()'`
 
-Puis, dans un autre terminal :
-`ssh -i ~/.ssh/id_ed25519_winpc arthur@192.168.1.48 'powershell -NoProfile -Command "(irm http://'$(hostname)'/bootstrap.ps1 -TimeoutSec 5).Length"'`
+Puis, dans un autre terminal, en visant d'abord le lien direct puis, s'il n'est pas
+encore posé, l'adresse Wi-Fi du PC :
+
+```bash
+HOST=$(hostname)
+for PC in 10.10.10.1 192.168.1.48; do
+  ssh -o ConnectTimeout=5 -i ~/.ssh/id_ed25519_winpc "arthur@$PC" \
+    "powershell -NoProfile -Command \"(irm http://$HOST:8080/bootstrap.ps1 -TimeoutSec 5).Length\"" && break
+done
+```
 
 Expected: un nombre de caractères non nul, prouvant que le PC a bien téléchargé le
 script depuis le Mac par son nom mDNS.
 
+Cette étape dépend d'un PC allumé et joignable : elle **ne bloque pas** la tâche. Si le
+PC ne répond sur aucune des deux adresses, consigner le fait dans le rapport et
+poursuivre — les six autres étapes se vérifient entièrement en local.
+
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/assets/bootstrap.ps1 src/lib/bootstrap-server.ts test/lib/bootstrap-server.test.ts
+git add src/assets/bootstrap.ps1 src/lib/bootstrap-server.ts src/types/assets.d.ts test/lib/bootstrap-server.test.ts
 git commit -m "feat: script d'amorcage idempotent et serveur ephemere"
 ```
 
