@@ -35,7 +35,12 @@ $adapter = Get-NetAdapter -Name '${alias}' -ErrorAction SilentlyContinue
   adapterStatus  = if ($adapter) { [string]$adapter.Status } else { $null }
 }`;
 
-export async function runPreflight(config: Config): Promise<CheckResult[]> {
+/**
+ * Preconditions observables sans toucher au reseau : le service du Mac existe
+ * et son adaptateur est branche. Bloquante, et rien n'est modifie avant
+ * qu'elle passe.
+ */
+export async function runLocalPreflight(config: Config): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
 
   const services = await listNetworkServices();
@@ -50,6 +55,18 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
         ? `service «\u00a0${config.mac.serviceName}\u00a0» sur ${macService.device}`
         : `service «\u00a0${config.mac.serviceName}\u00a0» désactivé dans les Réglages Réseau`,
   });
+
+  return results;
+}
+
+/**
+ * Preconditions cote PC. Elles ne sont observables qu'apres la convergence
+ * locale : tant que le Mac n'a pas d'adresse sur le lien direct, aucune route
+ * ne mene au PC et une sonde SSH partirait par la passerelle Wi-Fi pour
+ * expirer, quel que soit l'etat reel du PC.
+ */
+export async function runRemotePreflight(config: Config): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
 
   let facts: RemoteFacts | undefined;
   try {

@@ -10,21 +10,34 @@ let remoteThrows: Error | null = null;
 let clockMs = 0;
 let probeCostMs = 0;
 
+// Compteurs d'appels : ce qui distingue les deux phases n'est pas seulement ce
+// qu'elles rendent, c'est ce qu'elles touchent. La phase locale ne doit jamais
+// sonder le PC, faute de quoi le defaut d'origine revient.
+let shellCalls = 0;
+let sshCalls = 0;
+
 mock.module("../../src/lib/shell", () => ({
-  listNetworkServices: async () => services,
+  listNetworkServices: async () => {
+    shellCalls += 1;
+    return services;
+  },
 }));
 
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => {
+    sshCalls += 1;
     clockMs += probeCostMs;
     if (remoteThrows) throw remoteThrows;
     return remoteRows;
   },
 }));
 
-const { runPreflight, hasBlockingFailure, waitForRemote } = await import(
-  "../../src/lib/preflight"
-);
+const {
+  runLocalPreflight,
+  runRemotePreflight,
+  hasBlockingFailure,
+  waitForRemote,
+} = await import("../../src/lib/preflight");
 
 const PROBE_INTERVAL = 5_000;
 
@@ -47,21 +60,33 @@ function setup(remote: Partial<typeof HEALTHY_REMOTE> = {}, svc = HEALTHY_SERVIC
   remoteRows = [{ ...HEALTHY_REMOTE, ...remote }];
   clockMs = 0;
   probeCostMs = 0;
+  shellCalls = 0;
+  sshCalls = 0;
 }
 
-describe("runPreflight", () => {
-  test("toutes les verifications passent sur le materiel de reference", async () => {
+describe("runLocalPreflight", () => {
+  test("passe sur le materiel de reference", async () => {
     setup();
-    const results = await runPreflight(CONFIG);
+    const results = await runLocalPreflight(CONFIG);
     expect(results.every((r) => r.ok)).toBe(true);
     expect(hasBlockingFailure(results)).toBe(false);
+  });
+
+  test("ne sonde jamais le PC", async () => {
+    setup();
+    // Le coeur du correctif : avant que le Mac ait son adresse, aucune route ne
+    // mene a 10.10.10.1. Une sonde SSH ici expirerait quel que soit l'etat du PC.
+    remoteThrows = new Error("aucune route vers l'hote");
+    const results = await runLocalPreflight(CONFIG);
+    expect(sshCalls).toBe(0);
+    expect(results.map((r) => r.name)).toEqual(["service-mac"]);
   });
 
   test("bloque si le service reseau du Mac est absent", async () => {
     setup({}, [
       { order: 1, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
     ]);
-    const results = await runPreflight(CONFIG);
+    const results = await runLocalPreflight(CONFIG);
     const check = results.find((r) => r.name === "service-mac");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
@@ -73,16 +98,33 @@ describe("runPreflight", () => {
       { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14", enabled: false },
       { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
     ]);
-    const check = (await runPreflight(CONFIG)).find((r) => r.name === "service-mac");
+    const check = (await runLocalPreflight(CONFIG)).find((r) => r.name === "service-mac");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
     expect(check?.detail).toContain("désactivé");
   });
 
+});
+
+describe("runRemotePreflight", () => {
+  test("passe sur le materiel de reference", async () => {
+    setup();
+    const results = await runRemotePreflight(CONFIG);
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect(hasBlockingFailure(results)).toBe(false);
+  });
+
+  test("n'inspecte aucun service reseau du Mac", async () => {
+    setup();
+    const results = await runRemotePreflight(CONFIG);
+    expect(shellCalls).toBe(0);
+    expect(results.find((r) => r.name === "service-mac")).toBeUndefined();
+  });
+
   test("bloque si le PC ne repond pas en SSH", async () => {
     setup();
     remoteThrows = new Error("connexion refusee");
-    const results = await runPreflight(CONFIG);
+    const results = await runRemotePreflight(CONFIG);
     expect(hasBlockingFailure(results)).toBe(true);
     expect(results.find((r) => r.name === "ssh")?.ok).toBe(false);
   });
@@ -90,7 +132,7 @@ describe("runPreflight", () => {
   test("n'execute aucune verification distante si SSH est tombe", async () => {
     setup();
     remoteThrows = new Error("connexion refusee");
-    const results = await runPreflight(CONFIG);
+    const results = await runRemotePreflight(CONFIG);
     // Une seule verification distante, celle qui a echoue : inutile d'en tenter
     // d'autres, elles echoueraient toutes pour la meme raison.
     expect(results.filter((r) => r.name === "windows-version")).toHaveLength(0);
@@ -98,7 +140,7 @@ describe("runPreflight", () => {
 
   test("bloque si aucun GPU NVIDIA n'est present", async () => {
     setup({ gpus: ["Intel UHD Graphics 770"] });
-    const results = await runPreflight(CONFIG);
+    const results = await runRemotePreflight(CONFIG);
     const check = results.find((r) => r.name === "gpu");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
@@ -106,19 +148,19 @@ describe("runPreflight", () => {
 
   test("ignore les ecrans virtuels dans la detection du GPU", async () => {
     setup({ gpus: ["SudoMaker Virtual Display Adapter", "NVIDIA GeForce RTX 4090"] });
-    expect((await runPreflight(CONFIG)).find((r) => r.name === "gpu")?.ok).toBe(true);
+    expect((await runRemotePreflight(CONFIG)).find((r) => r.name === "gpu")?.ok).toBe(true);
   });
 
   test("avertit sans bloquer si la version de Windows differe", async () => {
     setup({ build: 22631 });
-    const check = (await runPreflight(CONFIG)).find((r) => r.name === "windows-version");
+    const check = (await runRemotePreflight(CONFIG)).find((r) => r.name === "windows-version");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(false);
   });
 
   test("bloque si l'interface Ethernet du PC est debranchee", async () => {
     setup({ adapterStatus: "Disconnected" });
-    const check = (await runPreflight(CONFIG)).find((r) => r.name === "lien-windows");
+    const check = (await runRemotePreflight(CONFIG)).find((r) => r.name === "lien-windows");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
     expect(check?.detail).toContain("câble");
