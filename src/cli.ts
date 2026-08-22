@@ -48,7 +48,11 @@ if (import.meta.main) {
     await buildProgram().parseAsync(Bun.argv);
   } catch (error) {
     if (!(error instanceof CancelledError)) {
-      ui.failed({ label: "hardline", detail: (error as Error).message });
+      // Une valeur levee qui n'est pas une Error n'a pas de .message :
+      // l'afficher tel quel vaut mieux qu'annoncer « undefined ».
+      const detail =
+        error instanceof Error && error.message ? error.message : String(error);
+      ui.failed({ label: "hardline", detail });
     }
     process.exitCode = 1;
   }

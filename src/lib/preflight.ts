@@ -18,6 +18,9 @@ type RemoteFacts = {
   adapterStatus: string | null;
 };
 
+/** Nom de la verification SSH, partage avec la commande install. */
+export const SSH_CHECK = "ssh";
+
 const EXPECTED_BUILD = 26200;
 
 const FACTS = (alias: string) => `
@@ -55,14 +58,14 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     );
     facts = rows[0];
     results.push({
-      name: "ssh",
+      name: SSH_CHECK,
       ok: Boolean(facts),
       blocking: true,
       detail: facts ? `PC joignable sur ${config.ssh.host}` : "réponse vide du PC",
     });
   } catch (error) {
     results.push({
-      name: "ssh",
+      name: SSH_CHECK,
       ok: false,
       blocking: true,
       detail: `PC injoignable sur ${config.ssh.host} : ${(error as Error).message}`,
@@ -110,22 +113,27 @@ export function hasBlockingFailure(results: CheckResult[]): boolean {
 const PROBE_INTERVAL_MS = 5_000;
 
 /**
- * Attend que le PC reponde en SSH, au plus jusqu'a l'echeance. `sleep` est
- * injectable pour que les tests n'attendent pas reellement.
+ * Attend que le PC reponde en SSH, au plus jusqu'a l'echeance. L'echeance est
+ * mesuree en temps reel : une sonde qui echoue coute le delai de connexion SSH,
+ * et compter les seules pauses ferait durer une attente annoncee a dix minutes
+ * bien plus longtemps. `sleep` et `now` sont injectables pour que les tests
+ * n'attendent pas reellement.
  */
 export async function waitForRemote(
   config: Config,
   deadlineMs: number,
   sleep: (ms: number) => Promise<void> = Bun.sleep,
+  now: () => number = Date.now,
 ): Promise<boolean> {
-  for (let waited = 0; waited <= deadlineMs; waited += PROBE_INTERVAL_MS) {
+  const deadline = now() + deadlineMs;
+
+  for (;;) {
     try {
       await runRemoteJson(config.ssh, "[pscustomobject]@{ ok = $true }");
       return true;
     } catch {
-      if (waited + PROBE_INTERVAL_MS > deadlineMs) break;
+      if (now() + PROBE_INTERVAL_MS >= deadline) return false;
       await sleep(PROBE_INTERVAL_MS);
     }
   }
-  return false;
 }

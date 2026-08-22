@@ -4,7 +4,12 @@ import { ALL_STEPS } from "../steps";
 import { applySteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
-import { hasBlockingFailure, runPreflight, waitForRemote } from "../lib/preflight";
+import {
+  SSH_CHECK,
+  hasBlockingFailure,
+  runPreflight,
+  waitForRemote,
+} from "../lib/preflight";
 import { localBootstrapUrl, serveBootstrap } from "../lib/bootstrap-server";
 import { configureOutput, ui, withSpinner } from "../lib/ui";
 
@@ -44,16 +49,18 @@ async function bootstrapRemote(): Promise<boolean> {
     prefixLength: CONFIG.windows.prefixLength,
   });
 
-  ui.report("Amorçage du PC", [
-    "Le PC n'est pas encore joignable. Sur le PC, dans un",
-    "PowerShell lancé en administrateur, coller cette ligne\u00a0:",
-    "",
-    `  irm ${localBootstrapUrl(server.port)} | iex`,
-    "",
-    "L'installation reprendra d'elle-même dès que le PC répondra.",
-  ]);
-
+  // Tout ce qui suit la creation du serveur est dans le try : une exception
+  // avant le finally laisserait un ecouteur ouvert et figerait la commande.
   try {
+    ui.report("Amorçage du PC", [
+      "Le PC n'est pas encore joignable. Sur le PC, dans un",
+      "PowerShell lancé en administrateur, coller cette ligne\u00a0:",
+      "",
+      `  irm ${localBootstrapUrl(server.port)} | iex`,
+      "",
+      "L'installation reprendra d'elle-même dès que le PC répondra.",
+    ]);
+
     return await withSpinner("Attente du PC (10 minutes au plus)", () =>
       waitForRemote(CONFIG, BOOTSTRAP_DEADLINE_MS),
     );
@@ -71,7 +78,12 @@ export async function installCommand(): Promise<void> {
   );
   reportChecks(checks);
 
-  if (checks.some((c) => c.name === "ssh" && !c.ok)) {
+  // Un echec bloquant cote Mac n'a rien a faire sur le PC : envoyer
+  // l'utilisateur amorcer une machine pour dix minutes ne le reglerait pas.
+  const blocking = checks.filter((c) => !c.ok && c.blocking);
+  const sshSeulBloque = blocking.length === 1 && blocking[0]?.name === SSH_CHECK;
+
+  if (sshSeulBloque) {
     if (!(await bootstrapRemote())) {
       ui.finish(
         "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé.",

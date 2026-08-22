@@ -5,12 +5,18 @@ let services: unknown[];
 let remoteRows: unknown[];
 let remoteThrows: Error | null = null;
 
+// Horloge simulee : chaque sonde SSH et chaque pause avancent le temps, comme
+// sur la vraie machine ou une sonde qui echoue coute le delai de connexion.
+let clockMs = 0;
+let probeCostMs = 0;
+
 mock.module("../../src/lib/shell", () => ({
   listNetworkServices: async () => services,
 }));
 
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => {
+    clockMs += probeCostMs;
     if (remoteThrows) throw remoteThrows;
     return remoteRows;
   },
@@ -19,6 +25,8 @@ mock.module("../../src/lib/ssh", () => ({
 const { runPreflight, hasBlockingFailure, waitForRemote } = await import(
   "../../src/lib/preflight"
 );
+
+const PROBE_INTERVAL = 5_000;
 
 const HEALTHY_REMOTE = {
   caption: "Microsoft Windows 11 Professionnel",
@@ -37,6 +45,8 @@ function setup(remote: Partial<typeof HEALTHY_REMOTE> = {}, svc = HEALTHY_SERVIC
   remoteThrows = null;
   services = svc;
   remoteRows = [{ ...HEALTHY_REMOTE, ...remote }];
+  clockMs = 0;
+  probeCostMs = 0;
 }
 
 describe("runPreflight", () => {
@@ -127,26 +137,53 @@ describe("hasBlockingFailure", () => {
 });
 
 describe("waitForRemote", () => {
+  // Une sonde SSH qui echoue coute le delai de connexion, ici huit secondes.
+  const SSH_TIMEOUT_MS = 8_000;
+
+  function fakeClock() {
+    const slept: number[] = [];
+    return {
+      slept,
+      now: () => clockMs,
+      sleep: async (ms: number) => {
+        slept.push(ms);
+        clockMs += ms;
+      },
+    };
+  }
+
   test("rend la main des que le PC repond", async () => {
     setup();
+    probeCostMs = SSH_TIMEOUT_MS;
     remoteThrows = new Error("injoignable");
-    const slept: number[] = [];
-    const reachable = await waitForRemote(CONFIG, 60_000, async (ms) => {
-      slept.push(ms);
-      if (slept.length === 2) remoteThrows = null;
-    });
+    const clock = fakeClock();
+    const reachable = await waitForRemote(
+      CONFIG,
+      40_000,
+      async (ms) => {
+        await clock.sleep(ms);
+        if (clock.slept.length === 2) remoteThrows = null;
+      },
+      clock.now,
+    );
     expect(reachable).toBe(true);
-    expect(slept).toEqual([5_000, 5_000]);
+    expect(clock.slept).toEqual([5_000, 5_000]);
+    // Deux sondes en echec, deux pauses, une sonde qui aboutit.
+    expect(clockMs).toBe(3 * SSH_TIMEOUT_MS + 2 * PROBE_INTERVAL);
+    expect(clockMs).toBeLessThanOrEqual(40_000);
   });
 
-  test("abandonne a l'echeance sans depasser le budget d'attente", async () => {
+  test("abandonne sans depasser le budget d'attente en temps reel", async () => {
     setup();
+    probeCostMs = SSH_TIMEOUT_MS;
     remoteThrows = new Error("injoignable");
-    const slept: number[] = [];
-    const reachable = await waitForRemote(CONFIG, 10_000, async (ms) => {
-      slept.push(ms);
-    });
+    const clock = fakeClock();
+    const reachable = await waitForRemote(CONFIG, 60_000, clock.sleep, clock.now);
     expect(reachable).toBe(false);
-    expect(slept).toEqual([5_000, 5_000]);
+    // Le point qui compte : le temps ecoule reel, sondes comprises, tient dans
+    // l'echeance annoncee. Une implementation qui ne compterait que les pauses
+    // sortirait ici a 164 s pour un budget de 60 s.
+    expect(clockMs).toBeLessThanOrEqual(60_000);
+    expect(clock.slept).toEqual([5_000, 5_000, 5_000, 5_000]);
   });
 });
