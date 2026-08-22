@@ -2479,16 +2479,23 @@ Run: `bun -e 'import {configureOutput,ui,withSpinner} from "./src/lib/ui"; confi
 Expected: du texte lisible, **sans séquences `^[[` de déplacement de curseur**. C'est la
 validation du forçage de `CI`.
 
-- [ ] **Step 7: Vérifier la stabilité des invites sous Bun**
+- [ ] **Step 7: Laisser la vérification interactive à l'utilisateur**
 
-Clack a un historique de blocages de l'entrée standard sous Bun lorsque plusieurs
-invites s'enchaînent. Ce test manuel doit être fait une fois, maintenant, pas au moment
-de livrer.
+Clack a un historique de blocages de l'entrée standard sous Bun lorsque plusieurs invites
+s'enchaînent. Cette vérification demande une saisie au clavier : elle ne peut pas être
+faite par un agent, et elle ne doit pas être simulée en redirigeant l'entrée, ce qui
+testerait précisément le chemin non interactif au lieu du chemin interactif.
 
-Run: `bun -e 'import {confirm,text,isCancel} from "@clack/prompts"; const a = await confirm({message:"Premiere question ?"}); const b = await text({message:"Deuxieme question"}); console.log({a,b,cancelled:isCancel(a)||isCancel(b)})'`
-Expected: les deux invites répondent l'une après l'autre sans blocage. Si la seconde ne
-rend pas la main, signaler le problème avant d'aller plus loin : tout le reste du plan
-suppose que les invites fonctionnent.
+Ne l'exécute pas. Signale simplement dans ton rapport qu'elle reste à faire, en
+reproduisant la commande ci-dessous, pour qu'un humain la lance :
+
+```
+bun -e 'import {confirm,text,isCancel} from "@clack/prompts"; const a = await confirm({message:"Premiere question ?"}); const b = await text({message:"Deuxieme question"}); console.log({a,b,cancelled:isCancel(a)||isCancel(b)})'
+```
+
+Attendu : les deux invites répondent l'une après l'autre sans blocage. Si la seconde ne
+rend pas la main, tout ce qui dépend des invites — la confirmation de `hardline
+uninstall` — est compromis.
 
 - [ ] **Step 8: Commit**
 
