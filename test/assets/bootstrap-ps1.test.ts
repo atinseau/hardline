@@ -195,7 +195,7 @@ describe("le menage n'emporte que ce dont le releve rend compte", () => {
   });
 
   test("la relecture a lieu quel que soit l'etat du releve", () => {
-    // Le point structurel : placee dans la branche « else », elle ne
+    // Le point structurel : placee dans la branche "else", elle ne
     // s'executerait qu'au PREMIER amorcage, donc jamais quand elle sert.
     // La colonne zero est ce qui prouve qu'elle est hors du bloc de capture.
     const ligne = SCRIPT.split("\n").find((l) => l.includes("$known = @()"));

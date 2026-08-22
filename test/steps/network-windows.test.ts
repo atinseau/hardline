@@ -46,6 +46,23 @@ function sshLocalIsAssignedBeforeUse(script: string): boolean {
   return assignment >= 0 && firstUse >= 0 && assignment < firstUse;
 }
 
+/**
+ * La branche EXECUTEE EN LIGNE de la queue : celle qui suit le "} else {" de
+ * la garde sur $sshLocal.
+ *
+ * Elle est designee par sa garde, et non par sa position : un `split` sur
+ * "} else {" suivi d'un `pop` prenait le DERNIER else du script, quel qu'il
+ * soit. La repose d'adresses en emet deja un, et il suffisait qu'une instruction
+ * en ajoute un apres pour que ces tests changent silencieusement de sujet.
+ */
+function inlineBranch(script: string): string {
+  const garde = script.indexOf("if ($sshLocal -eq ");
+  expect(garde).toBeGreaterThanOrEqual(0);
+  const branche = script.indexOf("} else {", garde);
+  expect(branche).toBeGreaterThan(garde);
+  return script.slice(branche + "} else {".length);
+}
+
 /** La ligne du processus detache, seule ligne ou les $ doivent etre echappes. */
 function detachedLine(script: string): string {
   const line = script
@@ -384,18 +401,14 @@ describe("restore, ordre des operations", () => {
     // Contre-epreuve de l'assertion precedente : le backtick est une exigence
     // du seul chemin detache, pas une decoration a semer partout.
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
-    const inline = scriptOf(0)
-      .split("} else {")
-      .pop() as string;
+    const inline = inlineBranch(scriptOf(0));
     expect(inline).toContain("-Confirm:$false");
     expect(inline).not.toContain("-Confirm:`$false");
   });
 
   test("execute la queue en ligne quand la session n'utilise pas l'adresse", async () => {
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
-    const inline = scriptOf(0)
-      .split("} else {")
-      .pop() as string;
+    const inline = inlineBranch(scriptOf(0));
     expect(inline).toContain(
       "Remove-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress '10.10.10.1'",
     );
@@ -429,6 +442,28 @@ describe("restore, ordre des operations", () => {
       category: "Private",
     }, NO_PENDING);
     expect(scriptOf(0)).not.toContain("Remove-NetIPAddress");
+  });
+
+  test("n'emet aucune queue quand il n'y a rien a couper", async () => {
+    // L'adresse cible preexistait a hardline (rien a retirer) et la categorie
+    // n'est pas assignable (rien a reposer). La queue est vide. L'emettre quand
+    // meme lancerait un processus detache pour ne rien faire, et la garde sur
+    // $sshLocal annoncerait une coupure qui n'aura pas lieu.
+    await windowsNetworkStep.restore(CONFIG, {
+      ...CONFORME,
+      addresses: ["10.10.10.1/24"],
+      manualAddresses: ["10.10.10.1/24"],
+      dhcpEnabled: true,
+      category: "DomainAuthenticated",
+    }, NO_PENDING);
+    const script = scriptOf(0);
+
+    expect(script).not.toContain("Start-Process");
+    expect(script).not.toContain("$sshLocal");
+    expect(script).not.toContain("Get-NetTCPConnection");
+    // Et la moitie non coupante est bien emise : l'etape a fait son travail.
+    expect(script).toContain("-Dhcp Enabled");
+    expect(script).toContain("-IPAddress '10.10.10.1'");
   });
 
   test("ne supprime jamais en bloc les adresses de l'interface", async () => {

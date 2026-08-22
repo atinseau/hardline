@@ -58,7 +58,7 @@ mock.module("../../src/lib/preflight", () => ({
 
 // Le manifeste que rend applySteps n'est pas un decor : install y lit ce qui a
 // REELLEMENT ete enregistre. Une etape peut se declarer conforme sans rien
-// enregistrer — c'est exactement le cas d'un PC sans releve d'amorcage.
+// enregistrer : c'est exactement le cas d'un PC sans releve d'amorcage.
 function manifestOf(order: string[]): Manifest {
   const now = "2026-08-22T10:00:00.000Z";
   return {
@@ -306,8 +306,8 @@ describe("installCommand", () => {
 
   test("n'annonce aucun releve quand le PC n'en a livre aucun", async () => {
     // Un PC amorce par une version anterieure de hardline n'en porte pas :
-    // l'etape se declare conforme et n'enregistre rien. Annoncer « relevé
-    // enregistré » sur la seule foi d'une session SSH ouverte etait un
+    // l'etape se declare conforme et n'enregistre rien. Annoncer "releve
+    // enregistre" sur la seule foi d'une session SSH ouverte etait un
     // mensonge, et le seul que l'utilisateur n'avait aucun moyen de detecter.
     releveEnregistrable = false;
     remoteRounds = [[ok("ssh"), ko("gpu")]];

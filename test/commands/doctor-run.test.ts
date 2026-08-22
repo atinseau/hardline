@@ -57,7 +57,7 @@ mock.module("../../src/lib/shell", () => ({
 
 // Le PC repond quand la liaison est saine : sans cela, les etapes distantes
 // echouent toutes et le diagnostic ne peut JAMAIS conclure a une liaison
-// operationnelle — le seul cas ou le code de sortie est en jeu.
+// operationnelle, le seul cas ou le code de sortie est en jeu.
 mock.module("../../src/lib/ssh", () => ({
   ...realSsh,
   runRemoteJson: async (_target: unknown, script: string) => {

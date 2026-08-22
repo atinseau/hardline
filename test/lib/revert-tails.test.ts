@@ -154,7 +154,7 @@ describe("ceder n'est pas restaurer", () => {
   });
 
   test("elle se declare restauree quand la queue lui appartient", async () => {
-    // Le controle : sans lui, une etape declarant toujours « cédé »
+    // Le controle : sans lui, une etape declarant toujours "cede"
     // satisferait aussi le test precedent.
     await revert(["network-windows", "network-profile-task"]);
     expect(rapports).toContain(`restauré:${RESEAU_PC}`);
@@ -163,7 +163,7 @@ describe("ceder n'est pas restaurer", () => {
 
   test("elle ne cede rien a une etape que cette version ignore", async () => {
     // Le manifeste nomme l'amorcage, le registre ne le connait plus : ceder ici
-    // serait ceder a personne. Zero script, zero queue, PC intact — et le
+    // serait ceder a personne. Zero script, zero queue, PC intact, et le
     // manifeste debarrasse de l'etape qui aurait du agir.
     const amputé = ALL_STEPS.filter((s) => s.name !== "bootstrap-windows");
     const { scripts, unrestored } = await revertWith(

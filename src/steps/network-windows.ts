@@ -94,6 +94,27 @@ function restoreAddressing(
 }
 
 /**
+ * Le profil peut ne rien restituer, et cela ne peut pas etre observe. Le dire
+ * ici est la seule honnetete disponible.
+ *
+ * Si le retrait de l'adresse laisse l'interface sans aucune adresse IPv4 (aucune
+ * adresse manuelle au releve, ou un bail DHCP pas encore obtenu a l'instant ou
+ * la queue s'execute) Windows ne lui associe plus aucun profil reseau, et
+ * Set-NetConnectionProfile echoue sans bruit sous -ErrorAction SilentlyContinue.
+ *
+ * Rendre cet echec observable depuis le Mac est impossible, et ce n'est pas une
+ * negligence : la queue est detachee PRECISEMENT parce qu'elle coupe le seul
+ * canal qui mene ici. Quand elle s'execute, l'adresse est partie et le profil
+ * Public a referme la regle de pare-feu ; plus rien ne peut remonter. Un journal
+ * ecrit sur le PC ne serait lisible que depuis le clavier du PC, ou
+ * Get-NetConnectionProfile repond deja la question plus surement qu'un fichier
+ * ne le ferait, et ce fichier survivrait a une desinstallation qui promet de ne
+ * rien laisser derriere elle.
+ *
+ * Ce qui borne le degat : le cas ne survient que sur une interface qui n'avait
+ * pas d'adressage propre avant hardline, et Windows reclasse l'interface de
+ * lui-meme des qu'elle en retrouve un.
+ *
  * `Set-NetConnectionProfile -NetworkCategory` n'accepte que Public et Private.
  * DomainAuthenticated est une valeur que Windows s'attribue lui-meme quand un
  * controleur de domaine est joignable ; la lui passer est une erreur de liaison

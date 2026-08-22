@@ -65,3 +65,35 @@ export function psKeyword(
   }
   return value;
 }
+
+/**
+ * Le contenu d'une chaine PowerShell entre GUILLEMETS, ou l'interpolation est
+ * active. C'est le seul endroit du projet qui decide comment une charge est
+ * citee pour un shell appelant : la queue detachee s'en sert, et rien d'autre
+ * n'a le droit de refaire ce calcul a la main.
+ *
+ * Trois caracteres sont speciaux, et l'ORDRE des remplacements est la substance
+ * de la fonction :
+ *
+ *   1. l'accent grave, sans quoi les echappements poses ensuite seraient
+ *      eux-memes echappes et ne protegeraient plus rien ;
+ *   2. le dollar, qu'il faut soustraire au shell appelant : sans cela il
+ *      developpe $false en chaine vide, et Remove-NetIPAddress reclame une
+ *      confirmation interactive que personne ne donnera jamais ;
+ *   3. le guillemet, qui fermerait la chaine et rendrait la fin de la charge
+ *      au shell appelant sous forme d'arguments.
+ *
+ * Un remplacement en bloc des seuls dollars, la forme qui existait ici, tenait
+ * par accident : la charge du jour ne contenait ni guillemet ni accent grave.
+ *
+ * Le contrat est donc net : RIEN dans le contenu n'est developpe par le shell
+ * appelant. Une valeur venue de l'exterieur s'interpole cote TypeScript avant
+ * l'appel, par psQuote.
+ */
+export function psDoubleQuote(content: string): string {
+  const escaped = content
+    .replaceAll("`", "``")
+    .replaceAll("$", "`$")
+    .replaceAll('"', '`"');
+  return `"${escaped}"`;
+}

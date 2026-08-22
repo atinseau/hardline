@@ -229,7 +229,7 @@ describe("revertSteps", () => {
   test("n'annonce jamais une etape que cette version ne sait plus restaurer", async () => {
     // `pending` sert a ceder le travail a une couche plus profonde. Une etape
     // dont le code a disparu ne restaurera rien : lui ceder, c'est ceder a
-    // personne — zero script emis, machine intacte, et l'enregistrement de
+    // personne : zero script emis, machine intacte, et l'enregistrement de
     // celle qui a cede efface au passage.
     const seen: string[][] = [];
     const a = makeStep("a", false, []);

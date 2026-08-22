@@ -141,8 +141,8 @@ describe("formatDiagnostic", () => {
   });
 
   test("montre une precondition d'installation sans la marquer KO", () => {
-    // Elle doit se voir — la taire cacherait pourquoi la prochaine
-    // installation echouera — sans etre confondue avec une liaison malade.
+    // Elle doit se voir (la taire cacherait pourquoi la prochaine
+    // installation echouera) sans etre confondue avec une liaison malade.
     const lines = formatDiagnostic({
       ...HEALTHY,
       checks: [

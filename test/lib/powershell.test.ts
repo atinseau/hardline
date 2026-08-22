@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import {
   assertNoApostrophe,
   psInteger,
+  psDoubleQuote,
   psKeyword,
   psQuote,
 } from "../../src/lib/powershell";
@@ -68,5 +69,51 @@ describe("psKeyword", () => {
     expect(() =>
       psKeyword("Automatic; Remove-Item C:\\", "démarrage", ["Automatic", "Manual"]),
     ).toThrow(/démarrage/);
+  });
+});
+
+describe("psDoubleQuote", () => {
+  /** Le contenu, sans les guillemets qui l'entourent. */
+  const inner = (value: string): string => psDoubleQuote(value).slice(1, -1);
+
+  test("entoure de guillemets", () => {
+    expect(psDoubleQuote("Start-Sleep -Seconds 2")).toBe('"Start-Sleep -Seconds 2"');
+  });
+
+  test("soustrait chaque dollar au shell appelant", () => {
+    // Sans cela, $false devient chaine vide et Remove-NetIPAddress reclame une
+    // confirmation interactive que personne ne donnera jamais.
+    expect(inner("-Confirm:$false; $x = $y")).toBe("-Confirm:`$false; `$x = `$y");
+  });
+
+  test("echappe le guillemet, que le remplacement en bloc ignorait", () => {
+    // Le defaut concret : la chaine se refermait au milieu de la queue, et tout
+    // ce qui suivait devenait des arguments du shell appelant.
+    expect(inner('Write-Host "fini"')).toBe("Write-Host `\"fini`\"");
+  });
+
+  test("echappe l'accent grave, que le remplacement en bloc ignorait", () => {
+    // Laisse tel quel, il mangeait le caractere suivant.
+    expect(inner("a`b")).toBe("a``b");
+  });
+
+  test("echappe l'accent grave AVANT le reste", () => {
+    // L'ordre est la substance : traiter le dollar d'abord donnerait "a``$b",
+    // c'est-a-dire un accent grave litteral suivi d'une interpolation de $b.
+    // PowerShell lit ici deux accents graves (un litteral) puis `$ (un dollar
+    // litteral) : le contenu rendu est exactement "a`$b".
+    expect(inner("a`$b")).toBe("a```$b");
+  });
+
+  test("laisse l'apostrophe intacte", () => {
+    // Elle n'est pas speciale dans une chaine entre guillemets, et psQuote s'en
+    // sert pour citer les valeurs cousues DANS la charge.
+    expect(inner("-IPAddress '10.10.10.1'")).toBe("-IPAddress '10.10.10.1'");
+  });
+
+  test("ne touche a rien quand rien n'est special", () => {
+    expect(inner("Stop-Service -Name sshd -Force")).toBe(
+      "Stop-Service -Name sshd -Force",
+    );
   });
 });

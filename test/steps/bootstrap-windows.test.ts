@@ -678,6 +678,41 @@ describe("restore, ordre des operations", () => {
     expect(script).not.toContain("Get-NetTCPConnection");
   });
 
+  test("n'emet aucune queue quand l'amorcage n'a rien change", async () => {
+    // Un PC qui avait deja tout : OpenSSH installe et lance, la regle, la cle,
+    // l'adresse et le profil. Le releve ne revendique rien, il n'y a rien a
+    // defaire, et lancer un processus detache pour ne rien faire serait
+    // annoncer une coupure a venir qui n'aura pas lieu.
+    const script = await restoreWith({
+      capability: { ...CAPTURE.capability, changed: false },
+      sshd: {
+        present: true,
+        startupType: "Automatic",
+        status: "Running",
+        startupChanged: false,
+        statusChanged: false,
+      },
+      firewall: { name: "hardline-sshd", existed: true, changed: false },
+      authorizedKeys: {
+        ...CAPTURE.authorizedKeys,
+        fileExisted: true,
+        keyPresent: true,
+        changed: false,
+        aclChanged: false,
+      },
+      network: {
+        ...CAPTURE.network,
+        addressingChanged: false,
+        categoryChanged: false,
+      },
+    });
+
+    expect(script).not.toContain("Start-Process");
+    // L'accuse de reception part quand meme : une installation ulterieure doit
+    // retrouver un releve non acquitte, donc non conforme, donc reenregistre.
+    expect(script).toContain("bootstrap-state.acknowledged");
+  });
+
   test("l'accuse de reception part avant la queue", async () => {
     // Si la queue echoue, l'installation suivante doit retrouver un releve non
     // acquitte, donc non conforme, donc reenregistre.

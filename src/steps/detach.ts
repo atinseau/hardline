@@ -1,3 +1,5 @@
+import { psDoubleQuote } from "../lib/powershell";
+
 /**
  * Le seul idiome du projet pour executer, sur le PC, des instructions qui
  * coupent le canal SSH qui les transporte.
@@ -18,17 +20,26 @@ export const SSH_LOCAL_ADDRESS =
   "$sshLocal = (Get-NetTCPConnection -LocalPort 22 -State Established -ErrorAction SilentlyContinue | Select-Object -First 1).LocalAddress";
 
 /**
- * Un processus detache qui survit a la fermeture de la session SSH. Les `$` du
- * script confie doivent etre echappes en `` `$ `` : sans cet echappement, le
- * shell appelant developpe $false en chaine vide et Remove-NetIPAddress
- * reclame une confirmation interactive que personne ne donnera jamais.
+ * Un processus detache qui survit a la fermeture de la session SSH.
+ *
+ * La citation de la charge n'est PAS refaite ici : elle appartient a
+ * psDoubleQuote, seul endroit du projet qui decide comment un contenu est cite
+ * pour un shell PowerShell appelant. Ce qui vivait ici etait un remplacement en
+ * bloc des dollars, qui tenait par accident : il ne connaissait ni le
+ * guillemet, qui aurait ferme la chaine et rendu la fin de la queue au shell
+ * appelant sous forme d'arguments, ni l'accent grave, qui aurait mange le
+ * caractere suivant.
+ *
+ * Le contrat qui en decoule : rien dans `statements` n'est developpe par le
+ * shell appelant. Une valeur exterieure s'interpole cote TypeScript, par
+ * psQuote, avant d'arriver ici.
  *
  * La charge n'herite d'aucune preference d'erreur : c'est un contenu autonome,
  * et non un script confie a runRemoteChecked. Elle tourne donc sous
- * $ErrorActionPreference = 'Continue', ce qui est ici la bonne valeur — une
+ * $ErrorActionPreference = 'Continue', ce qui est ici la bonne valeur : une
  * instruction de restauration qui echoue ne doit pas empecher les suivantes
  * de rendre ce qu'elles savent rendre.
  */
 export const detachTail = (statements: string[]): string =>
   "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command'," +
-  `"Start-Sleep -Seconds 2; ${statements.join("; ").replaceAll("$", "`$")}"`;
+  psDoubleQuote(`Start-Sleep -Seconds 2; ${statements.join("; ")}`);
