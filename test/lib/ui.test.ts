@@ -1,6 +1,7 @@
 import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
 
 const calls: string[] = [];
+let cancelNext = false;
 const spinnerStop = mock((m?: string) => calls.push(`stop:${m}`));
 const spinnerError = mock((m?: string) => calls.push(`error:${m}`));
 
@@ -10,7 +11,7 @@ mock.module("@clack/prompts", () => ({
   note: (m: string, t?: string) => calls.push(`note:${t}:${m}`),
   cancel: (m: string) => calls.push(`cancel:${m}`),
   isCancel: (v: unknown) => typeof v === "symbol",
-  confirm: async () => true,
+  confirm: async () => (cancelNext ? Symbol("cancel") : true),
   log: {
     step: (m: string) => calls.push(`step:${m}`),
     success: (m: string) => calls.push(`success:${m}`),
@@ -26,7 +27,8 @@ mock.module("@clack/prompts", () => ({
   }),
 }));
 
-const { configureOutput, ui, withSpinner } = await import("../../src/lib/ui");
+const { configureOutput, ui, withSpinner, askConfirmation, CancelledError } =
+  await import("../../src/lib/ui");
 
 const savedCI = process.env.CI;
 beforeEach(() => {
@@ -52,20 +54,25 @@ describe("configureOutput", () => {
 
 describe("statuts d'etape", () => {
   test("une etape deja conforme est visible, pas silencieuse", () => {
-    ui.skipped({ label: "Adresse Mac", detail: "deja en 10.10.10.2" });
+    ui.skipped({ label: "Adresse Mac", detail: "en 10.10.10.2" });
     expect(calls[0]).toContain("step:");
     expect(calls[0]).toContain("Adresse Mac");
-    expect(calls[0]).toContain("deja");
+    // Accents exiges par les contraintes du projet, et verifies ici : le
+    // detail fourni par le test n'en contient aucun, donc seule la chaine
+    // produite par le module peut satisfaire cette assertion.
+    expect(calls[0]).toContain("déjà conforme");
   });
 
   test("une etape appliquee est distinguee d'une etape sautee", () => {
     ui.applied({ label: "Adresse Mac", detail: "posee" });
     expect(calls[0]).toContain("success:");
+    expect(calls[0]).toContain("appliqué");
   });
 
   test("une etape en echec passe par le canal d'erreur", () => {
     ui.failed({ label: "Adresse Mac", detail: "sudo refuse" });
     expect(calls[0]).toContain("error:");
+    expect(calls[0]).toContain("échec");
   });
 });
 
@@ -93,6 +100,41 @@ describe("withSpinner", () => {
     });
     expect(calls).toContain("message:telechargement");
     expect(calls).toContain("message:configuration");
+  });
+});
+
+describe("askConfirmation", () => {
+  test("ne demande rien quand --yes est passe", async () => {
+    expect(await askConfirmation("Continuer ?", { assumeYes: true })).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("ne demande rien hors terminal", async () => {
+    // Poser une question a un flux non interactif bloquerait indefiniment.
+    expect(
+      await askConfirmation("Continuer ?", { assumeYes: false, interactive: false }),
+    ).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("rend la reponse de l'utilisateur en mode interactif", async () => {
+    expect(
+      await askConfirmation("Continuer ?", { assumeYes: false, interactive: true }),
+    ).toBe(true);
+  });
+
+  test("leve CancelledError sur annulation, sans quitter le processus", async () => {
+    // process.exit ici rendrait la fonction intestable et empecherait tout
+    // nettoyage par l'appelant.
+    cancelNext = true;
+    const attempt = askConfirmation("Continuer ?", {
+      assumeYes: false,
+      interactive: true,
+    });
+    expect(attempt).rejects.toBeInstanceOf(CancelledError);
+    await attempt.catch(() => {});
+    expect(calls.some((c) => c.startsWith("cancel:"))).toBe(true);
+    cancelNext = false;
   });
 });
 
