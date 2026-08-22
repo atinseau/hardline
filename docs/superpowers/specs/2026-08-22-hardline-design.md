@@ -129,6 +129,17 @@ préexistantes.
 l'état antérieur plutôt qu'en supposant des valeurs par défaut. Un désinstalleur qui
 devine est un désinstalleur qui casse la machine.
 
+**L'ordre d'écriture est une contrainte de sûreté, pas un détail.** L'état antérieur
+d'une étape est écrit sur disque *avant* que l'étape ne modifie quoi que ce soit,
+jamais après. La raison est concrète : la bibliothèque d'affichage intercepte Ctrl+C
+pendant un indicateur d'activité et termine le processus immédiatement et de façon
+synchrone, sans laisser s'exécuter le moindre traitement de rattrapage asynchrone. Une
+interruption au clavier au mauvais moment tuerait donc le programme entre la
+modification et son enregistrement, laissant une machine modifiée dont plus rien ne
+connaît l'état d'origine. En écrivant d'abord, le pire cas devient une étape
+enregistrée mais non appliquée — situation que `install` corrige de lui-même au
+prochain passage, puisque chaque étape constate avant d'agir.
+
 ## 10. Persistance au redémarrage
 
 Survivent nativement : les adresses fixes, le service Sunshine, le pilote d'écran, les
