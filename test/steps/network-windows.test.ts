@@ -6,9 +6,11 @@ import { CONFIG } from "../../src/config";
 import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
 let remoteState: unknown[];
+/** Ce que le PC repond : c'est lui qui choisit la branche de la queue. */
+let remoteStdout = "";
 const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   exitCode: 0,
-  stdout: "",
+  stdout: remoteStdout,
   stderr: "",
 }));
 
@@ -28,7 +30,10 @@ const CONFORME: WindowsNetworkState = {
   category: "Private",
 };
 
-beforeEach(() => runRemoteChecked.mockClear());
+beforeEach(() => {
+  runRemoteChecked.mockClear();
+  remoteStdout = "";
+});
 
 function scriptOf(call: number): string {
   return String((runRemoteChecked.mock.calls[call] as unknown[])[1]);
@@ -464,6 +469,40 @@ describe("restore, ordre des operations", () => {
     // Et la moitie non coupante est bien emise : l'etape a fait son travail.
     expect(script).toContain("-Dhcp Enabled");
     expect(script).toContain("-IPAddress '10.10.10.1'");
+  });
+
+  test("annonce la branche empruntee, des deux cotes de la garde", async () => {
+    // Le Mac ne peut pas deviner sur quelle adresse roulait la session : c'est
+    // le PC qui tranche, a l'execution. Sans ce mot dans le script, l'etape
+    // devrait supposer le pire dans les deux cas.
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
+    const script = scriptOf(0);
+    expect(detachedLine(script)).toBeDefined();
+    expect(script).toContain("Write-Output 'hardline:queue-detachee'");
+    expect(inlineBranch(script)).toContain("Write-Output 'hardline:queue-en-ligne'");
+  });
+
+  test("se declare lancee, non restauree, quand le PC a detache la queue", async () => {
+    remoteStdout = "hardline:queue-detachee\n";
+    const outcome = await windowsNetworkStep.restore(
+      CONFIG,
+      SANS_NOTRE_ADRESSE,
+      NO_PENDING,
+    );
+    expect(outcome).toEqual({
+      detached:
+        "retrait de l'adresse et retour du profil confiés à un processus détaché sur le PC",
+    });
+  });
+
+  test("ne se declare pas lancee quand le PC a tout fait en ligne", async () => {
+    // Le controle. Cette branche est verifiee par le code de retour de la
+    // session : elle est OBSERVEE, et la rapporter comme incertaine ferait
+    // garder au manifeste un enregistrement dont on n'a plus besoin.
+    remoteStdout = "hardline:queue-en-ligne\n";
+    expect(
+      await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING),
+    ).toBeUndefined();
   });
 
   test("ne supprime jamais en bloc les adresses de l'interface", async () => {

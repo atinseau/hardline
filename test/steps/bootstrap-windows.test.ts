@@ -737,6 +737,56 @@ describe("restore, ordre des operations", () => {
     expect(script).toContain("bootstrap-state.acknowledged");
   });
 
+  test("se declare lancee des qu'une queue detachee existe", async () => {
+    // Elle rend la main des que Start-Process est lance, et ce que la charge
+    // fait ensuite coupe le seul canal qui permettrait de l'observer.
+    const outcome = await bootstrapWindowsStep.restore(
+      CONFIG,
+      { capture: CAPTURE, acknowledged: true },
+      NO_PENDING,
+    );
+    expect(outcome).toEqual({
+      detached:
+        "adressage, pare-feu, clé et sshd confiés à un processus détaché sur le PC",
+    });
+  });
+
+  test("se declare restauree quand il n'y a aucune queue a lancer", async () => {
+    // Le controle : sans queue, tout ce que fait l'etape tient dans la session
+    // et son code de retour est verifie. C'est observe, donc c'est restaure.
+    const outcome = await bootstrapWindowsStep.restore(
+      CONFIG,
+      {
+        capture: capture({
+          capability: { ...CAPTURE.capability, changed: false },
+          sshd: {
+            present: true,
+            startupType: "Automatic",
+            status: "Running",
+            startupChanged: false,
+            statusChanged: false,
+          },
+          firewall: { name: "hardline-sshd", existed: true, changed: false },
+          authorizedKeys: {
+            ...CAPTURE.authorizedKeys,
+            fileExisted: true,
+            keyPresent: true,
+            changed: false,
+            aclChanged: false,
+          },
+          network: {
+            ...CAPTURE.network,
+            addressingChanged: false,
+            categoryChanged: false,
+          },
+        }),
+        acknowledged: true,
+      },
+      NO_PENDING,
+    );
+    expect(outcome).toBeUndefined();
+  });
+
   test("l'accuse de reception part avant la queue", async () => {
     // Si la queue echoue, l'installation suivante doit retrouver un releve non
     // acquitte, donc non conforme, donc reenregistre.

@@ -93,6 +93,7 @@ mock.module("../../src/lib/ui", () => ({
     applied: () => {},
     restored: () => {},
     yielded: () => {},
+    detached: () => {},
     failed: () => {},
     info: () => {},
     warn: () => {},

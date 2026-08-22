@@ -8,6 +8,7 @@ const MANIFEST_PATH = `/tmp/hardline-uninstall-${process.pid}/manifest.json`;
 
 let order: string[] = [];
 let unrestored: string[] = [];
+let unconfirmed: string[] = [];
 const prompts: string[] = [];
 const reports: { title: string; lines: string[] }[] = [];
 const finishes: string[] = [];
@@ -37,7 +38,7 @@ mock.module("../../src/lib/manifest", () => ({
 mock.module("../../src/lib/orchestrator", () => ({
   revertSteps: async () => {
     trace.push("revert");
-    return unrestored;
+    return { unrestored, unconfirmed };
   },
 }));
 
@@ -54,6 +55,8 @@ mock.module("../../src/lib/ui", () => ({
     skipped: () => {},
     applied: () => {},
     restored: () => {},
+    yielded: () => {},
+    detached: () => {},
     failed: () => {},
     info: () => {},
     warn: () => {},
@@ -76,6 +79,7 @@ beforeEach(() => {
     "network-profile-task",
   ];
   unrestored = [];
+  unconfirmed = [];
   prompts.length = 0;
   reports.length = 0;
   finishes.length = 0;
@@ -205,6 +209,39 @@ describe("uninstallCommand", () => {
     expect(reports).toEqual([]);
     expect(trace).toEqual([]);
     expect(finishes.join("\n")).toContain("Désinstallation abandonnée");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("n'annonce pas une restauration que le Mac n'a pas pu observer", async () => {
+    // Le seul endroit du programme ou il serait tentant d'affirmer ce qu'on ne
+    // peut pas savoir : la derniere queue part dans un processus detache qui
+    // retire l'adresse portant la session SSH. Le Mac ne reverra jamais ce PC.
+    unconfirmed = ["bootstrap-windows"];
+    await uninstallCommand({ yes: true });
+
+    const message = finishes.join("\n");
+    expect(message).not.toContain("État antérieur restauré");
+    expect(message).toContain("Restauration lancée sur le PC");
+    expect(message).toContain("ne peut pas être observée");
+    expect(message).toContain("au clavier du PC");
+    // Rien n'a ete OBSERVE en echec : inventer une panne serait le meme
+    // mensonge dans l'autre sens.
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("annonce l'etat rendu quand tout a ete observe", async () => {
+    // Le controle : sans lui, un message d'incertitude systematique
+    // satisferait aussi le test precedent.
+    await uninstallCommand({ yes: true });
+    expect(finishes.join("\n")).toBe("État antérieur restauré.");
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("un echec observe prime sur un lancement non confirme", async () => {
+    unrestored = ["network-mac"];
+    unconfirmed = ["bootstrap-windows"];
+    await uninstallCommand({ yes: true });
+    expect(finishes.join("\n")).toContain("Restauration incomplète");
     expect(process.exitCode).toBe(1);
   });
 

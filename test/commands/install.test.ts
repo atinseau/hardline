@@ -114,6 +114,8 @@ mock.module("../../src/lib/ui", () => ({
     skipped: () => {},
     applied: () => {},
     restored: () => {},
+    yielded: () => {},
+    detached: () => {},
     failed: ({ label, detail }: { label: string; detail: string }) =>
       failures.push(`${label} — ${detail}`),
     info: () => {},

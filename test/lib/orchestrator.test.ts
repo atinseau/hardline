@@ -75,6 +75,7 @@ const fakeUi = {
   applied: ({ label }: { label: string }) => reports.push(`applied:${label}`),
   restored: ({ label }: { label: string }) => reports.push(`restored:${label}`),
   yielded: ({ label }: { label: string }) => reports.push(`yielded:${label}`),
+  detached: ({ label }: { label: string }) => reports.push(`detached:${label}`),
   failed: ({ label }: { label: string }) => reports.push(`failed:${label}`),
 };
 
@@ -179,7 +180,7 @@ describe("revertSteps", () => {
     const steps = [makeStep("a", false, [])];
     await applySteps(steps, CONFIG, manifestPath, fakeUi);
     // On restaure avec un registre vide : ne doit pas lever.
-    const unrestored = await revertSteps([], CONFIG, manifestPath, fakeUi);
+    const { unrestored } = await revertSteps([], CONFIG, manifestPath, fakeUi);
     expect(reports.some((r) => r.startsWith("failed"))).toBe(true);
     expect(unrestored).toEqual(["a"]);
 
@@ -202,7 +203,7 @@ describe("revertSteps", () => {
       },
     };
     reports.length = 0;
-    const unrestored = await revertSteps(
+    const { unrestored } = await revertSteps(
       [failing, steps[1]!],
       CONFIG,
       manifestPath,
@@ -236,7 +237,7 @@ describe("revertSteps", () => {
     const b = makeContextSpy("b", seen);
     await applySteps([a, b], CONFIG, manifestPath, fakeUi);
 
-    const unrestored = await revertSteps([b], CONFIG, manifestPath, fakeUi);
+    const { unrestored } = await revertSteps([b], CONFIG, manifestPath, fakeUi);
     expect(seen).toEqual([[]]);
     expect(unrestored).toEqual(["a"]);
   });
@@ -257,6 +258,44 @@ describe("revertSteps", () => {
     expect((await readManifest(manifestPath)).order).toEqual([]);
   });
 
+  test("une etape lancee sans confirmation GARDE son enregistrement", async () => {
+    // Le geste irreversible du programme est d'oublier un etat anterieur. Il
+    // n'a lieu que pour une restauration OBSERVEE. Une queue detachee rend la
+    // main avant d'avoir agi, sur une machine que le Mac ne reverra pas :
+    // echanger l'enregistrement contre l'espoir qu'elle a abouti serait
+    // exactement la malhonnetete que le manifeste existe pour eviter.
+    const detached: Step<{ marker: string }> = {
+      ...makeStep("a", false, []),
+      async restore() {
+        return { detached: "queue confiée à un processus détaché" };
+      },
+    };
+    await applySteps([detached], CONFIG, manifestPath, fakeUi);
+    reports.length = 0;
+    const report = await revertSteps([detached], CONFIG, manifestPath, fakeUi);
+
+    expect(reports).toEqual(["detached:Etape a"]);
+    expect(report.unconfirmed).toEqual(["a"]);
+    expect(report.unrestored).toEqual([]);
+
+    const manifest = await readManifest(manifestPath);
+    expect(manifest.order).toEqual(["a"]);
+    expect(manifest.steps["a"]?.previous).toEqual({ marker: "avant-a" });
+  });
+
+  test("une etape observee, elle, perd son enregistrement", async () => {
+    // Le controle : sans lui, un manifeste jamais vide satisferait aussi le
+    // test precedent, et "restaure" ne voudrait plus rien dire.
+    const step = makeStep("a", false, []);
+    await applySteps([step], CONFIG, manifestPath, fakeUi);
+    reports.length = 0;
+    const report = await revertSteps([step], CONFIG, manifestPath, fakeUi);
+
+    expect(reports).toEqual(["restored:Etape a"]);
+    expect(report.unconfirmed).toEqual([]);
+    expect((await readManifest(manifestPath)).order).toEqual([]);
+  });
+
   test("ecrit le manifeste apres chaque restauration, pas a la fin", async () => {
     const trace: Trace = [];
     const steps = [makeStep("a", false, trace), makeStep("b", false, trace)];
@@ -270,7 +309,7 @@ describe("revertSteps", () => {
         throw new Error("sudo refuse");
       },
     };
-    const unrestored = await revertSteps(
+    const { unrestored } = await revertSteps(
       [failing, steps[1]!],
       CONFIG,
       manifestPath,

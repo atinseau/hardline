@@ -27,16 +27,32 @@ export type RestoreContext = {
 };
 
 /**
- * Ce qu'une restauration rend d'elle-meme.
+ * Ce qu'une restauration rend d'elle-meme. Trois reponses, et une seule veut
+ * dire que le programme a VU l'etat anterieur revenir.
  *
- * Ne rien rendre veut dire "j'ai fait mon travail". Rendre `{ yielded }` veut
- * dire "je n'ai rien fait, et voici pourquoi" : l'etape a cede sa place a une
- * restauration plus profonde. Les deux cas effacent l'enregistrement du
- * manifeste (la couche profonde le supplante) mais ils ne se racontent pas
- * de la meme facon, et donner une etape pour restauree quand elle n'a pas
- * ouvert une seule session est un mensonge visible a l'ecran.
+ * Ne rien rendre veut dire "j'ai fait mon travail, et je l'ai vu se faire" :
+ * les instructions sont parties dans la session SSH et leur code de retour a
+ * ete verifie. L'enregistrement du manifeste peut partir.
+ *
+ * `{ yielded }` veut dire "je n'ai rien fait, et voici pourquoi" : l'etape a
+ * cede sa place a une restauration plus profonde, qui connait mieux qu'elle
+ * l'etat d'origine. L'enregistrement part aussi, puisque la couche profonde le
+ * supplante. Mais donner cette etape pour restauree quand elle n'a pas ouvert
+ * une seule session serait un mensonge visible a l'ecran.
+ *
+ * `{ detached }` veut dire "j'ai LANCE quelque chose que je ne verrai jamais
+ * finir". Les instructions qui coupent le canal SSH sont confiees a un
+ * processus detache sur le PC ; il rend la main des qu'il est lance, dort deux
+ * secondes, puis retire l'adresse qui portait la session. A partir de la, le
+ * Mac ne peut plus rien observer. Un lancement n'est pas un achevement :
+ * l'enregistrement du manifeste est CONSERVE, parce qu'il est la seule
+ * description de l'etat d'origine et qu'on ne l'echange pas contre l'espoir
+ * qu'une charge a abouti.
  */
-export type RestoreOutcome = { readonly yielded: string } | void;
+export type RestoreOutcome =
+  | { readonly yielded: string }
+  | { readonly detached: string }
+  | void;
 
 export type Step<P> = {
   /** Identifiant stable, utilise comme cle dans le manifeste. */

@@ -32,6 +32,7 @@ const reporter = {
   applied: () => {},
   restored: () => {},
   yielded: () => {},
+  detached: () => {},
   failed: () => {},
 };
 

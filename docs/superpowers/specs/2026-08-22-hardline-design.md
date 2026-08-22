@@ -286,6 +286,22 @@ tuerait la session SSH neuve dont la seconde a besoin, et le PC resterait injoig
 avec son adressage d'origine jamais rendu. Une étape sait donc quelles restaurations
 passent après elle, et cède la queue quand elle n'est pas la dernière.
 
+**Une queue détachée est lancée, jamais achevée — et le programme ne dit pas le
+contraire.** Elle rend la main dès que `Start-Process` est lancé ; sa charge dort deux
+secondes, puis retire l'adresse qui portait la session SSH et referme le pare-feu. À
+partir de cet instant le Mac ne peut plus rien observer de ce PC. `uninstall` rapporte donc
+ces étapes comme *lancées*, pas comme restaurées, **conserve leur enregistrement au
+manifeste** — c'est la seule description de l'état d'origine, et on ne l'échange pas contre
+l'espoir qu'une charge a abouti — et dit à l'utilisateur d'aller vérifier au clavier du PC
+si la liaison ne revient pas. Le code de sortie reste 0 : rien n'a été *observé* en échec,
+et inventer une panne que le programme n'a pas vue serait le même mensonge dans l'autre
+sens. C'est le message qui porte l'incertitude.
+
+L'étape d'adressage du PC, elle, choisit sa branche *sur le PC* selon l'adresse qui porte
+la session ; son script annonce donc en sortie laquelle il a empruntée, faute de quoi une
+restauration parfaitement observée — celle qui s'exécute en ligne, dont le code de retour
+est vérifié — serait rapportée comme incertaine.
+
 Ce que l'étape apprend ne compte que **les restaurations que cette version sait
 exécuter** : une étape nommée par le manifeste mais dont le code a disparu ne
 restaurera rien, et lui céder la queue serait la céder à personne. Et une étape qui

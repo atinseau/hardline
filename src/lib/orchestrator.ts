@@ -16,6 +16,8 @@ export type StepReporter = {
   restored(r: { label: string; detail: string }): void;
   /** Une etape qui a cede sa place. Elle n'a rien restaure : le dire. */
   yielded(r: { label: string; detail: string }): void;
+  /** Une etape lancee sur le PC, dont la fin n'est pas observable d'ici. */
+  detached(r: { label: string; detail: string }): void;
   failed(r: { label: string; detail: string }): void;
 };
 
@@ -61,11 +63,27 @@ export async function applySteps(
 }
 
 /**
- * Restaure l'etat anterieur, du plus recent au plus ancien. Rend la liste des
- * etapes qui n'ont pas pu etre restaurees : leur enregistrement reste dans le
- * manifeste. Oublier un enregistrement qu'on n'a pas su restaurer est le seul
- * geste irreversible du programme, puisque son etat anterieur est la seule
- * chose qui sache remettre la machine dans son etat d'origine.
+ * Ce qu'une desinstallation n'a pas mene a son terme, et pourquoi.
+ *
+ * La distinction est la substance de ce type. Un echec est une chose que le
+ * programme a VUE echouer ; un lancement non confirme est une chose qu'il n'a
+ * pas pu voir du tout. Les confondre reviendrait a inventer une panne, ou pire,
+ * a annoncer une reussite. Dans les deux cas l'enregistrement du manifeste est
+ * conserve.
+ */
+export type RevertReport = {
+  unrestored: string[];
+  unconfirmed: string[];
+};
+
+/**
+ * Restaure l'etat anterieur, du plus recent au plus ancien.
+ *
+ * Oublier un enregistrement est le seul geste irreversible du programme,
+ * puisque l'etat anterieur qu'il contient est la seule chose qui sache remettre
+ * la machine dans son etat d'origine. Il n'a donc lieu que pour une
+ * restauration OBSERVEE : ni une restauration en echec, ni une restauration
+ * confiee a un processus detache dont personne ne verra jamais la fin.
  */
 export async function revertSteps(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -73,10 +91,11 @@ export async function revertSteps(
   config: Config,
   manifestPath: string,
   reporter: StepReporter,
-): Promise<string[]> {
+): Promise<RevertReport> {
   let manifest = await readManifest(manifestPath);
   const byName = new Map(steps.map((s) => [s.name, s]));
   const unrestored: string[] = [];
+  const unconfirmed: string[] = [];
 
   // L'ordre est fige avant la boucle : le manifeste est reecrit a chaque
   // restauration reussie, et chaque etape doit savoir qui passe APRES elle.
@@ -118,6 +137,15 @@ export async function revertSteps(
       continue;
     }
 
+    // Lancee, pas achevee. L'enregistrement RESTE : c'est la seule description
+    // de l'etat d'origine, et on ne l'echange pas contre l'espoir qu'une charge
+    // detachee a abouti sur une machine devenue injoignable.
+    if (outcome && "detached" in outcome) {
+      reporter.detached({ label: step.label, detail: outcome.detached });
+      unconfirmed.push(record.step);
+      continue;
+    }
+
     // Une etape qui a cede n'a rien restaure. Son enregistrement part quand
     // meme (la restauration plus profonde le supplante) mais le rapport doit
     // dire ce qui s'est passe, pas ce qu'on esperait.
@@ -128,5 +156,5 @@ export async function revertSteps(
     await writeManifest(manifestPath, manifest);
   }
 
-  return unrestored;
+  return { unrestored, unconfirmed };
 }

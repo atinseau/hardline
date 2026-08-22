@@ -145,6 +145,18 @@ function setProfileStatement(
   return `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${category} -ErrorAction SilentlyContinue`;
 }
 
+/**
+ * La queue de cette etape choisit sa branche SUR LE PC, selon l'adresse qui
+ * porte la session : detachee quand elle roule sur l'adresse a retirer, en
+ * ligne sinon. Le Mac ne peut pas le deviner, alors le script le lui dit.
+ *
+ * Sans ce mot, l'etape devrait supposer le pire dans les deux cas, et une
+ * restauration parfaitement observee (celle de la branche en ligne, dont le
+ * code de retour est verifie) serait rapportee comme incertaine.
+ */
+export const DETACHED_MARK = "hardline:queue-detachee";
+export const INLINE_MARK = "hardline:queue-en-ligne";
+
 const removeStatement = (alias: string, ip: string): string =>
   `Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:$false -ErrorAction SilentlyContinue`;
 
@@ -191,8 +203,10 @@ const RESTORE = (
       SSH_LOCAL_ADDRESS,
       `if ($sshLocal -eq '${ip}') {`,
       `  ${detachTail(tail)}`,
+      `  Write-Output '${DETACHED_MARK}'`,
       `} else {`,
       ...tail.map((statement) => `  ${statement}`),
+      `  Write-Output '${INLINE_MARK}'`,
       `}`,
     );
   }
@@ -279,9 +293,18 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
       };
     }
 
-    await runRemoteChecked(
+    const result = await runRemoteChecked(
       config.ssh,
       RESTORE(config.windows.interfaceAlias, config.windows.ip, previous),
     );
+
+    // Le PC a choisi sa branche ; on ne rapporte comme observe que ce qui l'a
+    // reellement ete.
+    if (result.stdout.includes(DETACHED_MARK)) {
+      return {
+        detached:
+          "retrait de l'adresse et retour du profil confiés à un processus détaché sur le PC",
+      };
+    }
   },
 };

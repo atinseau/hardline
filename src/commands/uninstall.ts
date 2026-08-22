@@ -114,7 +114,12 @@ async function uninstall(
     return;
   }
 
-  const unrestored = await revertSteps(ALL_STEPS, CONFIG, manifestPath, ui);
+  const { unrestored, unconfirmed } = await revertSteps(
+    ALL_STEPS,
+    CONFIG,
+    manifestPath,
+    ui,
+  );
 
   if (unrestored.length > 0) {
     // Leur etat anterieur reste sur disque : une version ulterieure de
@@ -124,6 +129,33 @@ async function uninstall(
     );
     ui.finish("Restauration incomplète.");
     process.exitCode = 1;
+    return;
+  }
+
+  // Le seul endroit du programme ou il serait tentant d'affirmer ce qu'on ne
+  // peut pas savoir. Les dernieres instructions cote PC retirent l'adresse qui
+  // porte la session SSH : elles sont confiees a un processus detache, qui rend
+  // la main avant d'avoir agi, et le Mac ne reverra jamais ce PC. Annoncer
+  // "etat anterieur restaure" sur la foi d'un lancement, apres avoir efface
+  // l'enregistrement qui decrit cet etat, serait exactement la malhonnetete que
+  // le manifeste existe pour eviter.
+  //
+  // Le code de sortie reste 0 : rien n'a ete OBSERVE en echec, et inventer une
+  // panne que le programme n'a pas vue serait le meme mensonge dans l'autre
+  // sens. C'est le message qui porte l'incertitude, et le manifeste qui garde
+  // de quoi recommencer.
+  if (unconfirmed.length > 0) {
+    ui.warn(
+      "Étapes lancées sur le PC sans confirmation possible, conservées dans " +
+        `le manifeste\u00a0: ${unconfirmed.join(", ")}`,
+    );
+    ui.finish(
+      "Restauration lancée sur le PC. Sa fin ne peut pas être observée depuis le " +
+        "Mac\u00a0: les dernières instructions retirent l'adresse qui porte la session " +
+        "SSH, et le PC n'y répond plus ensuite. Si la liaison ne revient pas, vérifier " +
+        "au clavier du PC. L'état antérieur du PC reste enregistré tant qu'il n'est pas " +
+        "confirmé\u00a0: rien n'a été oublié.",
+    );
     return;
   }
 

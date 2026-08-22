@@ -39,7 +39,7 @@ mock.module("../../src/lib/shell", () => ({
 }));
 
 const { revertSteps } = await import("../../src/lib/orchestrator");
-const { writeManifest } = await import("../../src/lib/manifest");
+const { readManifest, writeManifest } = await import("../../src/lib/manifest");
 const { ALL_STEPS } = await import("../../src/steps");
 
 const CAPTURE = {
@@ -99,6 +99,7 @@ const reporter = {
   applied: () => {},
   restored: ({ label }: { label: string }) => rapports.push(`restauré:${label}`),
   yielded: ({ label }: { label: string }) => rapports.push(`cédé:${label}`),
+  detached: ({ label }: { label: string }) => rapports.push(`lancé:${label}`),
   failed: ({ label }: { label: string }) => rapports.push(`échec:${label}`),
 };
 
@@ -120,13 +121,18 @@ function manifestOf(order: string[]): Manifest {
 async function revertWith(
   order: string[],
   steps: typeof ALL_STEPS = ALL_STEPS,
-): Promise<{ scripts: string[]; unrestored: string[] }> {
+): Promise<{ scripts: string[]; unrestored: string[]; unconfirmed: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), "hardline-tails-"));
   const path = join(dir, "manifest.json");
   try {
     await writeManifest(path, manifestOf(order));
-    const unrestored = await revertSteps(steps, CONFIG, path, reporter);
-    return { scripts: [...remoteScripts], unrestored };
+    const { unrestored, unconfirmed } = await revertSteps(
+      steps,
+      CONFIG,
+      path,
+      reporter,
+    );
+    return { scripts: [...remoteScripts], unrestored, unconfirmed };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -175,6 +181,48 @@ describe("ceder n'est pas restaurer", () => {
     expect(withTail(scripts)).toHaveLength(1);
     expect(rapports).toContain(`restauré:${RESEAU_PC}`);
     expect(rapports).not.toContain(`cédé:${RESEAU_PC}`);
+  });
+});
+
+describe("lancer n'est pas restaurer", () => {
+  test("l'amorcage se declare lance, jamais restaure", async () => {
+    // Sa queue part toujours detachee : elle rend la main avant d'avoir agi, et
+    // ce qu'elle fait ensuite coupe le seul canal qui permettrait de le voir.
+    const { unrestored, unconfirmed } = await revertWith([
+      "network-mac",
+      "bootstrap-windows",
+      "network-windows",
+      "network-profile-task",
+    ]);
+
+    expect(unrestored).toEqual([]);
+    expect(unconfirmed).toEqual(["bootstrap-windows"]);
+    expect(rapports).toContain(
+      "lancé:Amorçage du PC\u00a0: OpenSSH, pare-feu, clé et adressage (PC)",
+    );
+    expect(rapports).not.toContain(
+      "restauré:Amorçage du PC\u00a0: OpenSSH, pare-feu, clé et adressage (PC)",
+    );
+    // Et le Mac, lui, est bel et bien restaure : la distinction porte sur ce
+    // qui est observable, pas sur l'etape.
+    expect(rapports).toContain("restauré:Adresse fixe sur le lien direct (Mac)");
+  });
+
+  test("l'enregistrement de ce qui n'est pas confirme reste au manifeste", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-tails-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await writeManifest(path, manifestOf(["network-mac", "bootstrap-windows"]));
+      await revertSteps(ALL_STEPS, CONFIG, path, reporter);
+
+      const manifest = await readManifest(path);
+      expect(manifest.order).toEqual(["bootstrap-windows"]);
+      expect(manifest.steps["bootstrap-windows"]?.previous).toEqual(
+        PREVIOUS["bootstrap-windows"],
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

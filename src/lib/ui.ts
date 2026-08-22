@@ -57,6 +57,15 @@ export const ui = {
     log.step(`${label} — cédé (${detail})`);
   },
 
+  /**
+   * Une restauration lancee sur le PC, dont la fin n'est pas observable. Ni
+   * succes ni echec : un avertissement, parce que l'utilisateur doit savoir
+   * qu'il lui reste quelque chose a verifier lui-meme.
+   */
+  detached({ label, detail }: StepReport): void {
+    log.warn(`${label} — lancé sur le PC, fin non observable (${detail})`);
+  },
+
   failed({ label, detail }: StepReport): void {
     log.error(`${label} — échec\u00a0: ${detail}`);
   },

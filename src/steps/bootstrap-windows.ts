@@ -379,13 +379,16 @@ const RESTORE = (
   alias: string,
   ip: string,
   capture: BootstrapCapture,
-): string => {
+): { script: string; detached: boolean } => {
   const tail = cuttingTail(alias, ip, capture);
   const lines = [
     `Remove-Item -Path ${ackPath} -Force -ErrorAction SilentlyContinue`,
   ];
   if (tail.length > 0) lines.push(detachTail(tail));
-  return lines.join("\n");
+  // Contrairement a l'etape reseau, il n'y a rien a decider sur le PC : la
+  // queue part toujours detachee des qu'elle existe. Ce que le Mac observe se
+  // limite donc au retrait de l'accuse de reception.
+  return { script: lines.join("\n"), detached: tail.length > 0 };
 };
 
 /** Ce que le detail doit dire quand il n'y a rien d'exploitable a rapatrier. */
@@ -456,9 +459,18 @@ export const bootstrapWindowsStep: Step<BootstrapState> = {
     const alias =
       previous.capture.interfaceAlias || config.windows.interfaceAlias;
 
-    await runRemoteChecked(
-      config.ssh,
-      RESTORE(alias, config.windows.ip, previous.capture),
+    const { script, detached } = RESTORE(
+      alias,
+      config.windows.ip,
+      previous.capture,
     );
+    await runRemoteChecked(config.ssh, script);
+
+    if (detached) {
+      return {
+        detached:
+          "adressage, pare-feu, clé et sshd confiés à un processus détaché sur le PC",
+      };
+    }
   },
 };
