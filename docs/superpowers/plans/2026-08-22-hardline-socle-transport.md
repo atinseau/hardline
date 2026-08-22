@@ -1960,13 +1960,17 @@ quand la tâche s'exécute, et `Set-NetConnectionProfile` échoue tant qu'aucun 
 n'existe pour l'interface. Le script attend donc que le profil apparaisse, avec une
 limite de temps.
 
+Comme les étapes précédentes, `apply` et `restore` passent par `runRemoteChecked` et non
+par `runRemote` : enregistrer une tâche planifiée qui échoue silencieusement produirait
+exactement la panne différée que cette étape existe pour empêcher.
+
 **Files:**
 - Create: `src/steps/network-profile-task.ts`
 - Create: `src/steps/index.ts` — registre ordonné des étapes
 - Test: `test/steps/network-profile-task.test.ts`
 
 **Interfaces:**
-- Consumes: `runRemote`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
+- Consumes: `runRemoteChecked`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
   `src/steps/types.ts` (Task 5).
 - Produces: le type `ScheduledTaskState` et l'étape `windowsProfileTaskStep`.
 
@@ -1979,7 +1983,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
 
 let remoteState: unknown[];
-const runRemote = mock(async (..._args: unknown[]) => ({
+const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   exitCode: 0,
   stdout: "",
   stderr: "",
@@ -1987,14 +1991,14 @@ const runRemote = mock(async (..._args: unknown[]) => ({
 
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => remoteState,
-  runRemote,
+  runRemoteChecked,
 }));
 
 const { windowsProfileTaskStep, TASK_NAME } = await import(
   "../../src/steps/network-profile-task"
 );
 
-beforeEach(() => runRemote.mockClear());
+beforeEach(() => runRemoteChecked.mockClear());
 
 describe("inspect", () => {
   test("declare conforme quand la tache existe et est active", async () => {
@@ -2018,7 +2022,7 @@ describe("inspect", () => {
 describe("apply", () => {
   test("enregistre une tache au demarrage executee en SYSTEM", async () => {
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Register-ScheduledTask");
     expect(script).toContain(TASK_NAME);
     expect(script).toContain("AtStartup");
@@ -2029,14 +2033,14 @@ describe("apply", () => {
     // Au demarrage, l'interface n'est pas prete immediatement :
     // sans attente, Set-NetConnectionProfile echoue et la tache ne sert a rien.
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Get-NetConnectionProfile");
     expect(script).toMatch(/while|for|Start-Sleep/);
   });
 
   test("le script planifie vise la seule interface du lien direct", async () => {
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain(CONFIG.windows.interfaceAlias);
   });
 });
@@ -2044,13 +2048,13 @@ describe("apply", () => {
 describe("restore", () => {
   test("supprime la tache si hardline l'avait creee", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Unregister-ScheduledTask");
   });
 
   test("ne supprime rien si une tache de ce nom preexistait", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" });
-    expect(runRemote).not.toHaveBeenCalled();
+    expect(runRemoteChecked).not.toHaveBeenCalled();
   });
 });
 ```
@@ -2065,7 +2069,7 @@ Expected: FAIL — le module n'existe pas.
 `src/steps/network-profile-task.ts` :
 
 ```ts
-import { runRemote, runRemoteJson } from "../lib/ssh";
+import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
 import type { Step } from "./types";
 
@@ -2144,13 +2148,13 @@ export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
   },
 
   async apply(config: Config) {
-    await runRemote(config.ssh, APPLY(config.windows.interfaceAlias));
+    await runRemoteChecked(config.ssh, APPLY(config.windows.interfaceAlias));
   },
 
   async restore(config: Config, previous: ScheduledTaskState) {
     // Si une tache de ce nom existait avant hardline, on n'y touche pas.
     if (previous.present) return;
-    await runRemote(config.ssh, RESTORE);
+    await runRemoteChecked(config.ssh, RESTORE);
   },
 };
 ```
