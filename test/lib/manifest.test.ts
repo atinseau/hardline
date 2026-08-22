@@ -90,4 +90,69 @@ describe("persistance", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("une lecture concurrente ne voit jamais un fichier tronque", async () => {
+    // Le test precedent ne prouve PAS l'atomicite : une ecriture directe sans
+    // fichier temporaire le passerait aussi, puisque rien ne "survit". Celui-ci
+    // exerce l'invariant reel — pendant qu'un gros manifeste s'ecrit, toute
+    // lecture doit rendre un JSON complet, l'ancien ou le nouveau, jamais un
+    // fragment. Une ecriture non atomique fait echouer JSON.parse.
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      let big = emptyManifest(T1);
+      for (let i = 0; i < 3000; i++) {
+        big = recordStep(big, `etape-${i}`, { index: i, blob: "x".repeat(80) }, T2);
+      }
+
+      await writeManifest(path, emptyManifest(T1));
+
+      const writing = writeManifest(path, big);
+      const readings = Array.from({ length: 40 }, () => readManifest(path));
+      await writing;
+
+      for (const manifest of await Promise.all(readings)) {
+        expect(manifest.version).toBe(1);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("robustesse a la lecture", () => {
+  test("rejette un fichier qui n'est pas du JSON", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, "{ ceci n'est pas du json");
+      expect(readManifest(path)).rejects.toThrow(/illisible/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejette un JSON valide qui n'est pas un manifeste", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, JSON.stringify({ hello: "world" }));
+      expect(readManifest(path)).rejects.toThrow(/invalide/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejette un manifeste d'une version inconnue", async () => {
+    // Une version future decrit un etat anterieur dont cette version du code
+    // ignore la forme : restaurer a l'aveugle serait pire que refuser.
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, JSON.stringify({ ...emptyManifest(T1), version: 2 }));
+      expect(readManifest(path)).rejects.toThrow(/invalide/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -72,12 +72,41 @@ export function stepsInReverseOrder(manifest: Manifest): StepRecord[] {
 
 // --- Frontière fichier. ---
 
+function isManifest(value: unknown): value is Manifest {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate["version"] === 1 &&
+    Array.isArray(candidate["order"]) &&
+    typeof candidate["steps"] === "object" &&
+    candidate["steps"] !== null
+  );
+}
+
 export async function readManifest(path: string): Promise<Manifest> {
   const file = Bun.file(path);
   if (!(await file.exists())) {
     return emptyManifest(new Date().toISOString());
   }
-  return (await file.json()) as Manifest;
+
+  let parsed: unknown;
+  try {
+    parsed = await file.json();
+  } catch {
+    throw new Error(
+      `Manifeste illisible : ${path} n'est pas un JSON valide. Ne pas le supprimer sans l'inspecter, il decrit ce que hardline a modifie sur les deux machines.`,
+    );
+  }
+
+  // Un cast sans verification laisserait la desinstallation restaurer des
+  // valeurs dont elle ignore la forme. Mieux vaut refuser franchement.
+  if (!isManifest(parsed)) {
+    throw new Error(
+      `Manifeste invalide : ${path} ne correspond pas au format attendu (version 1).`,
+    );
+  }
+
+  return parsed;
 }
 
 /**
