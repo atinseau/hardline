@@ -89,6 +89,10 @@ export function psKeyword(
  * Le contrat est donc net : RIEN dans le contenu n'est developpe par le shell
  * appelant. Une valeur venue de l'exterieur s'interpole cote TypeScript avant
  * l'appel, par psQuote.
+ *
+ * Ce contrat porte sur le PREMIER saut, et sur lui seul. Quand la chaine sert
+ * d'element a un `Start-Process -ArgumentList`, il y a un second saut que
+ * personne ne cite : voir assertNoDoubleQuote.
  */
 export function psDoubleQuote(content: string): string {
   const escaped = content
@@ -96,4 +100,26 @@ export function psDoubleQuote(content: string): string {
     .replaceAll("$", "`$")
     .replaceAll('"', '`"');
   return `"${escaped}"`;
+}
+
+/**
+ * Le second saut : ce que Start-Process transmet a son processus fils.
+ *
+ * `Start-Process -ArgumentList` ne RECITE PAS ses elements. Il les concatene
+ * par des espaces pour former la ligne de commande du fils, qui la reanalyse
+ * ensuite avec ses propres regles. psDoubleQuote protege le shell appelant,
+ * pas celui-la : un guillemet survivrait au premier saut sous la forme `" puis
+ * arriverait nu au second, ou il couperait la ligne de commande en deux.
+ *
+ * Il n'existe pas d'echappement qui rende ce second saut sur, puisque le
+ * decoupage a lieu avant toute citation. On refuse donc franchement, plutot que
+ * d'emettre une ligne de commande dont personne ne sait ce qu'elle fera dans un
+ * processus detache que le Mac ne verra jamais.
+ */
+export function assertNoDoubleQuote(content: string, what: string): void {
+  if (content.includes('"')) {
+    throw new Error(
+      `Valeur invalide pour ${what}\u00a0: un guillemet ne survit pas au découpage de Start-Process -ArgumentList (${content})`,
+    );
+  }
 }

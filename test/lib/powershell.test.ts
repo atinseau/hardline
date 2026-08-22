@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   assertNoApostrophe,
+  assertNoDoubleQuote,
   psInteger,
   psDoubleQuote,
   psKeyword,
@@ -114,6 +115,31 @@ describe("psDoubleQuote", () => {
   test("ne touche a rien quand rien n'est special", () => {
     expect(inner("Stop-Service -Name sshd -Force")).toBe(
       "Stop-Service -Name sshd -Force",
+    );
+  });
+});
+
+describe("assertNoDoubleQuote", () => {
+  test("laisse passer ce que Start-Process saura transmettre", () => {
+    expect(() =>
+      assertNoDoubleQuote("Stop-Service -Name sshd -Force", "charge"),
+    ).not.toThrow();
+    // L'apostrophe, elle, traverse sans encombre les deux sauts.
+    expect(() =>
+      assertNoDoubleQuote("-IPAddress '10.10.10.1'", "charge"),
+    ).not.toThrow();
+  });
+
+  test("refuse le guillemet, que le second saut ne recite pas", () => {
+    // Start-Process concatene sa liste d'arguments par des espaces sans les
+    // reciter : le guillemet arriverait nu au processus fils et couperait sa
+    // ligne de commande. Aucun echappement ne rend ce saut sur, le decoupage
+    // ayant lieu avant toute citation.
+    expect(() => assertNoDoubleQuote('Write-Host "x"', "charge")).toThrow(
+      /guillemet/,
+    );
+    expect(() => assertNoDoubleQuote('Write-Host "x"', "charge")).toThrow(
+      /charge/,
     );
   });
 });

@@ -1,4 +1,8 @@
-import { psDoubleQuote } from "../lib/powershell";
+import {
+  assertNoDoubleQuote,
+  psDoubleQuote,
+  psQuote,
+} from "../lib/powershell";
 
 /**
  * Le seul idiome du projet pour executer, sur le PC, des instructions qui
@@ -40,6 +44,20 @@ export const SSH_LOCAL_ADDRESS =
  * instruction de restauration qui echoue ne doit pas empecher les suivantes
  * de rendre ce qu'elles savent rendre.
  */
-export const detachTail = (statements: string[]): string =>
-  "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command'," +
-  psDoubleQuote(`Start-Sleep -Seconds 2; ${statements.join("; ")}`);
+export const detachTail = (statements: string[]): string => {
+  const payload = `Start-Sleep -Seconds 2; ${statements.join("; ")}`;
+
+  // Deux sauts, deux regles, toutes deux dans powershell.ts. Le premier est la
+  // citation pour le shell appelant ; le second est le decoupage que
+  // Start-Process fait de sa liste d'arguments sans les reciter, et qu'aucun
+  // echappement ne rend sur.
+  assertNoDoubleQuote(payload, "charge de la queue détachée");
+  const args = ["-NoProfile", "-Command"]
+    .map((argument) => psQuote(argument, "argument de Start-Process"))
+    .join(",");
+
+  return (
+    `Start-Process powershell -WindowStyle Hidden -ArgumentList ${args},` +
+    psDoubleQuote(payload)
+  );
+};

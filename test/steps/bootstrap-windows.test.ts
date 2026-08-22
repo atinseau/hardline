@@ -636,6 +636,30 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     ).rejects.toThrow(/démarrage/);
   });
 
+  test("refuse une charge qu'un Start-Process ne saurait pas transmettre", async () => {
+    // psQuote laisse passer le guillemet, qui n'est pas special entre
+    // apostrophes, et le premier saut l'echappe correctement. Le second ne le
+    // recite pas : la ligne de commande du processus detache serait coupee en
+    // deux, dans un processus que le Mac ne verra jamais. Mieux vaut une erreur
+    // nommee qu'une queue muette qui ne rend jamais le PC.
+    await expect(
+      bootstrapWindowsStep.restore(
+        CONFIG,
+        {
+          capture: capture({
+            authorizedKeys: {
+              ...CAPTURE.authorizedKeys,
+              publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1 "arthur@mac"',
+            },
+          }),
+          acknowledged: true,
+        },
+        NO_PENDING,
+      ),
+    ).rejects.toThrow(/guillemet/);
+    expect(runRemoteChecked).not.toHaveBeenCalled();
+  });
+
   test("n'avale pas un code de retour non nul", async () => {
     runRemoteChecked.mockImplementationOnce(async () => {
       throw new Error("Commande distante en echec (code 1) : Access is denied");
