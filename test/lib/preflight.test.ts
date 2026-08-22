@@ -16,6 +16,19 @@ let probeCostMs = 0;
 let shellCalls = 0;
 let sshCalls = 0;
 
+// La cle publique est un fichier de la vraie machine : le test decide de sa
+// presence et de son contenu, jamais le disque.
+let publicKey: string | null = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
+const realFs = await import("node:fs/promises");
+
+mock.module("node:fs/promises", () => ({
+  ...realFs,
+  readFile: async () => {
+    if (publicKey === null) throw new Error("ENOENT");
+    return publicKey;
+  },
+}));
+
 mock.module("../../src/lib/shell", () => ({
   listNetworkServices: async () => {
     shellCalls += 1;
@@ -62,6 +75,7 @@ function setup(remote: Partial<typeof HEALTHY_REMOTE> = {}, svc = HEALTHY_SERVIC
   probeCostMs = 0;
   shellCalls = 0;
   sshCalls = 0;
+  publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 }
 
 describe("runLocalPreflight", () => {
@@ -79,7 +93,30 @@ describe("runLocalPreflight", () => {
     remoteThrows = new Error("aucune route vers l'hote");
     const results = await runLocalPreflight(CONFIG);
     expect(sshCalls).toBe(0);
-    expect(results.map((r) => r.name)).toEqual(["service-mac"]);
+    expect(results.map((r) => r.name)).toEqual(["service-mac", "cle-publique"]);
+  });
+
+  test("bloque si la cle publique est absente", async () => {
+    setup();
+    publicKey = null;
+    const results = await runLocalPreflight(CONFIG);
+    const check = results.find((r) => r.name === "cle-publique");
+    // Sans elle, l'amorcage echouerait APRES la convergence du Mac : c'est
+    // exactement le genre d'arret que la phase locale existe pour eviter.
+    expect(check?.ok).toBe(false);
+    expect(check?.blocking).toBe(true);
+    expect(check?.detail).toContain("ssh-keygen -t ed25519");
+    expect(check?.detail).toContain(`${CONFIG.ssh.identityFile}.pub`);
+    expect(hasBlockingFailure(results)).toBe(true);
+  });
+
+  test("bloque si la cle publique est vide", async () => {
+    setup();
+    publicKey = "   \n";
+    const check = (await runLocalPreflight(CONFIG)).find(
+      (r) => r.name === "cle-publique",
+    );
+    expect(check?.ok).toBe(false);
   });
 
   test("bloque si le service reseau du Mac est absent", async () => {

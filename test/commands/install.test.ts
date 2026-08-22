@@ -22,6 +22,7 @@ let waitCalls = 0;
 const finishes: string[] = [];
 const failures: string[] = [];
 let applyThrowsOn: string | null = null;
+let publicKey: string | null = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 const appliedGroups: string[][] = [];
 const manifestPaths: string[] = [];
 
@@ -93,7 +94,10 @@ mock.module("../../src/lib/ui", () => ({
 // doit dependre d'aucun fichier de la vraie machine.
 mock.module("node:fs/promises", () => ({
   ...realFs,
-  readFile: async () => "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n",
+  readFile: async () => {
+    if (publicKey === null) throw new Error("ENOENT");
+    return publicKey;
+  },
 }));
 
 const { installCommand } = await import("../../src/commands/install");
@@ -123,6 +127,7 @@ beforeEach(() => {
   finishes.length = 0;
   failures.length = 0;
   applyThrowsOn = null;
+  publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
   appliedGroups.length = 0;
   manifestPaths.length = 0;
   localChecks = MAC_OK;
@@ -200,6 +205,7 @@ describe("installCommand", () => {
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
     expect(message).toContain("le Mac reste configuré");
+    expect(message).toContain("hardline uninstall");
   });
 
   test("un blocage distant autre que SSH n'entre jamais dans l'amorcage", async () => {
@@ -221,6 +227,32 @@ describe("installCommand", () => {
     await installCommand();
     expect(serveCalls).toBe(0);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("une cle publique manquante bloque en phase 1, avant toute modification", async () => {
+    localChecks = [ok("service-mac"), ko("cle-publique")];
+    await installCommand();
+    expect(trace).toEqual(["preflight-local"]);
+    expect(appliedGroups).toEqual([]);
+    expect(serveCalls).toBe(0);
+    expect(finishes.join("\n")).toContain("Rien n'a été modifié");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("une cle disparue entre la phase 1 et l'amorcage sort en disant l'etat du Mac", async () => {
+    // Le fichier existait a la phase 1 et n'existe plus a l'amorcage : le seul
+    // cas que la precondition locale ne peut pas couvrir.
+    remoteRounds = [[ko("ssh")]];
+    publicKey = null;
+    await installCommand();
+    expect(trace).toEqual(["preflight-local", "apply:network-mac", "preflight-remote"]);
+    expect(serveCalls).toBe(0);
+    expect(appliedGroups).toEqual([LOCAL_GROUP]);
+    expect(failures.join("\n")).toContain("ssh-keygen -t ed25519");
+    const message = finishes.join("\n");
+    expect(message).toContain("Le Mac reste configuré");
+    expect(message).toContain("hardline uninstall");
     expect(process.exitCode).toBe(1);
   });
 

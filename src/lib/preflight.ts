@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { listNetworkServices } from "./shell";
 import { runRemoteJson } from "./ssh";
 import { errorMessage } from "./errors";
@@ -21,6 +22,25 @@ type RemoteFacts = {
 
 /** Nom de la verification SSH, partage avec la commande install. */
 export const SSH_CHECK = "ssh";
+
+/**
+ * La cle publique deposee sur le PC par l'amorcage. Son chemin se deduit de la
+ * cle privee : une seule source, celle de la configuration.
+ */
+export function publicKeyPath(config: Config): string {
+  return `${config.ssh.identityFile}.pub`;
+}
+
+/** Le message qui dit comment creer la cle, partage avec la commande install. */
+export function missingPublicKeyMessage(config: Config): string {
+  return (
+    `Clé publique introuvable ou vide\u00a0: ${publicKeyPath(config)}. La créer avec ` +
+    `«\u00a0ssh-keygen -t ed25519 -f ${config.ssh.identityFile}\u00a0».`
+  );
+}
+
+/** Nom de la verification de la cle publique, partage avec la commande install. */
+export const PUBLIC_KEY_CHECK = "cle-publique";
 
 const EXPECTED_BUILD = 26200;
 
@@ -54,6 +74,26 @@ export async function runLocalPreflight(config: Config): Promise<CheckResult[]> 
       : macService.enabled
         ? `service «\u00a0${config.mac.serviceName}\u00a0» sur ${macService.device}`
         : `service «\u00a0${config.mac.serviceName}\u00a0» désactivé dans les Réglages Réseau`,
+  });
+
+  // L'amorcage depose cette cle sur le PC. Sa presence est une precondition
+  // purement locale : la constater ici, c'est arreter avant toute modification
+  // plutot qu'apres la convergence du Mac, quand il est trop tard pour dire
+  // que rien n'a bouge.
+  let key = "";
+  try {
+    key = (await readFile(publicKeyPath(config), "utf8")).trim();
+  } catch {
+    key = "";
+  }
+  results.push({
+    name: PUBLIC_KEY_CHECK,
+    ok: key.length > 0,
+    blocking: true,
+    detail:
+      key.length > 0
+        ? `clé publique ${publicKeyPath(config)}`
+        : missingPublicKeyMessage(config),
   });
 
   return results;

@@ -7,6 +7,8 @@ import type { CheckResult } from "../lib/preflight";
 import {
   SSH_CHECK,
   hasBlockingFailure,
+  missingPublicKeyMessage,
+  publicKeyPath,
   runLocalPreflight,
   runRemotePreflight,
   waitForRemote,
@@ -26,16 +28,20 @@ function reportChecks(checks: CheckResult[]): void {
   }
 }
 
+/**
+ * La presence de la cle est deja une precondition de la phase 1. Ce second
+ * controle couvre le seul cas qu'elle ne peut pas couvrir : le fichier efface
+ * entre la phase 1 et l'amorcage.
+ */
 async function readPublicKey(): Promise<string> {
-  const path = `${CONFIG.ssh.identityFile}.pub`;
+  let key = "";
   try {
-    return (await readFile(path, "utf8")).trim();
+    key = (await readFile(publicKeyPath(CONFIG), "utf8")).trim();
   } catch {
-    throw new Error(
-      `Clé publique introuvable\u00a0: ${path}. La créer avec ` +
-        `«\u00a0ssh-keygen -t ed25519 -f ${CONFIG.ssh.identityFile}\u00a0».`,
-    );
+    key = "";
   }
+  if (key.length === 0) throw new Error(missingPublicKeyMessage(CONFIG));
+  return key;
 }
 
 /**
@@ -135,10 +141,26 @@ export async function installCommand(): Promise<void> {
   const sshSeulBloque = blocking.length === 1 && blocking[0]?.name === SSH_CHECK;
 
   if (sshSeulBloque) {
-    if (!(await bootstrapRemote())) {
+    let amorce: boolean;
+    try {
+      amorce = await bootstrapRemote();
+    } catch (error) {
+      // Apres la phase 2, aucune sortie ne doit laisser l'utilisateur ignorer
+      // que le Mac a change et qu'on sait le lui rendre.
+      ui.failed({ label: "Amorçage du PC", detail: errorMessage(error) });
+      ui.finish(
+        "Amorçage impossible. Le Mac reste configuré et son état antérieur " +
+          "enregistré\u00a0: «\u00a0hardline uninstall\u00a0» le rend.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!amorce) {
       ui.finish(
         "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé\u00a0; " +
-          "le Mac reste configuré et son état antérieur est enregistré.",
+          "le Mac reste configuré et son état antérieur enregistré\u00a0: " +
+          "«\u00a0hardline uninstall\u00a0» le rend.",
       );
       process.exitCode = 1;
       return;
