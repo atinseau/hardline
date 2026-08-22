@@ -2,7 +2,12 @@ import { test, expect, mock } from "bun:test";
 
 const calls: string[] = [];
 
+// Le vrai module est etendu, pas remplace : manifest.ts en importe d'autres
+// fonctions (le verrou), et un remplacement partiel les ferait disparaitre.
+const realFs = await import("node:fs/promises");
+
 mock.module("node:fs/promises", () => ({
+  ...realFs,
   mkdir: async () => undefined,
   writeFile: async (path: string) => {
     calls.push(`writeFile:${path}`);

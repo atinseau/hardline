@@ -1,4 +1,7 @@
-import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
+import { test, expect, describe, afterAll, beforeEach, afterEach, mock } from "bun:test";
+import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { CheckResult } from "../../src/lib/preflight";
 import type { Manifest } from "../../src/lib/manifest";
 import type { Step } from "../../src/steps/types";
@@ -7,6 +10,9 @@ import type { Step } from "../../src/steps/types";
 // SSH_CHECK decident du parcours, les simuler reviendrait a tester la simulation.
 const realPreflight = await import("../../src/lib/preflight");
 const realFs = await import("node:fs/promises");
+// Capturee AVANT le mock : `realFs.readFile` lu apres coup rend le mock
+// lui-meme, et la delegation ci-dessous serait une recursion infinie.
+const readFileReel = realFs.readFile;
 
 // Journal d'execution. C'est l'ORDRE qui porte le correctif : la convergence
 // locale doit preceder la premiere sonde distante, sans quoi la sonde part par
@@ -116,11 +122,29 @@ mock.module("../../src/lib/ui", () => ({
   },
 }));
 
+// Le manifeste ET son verrou vont dans un repertoire temporaire : une suite de
+// tests n'a rien a ecrire dans ~/.config de la vraie machine.
+const realManifest = await import("../../src/lib/manifest");
+const MANIFEST_PATH = join(
+  tmpdir(),
+  `hardline-install-${process.pid}`,
+  "manifest.json",
+);
+
+mock.module("../../src/lib/manifest", () => ({
+  ...realManifest,
+  defaultManifestPath: () => MANIFEST_PATH,
+}));
+
 // La cle publique est lue avant de servir le script d'amorcage ; le test ne
 // doit dependre d'aucun fichier de la vraie machine.
 mock.module("node:fs/promises", () => ({
   ...realFs,
-  readFile: async () => {
+  // Seule la cle publique est simulee. Tout le reste doit etre lu pour de vrai
+  // : le verrou du manifeste en fait partie, et un verrou illisible ne nomme
+  // pas son detenteur.
+  readFile: async (path: Parameters<typeof realFs.readFile>[0], ...rest: never[]) => {
+    if (!String(path).endsWith(".pub")) return readFileReel(path, ...rest);
     if (publicKey === null) throw new Error("ENOENT");
     return publicKey;
   },
@@ -174,6 +198,10 @@ afterEach(() => {
   // Sans cela, le code de sortie pose par une commande simulee ferait echouer
   // le processus de test entier.
   process.exitCode = 0;
+});
+
+afterAll(async () => {
+  await rm(dirname(MANIFEST_PATH), { recursive: true, force: true });
 });
 
 describe("installCommand", () => {
@@ -362,6 +390,28 @@ describe("installCommand", () => {
     const message = finishes.join("\n");
     expect(message).toContain("état antérieur");
     expect(message).toContain("hardline uninstall");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("une autre execution en cours arrete tout avant la moindre lecture", async () => {
+    // Le verrou est pris AVANT la phase 1 : la seconde execution ne sonde
+    // meme pas le Mac, et surtout n'ecrit rien dans le manifeste.
+    const lockPath = realManifest.manifestLockPath(MANIFEST_PATH);
+    await mkdir(dirname(MANIFEST_PATH), { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: "2026-08-22T10:00:00.000Z" }),
+    );
+    try {
+      await installCommand();
+    } finally {
+      await unlink(lockPath);
+    }
+
+    expect(trace).toEqual([]);
+    expect(appliedGroups).toEqual([]);
+    expect(failures.join("\n")).toContain("Une autre exécution de hardline est en cours");
+    expect(finishes.join("\n")).toContain("Installation abandonnée");
     expect(process.exitCode).toBe(1);
   });
 

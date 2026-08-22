@@ -1,7 +1,10 @@
-import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
+import { test, expect, describe, afterAll, beforeEach, afterEach, mock } from "bun:test";
+import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Manifest } from "../../src/lib/manifest";
 
 const realManifest = await import("../../src/lib/manifest");
+const MANIFEST_PATH = `/tmp/hardline-uninstall-${process.pid}/manifest.json`;
 
 let order: string[] = [];
 let unrestored: string[] = [];
@@ -27,7 +30,7 @@ function manifestOf(names: string[]): Manifest {
 
 mock.module("../../src/lib/manifest", () => ({
   ...realManifest,
-  defaultManifestPath: () => "/tmp/hardline-test/manifest.json",
+  defaultManifestPath: () => MANIFEST_PATH,
   readManifest: async () => manifestOf(order),
 }));
 
@@ -83,6 +86,10 @@ beforeEach(() => {
 
 afterEach(() => {
   process.exitCode = 0;
+});
+
+afterAll(async () => {
+  await rm(dirname(MANIFEST_PATH), { recursive: true, force: true });
 });
 
 describe("scopeLabel", () => {
@@ -177,6 +184,28 @@ describe("uninstallCommand", () => {
     expect(trace).toEqual([]);
     expect(finishes.join("\n")).toContain("rien à restaurer");
     expect(process.exitCode).toBe(0);
+  });
+
+  test("une autre execution en cours ne pose meme pas la question", async () => {
+    // Restaurer pendant qu'une install ecrit, c'est effacer une entree que
+    // l'autre vient de poser. On s'arrete avant de lire quoi que ce soit.
+    const lockPath = realManifest.manifestLockPath(MANIFEST_PATH);
+    await mkdir(dirname(MANIFEST_PATH), { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: "2026-08-22T10:00:00.000Z" }),
+    );
+    try {
+      await uninstallCommand({ yes: true });
+    } finally {
+      await unlink(lockPath);
+    }
+
+    expect(prompts).toEqual([]);
+    expect(reports).toEqual([]);
+    expect(trace).toEqual([]);
+    expect(finishes.join("\n")).toContain("Désinstallation abandonnée");
+    expect(process.exitCode).toBe(1);
   });
 
   test("signale une restauration incomplete", async () => {

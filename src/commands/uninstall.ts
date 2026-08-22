@@ -2,7 +2,14 @@ import { CONFIG } from "../config";
 import { ALL_STEPS, LOCAL_STEPS, WINDOWS_STEPS } from "../steps";
 import { bootstrapWindowsStep } from "../steps/bootstrap-windows";
 import { revertSteps } from "../lib/orchestrator";
-import { defaultManifestPath, readManifest } from "../lib/manifest";
+import {
+  acquireManifestLock,
+  defaultManifestPath,
+  ManifestLockedError,
+  type ManifestLock,
+  readManifest,
+} from "../lib/manifest";
+import { errorMessage } from "../lib/errors";
 import { askConfirmation, configureOutput, ui } from "../lib/ui";
 
 /**
@@ -58,7 +65,33 @@ export async function uninstallCommand(options: { yes: boolean }): Promise<void>
   configureOutput();
   ui.start("hardline — désinstallation");
 
+  // Meme verrou que install, et pour la meme raison : la restauration lit et
+  // reecrit le manifeste a chaque etape rendue. Une install concurrente y
+  // ajouterait une entree entre deux, ou effacerait celle qu'on vient de
+  // rendre.
   const manifestPath = defaultManifestPath();
+  let lock: ManifestLock;
+  try {
+    lock = await acquireManifestLock(manifestPath);
+  } catch (error) {
+    if (!(error instanceof ManifestLockedError)) throw error;
+    ui.failed({ label: "Manifeste", detail: errorMessage(error) });
+    ui.finish("Désinstallation abandonnée.");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    await uninstall(manifestPath, options);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function uninstall(
+  manifestPath: string,
+  options: { yes: boolean },
+): Promise<void> {
   const manifest = await readManifest(manifestPath);
   const recorded = manifest.order;
 

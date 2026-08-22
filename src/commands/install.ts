@@ -3,7 +3,13 @@ import { CONFIG } from "../config";
 import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
 import { BOOTSTRAP_STEP_NAME } from "../steps/bootstrap-name";
 import { applySteps } from "../lib/orchestrator";
-import { defaultManifestPath, type Manifest } from "../lib/manifest";
+import {
+  acquireManifestLock,
+  defaultManifestPath,
+  ManifestLockedError,
+  type Manifest,
+  type ManifestLock,
+} from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
 import {
   SSH_CHECK,
@@ -108,10 +114,35 @@ async function converge(
   }
 }
 
+/**
+ * Le verrou est pris pour TOUTE l'execution, et non par phase : install ecrit
+ * le manifeste trois fois, et trois verrous successifs laisseraient entre eux
+ * exactement les fenetres qu'un verrou existe pour fermer.
+ */
 export async function installCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — installation");
 
+  const manifestPath = defaultManifestPath();
+  let lock: ManifestLock;
+  try {
+    lock = await acquireManifestLock(manifestPath);
+  } catch (error) {
+    if (!(error instanceof ManifestLockedError)) throw error;
+    ui.failed({ label: "Manifeste", detail: errorMessage(error) });
+    ui.finish("Installation abandonnée.");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    await install(manifestPath);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function install(manifestPath: string): Promise<void> {
   // Phase 1 - preconditions locales. Rien n'est encore modifie.
   const local = await withSpinner("Vérification du Mac", () =>
     runLocalPreflight(CONFIG),
@@ -131,7 +162,6 @@ export async function installCommand(): Promise<void> {
   // Phase 2 - convergence locale. C'est elle qui cree la route vers le
   // lien direct : sans elle, aucune precondition distante n'est observable.
   // Elle passe par applySteps, qui ecrit l'etat anterieur avant de modifier.
-  const manifestPath = defaultManifestPath();
   if (!(await converge(LOCAL_STEPS, "Convergence du Mac", manifestPath))) return;
 
   // Phase 3 - preconditions distantes, desormais observables.
@@ -181,11 +211,11 @@ export async function installCommand(): Promise<void> {
   // enregistre ce qu'on peut perdre dès l'instant où on ne peut plus le perdre.
   const joignable = remote.some((c) => c.name === SSH_CHECK && c.ok);
 
-  // Joignable ne veut pas dire relevé. Un PC amorcé par une version antérieure
-  // de hardline n'en porte aucun : l'étape le dit et se déclare conforme sans
-  // rien enregistrer, et le message ci-dessous annonçait pourtant un relevé qui
+  // Joignable ne veut pas dire releve. Un PC amorce par une version anterieure
+  // de hardline n'en porte aucun : l'etape le dit et se declare conforme sans
+  // rien enregistrer, et le message ci-dessous annoncait pourtant un releve qui
   // n'existe nulle part. Le manifeste rendu par la convergence est la seule
-  // source qui sache la différence : on la lui demande.
+  // source qui sache la difference : on la lui demande.
   let releveEnregistre = false;
   if (joignable) {
     const manifest = await converge(

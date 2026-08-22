@@ -168,6 +168,18 @@ connaît l'état d'origine. En écrivant d'abord, le pire cas devient une étape
 enregistrée mais non appliquée — situation que `install` corrige de lui-même au
 prochain passage, puisque chaque étape constate avant d'agir.
 
+**Le manifeste est protégé par un verrou, pris pour toute la durée d'une exécution.**
+`writeManifest` est atomique — fichier temporaire puis renommage — mais l'atomicité de
+l'écriture ne protège pas la séquence lire-modifier-écrire : deux `hardline install`
+lancés ensemble lisaient le même manifeste, chacun y ajoutait son étape, et le second
+effaçait l'enregistrement du premier. L'état antérieur d'une machine disparaissait sans
+un mot. Le verrou est un fichier voisin du manifeste, publié par un lien dur — donc déjà
+rempli quand il apparaît — et rendu en fin d'exécution, y compris sur un Ctrl+C. La
+seconde exécution dit qu'une autre est en cours, nomme son processus, et ne modifie
+rien. Un verrou orphelin n'est repris que sur *preuve* que le processus qui le détenait
+n'existe plus : voler un verrou tenu serait exactement le dégât que le verrou existe
+pour empêcher.
+
 ## 10. Persistance au redémarrage
 
 Survivent nativement : les adresses fixes, le service Sunshine, le pilote d'écran, les
