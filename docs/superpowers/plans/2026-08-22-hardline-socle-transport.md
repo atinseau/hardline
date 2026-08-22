@@ -839,6 +839,7 @@ irrécupérable par l'outil qui l'a modifiée.
 **Files:**
 - Create: `src/lib/manifest.ts`
 - Test: `test/lib/manifest.test.ts`
+- Test: `test/lib/manifest-atomicity.test.ts`
 
 **Interfaces:**
 - Consumes: rien.
@@ -945,35 +946,6 @@ describe("persistance", () => {
     }
   });
 
-  test("une lecture concurrente ne voit jamais un fichier tronque", async () => {
-    // Le test precedent ne prouve PAS l'atomicite : une ecriture directe sans
-    // fichier temporaire le passerait aussi, puisque rien ne "survit". Celui-ci
-    // exerce l'invariant reel — pendant qu'un gros manifeste s'ecrit, toute
-    // lecture doit rendre un JSON complet, l'ancien ou le nouveau, jamais un
-    // fragment. Une ecriture non atomique fait echouer JSON.parse.
-    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
-    const path = join(dir, "manifest.json");
-    try {
-      let big = emptyManifest(T1);
-      for (let i = 0; i < 3000; i++) {
-        big = recordStep(big, `etape-${i}`, { index: i, blob: "x".repeat(80) }, T2);
-      }
-
-      await writeManifest(path, emptyManifest(T1));
-
-      const writing = writeManifest(path, big);
-      const readings = Array.from({ length: 40 }, () => readManifest(path));
-      await writing;
-
-      for (const manifest of await Promise.all(readings)) {
-        expect(manifest.version).toBe(1);
-      }
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-});
-
 describe("robustesse a la lecture", () => {
   test("rejette un fichier qui n'est pas du JSON", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hardline-"));
@@ -1012,9 +984,69 @@ describe("robustesse a la lecture", () => {
 });
 ```
 
+- [ ] **Step 1b: Écrire le test d'atomicité, dans son propre fichier**
+
+L'atomicité ne vient pas de l'écriture mais du `rename`. Un test comportemental — des
+lectures concurrentes pendant l'écriture d'un gros manifeste — a été essayé et s'est
+révélé **non discriminant** : une implémentation en `Bun.write` direct le passait tout
+aussi bien, l'écriture étant trop rapide pour qu'une lecture attrape un état
+intermédiaire. Un test qui ne peut pas échouer est pire qu'absent.
+
+Ce test vérifie donc le mécanisme lui-même, et il est déterministe. Il vit dans un
+fichier séparé parce que son remplacement de `node:fs/promises` casserait les écritures
+réelles des autres tests.
+
+`test/lib/manifest-atomicity.test.ts` :
+
+```ts
+import { test, expect, mock } from "bun:test";
+
+const calls: string[] = [];
+
+mock.module("node:fs/promises", () => ({
+  mkdir: async () => undefined,
+  writeFile: async (path: string) => {
+    calls.push(`writeFile:${path}`);
+  },
+  rename: async (from: string, to: string) => {
+    calls.push(`rename:${from} -> ${to}`);
+  },
+}));
+
+const { writeManifest, emptyManifest } = await import("../../src/lib/manifest");
+
+const TARGET = "/tmp/hardline-atomicity/manifest.json";
+
+test("l'ecriture passe par un fichier temporaire puis un rename", async () => {
+  calls.length = 0;
+  await writeManifest(TARGET, emptyManifest("2026-08-22T10:00:00.000Z"));
+
+  expect(calls).toHaveLength(2);
+  const [written, renamed] = calls;
+
+  // Le contenu n'est jamais ecrit directement sur le chemin final : c'est ce
+  // qui garantit qu'une interruption ne laisse pas un manifeste tronque.
+  expect(written).not.toBe(`writeFile:${TARGET}`);
+  expect(written).toContain(`writeFile:${TARGET}.`);
+  expect(written).toContain(".tmp");
+
+  // Et c'est le rename, atomique sur un meme volume, qui publie le fichier.
+  expect(renamed).toContain(`-> ${TARGET}`);
+});
+
+test("le fichier temporaire est distinct du fichier final", async () => {
+  calls.length = 0;
+  await writeManifest(TARGET, emptyManifest("2026-08-22T10:00:00.000Z"));
+
+  const source = calls[1]?.split(" -> ")[0]?.replace("rename:", "");
+  expect(source).not.toBe(TARGET);
+  expect(source?.startsWith(TARGET)).toBe(true);
+});
+```
+
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/manifest.test.ts`
+Run: `bun test test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
 Expected: FAIL — le module `../../src/lib/manifest` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -1148,13 +1180,13 @@ export async function writeManifest(path: string, manifest: Manifest): Promise<v
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/manifest.test.ts`
-Expected: PASS, douze tests.
+Run: `bun test test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
+Expected: PASS, treize tests — onze dans le premier fichier, deux dans le second.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/manifest.ts test/lib/manifest.test.ts
+git add src/lib/manifest.ts test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts
 git commit -m "feat: manifeste d'etat avec ecriture atomique"
 ```
 
