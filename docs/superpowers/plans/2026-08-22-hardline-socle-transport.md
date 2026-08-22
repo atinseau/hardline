@@ -2476,8 +2476,12 @@ s'afficher correctement.
 - [ ] **Step 6: Vérifier la dégradation hors terminal**
 
 Run: `bun -e 'import {configureOutput,ui,withSpinner} from "./src/lib/ui"; configureOutput(); ui.start("hardline"); await withSpinner("Etape", async () => {}); ui.finish("ok")' > /tmp/hardline-out.txt; cat -v /tmp/hardline-out.txt | head -20`
-Expected: du texte lisible, **sans séquences `^[[` de déplacement de curseur**. C'est la
-validation du forçage de `CI`.
+Expected: du texte lisible. Deux séquences subsistent, `ESC[?25l` et `ESC[?25h`, qui
+masquent puis réaffichent le curseur : Clack les émet quoi qu'il arrive, y compris avec
+`CI` déjà positionné dans l'environnement. Ce n'est pas un défaut de l'implémentation et
+il n'y a rien à corriger. Ce que le forçage de `CI` supprime, et qui doit effectivement
+être absent, ce sont les séquences d'effacement de ligne et de repositionnement — celles
+qui rendent un fichier journal illisible.
 
 - [ ] **Step 7: Laisser la vérification interactive à l'utilisateur**
 
