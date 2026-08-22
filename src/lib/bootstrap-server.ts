@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { assertNoApostrophe } from "./powershell";
 import templatePath from "../assets/bootstrap.ps1" with { type: "file" };
 
 export type BootstrapVars = {
@@ -21,14 +22,11 @@ export function renderBootstrapScript(
 ): string {
   // On n'inspecte que les valeurs reellement substituees : l'appelant passe un objet
   // plus large (port, gabarit), et le gabarit contient lui-meme des apostrophes.
+  // Les marqueurs sont places entre apostrophes cote PowerShell ; la meme garde
+  // vaut pour le chemin retour, d'ou le helper partage.
   for (const key of Object.values(MARKERS)) {
     const value = vars[key];
-    if (typeof value === "string" && value.includes("'")) {
-      // Les marqueurs sont places entre apostrophes cote PowerShell.
-      throw new Error(
-        `Valeur invalide\u00a0: une apostrophe casserait le script PowerShell (${value})`,
-      );
-    }
+    if (typeof value === "string") assertNoApostrophe(value, key);
   }
 
   let script = template;
