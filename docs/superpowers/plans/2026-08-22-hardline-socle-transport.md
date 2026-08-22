@@ -609,8 +609,8 @@ jamais en texte formaté.
 **Interfaces:**
 - Consumes: rien.
 - Produces: le type `SSHTarget`, les fonctions pures `encodePowerShell`,
-  `withOutputEncoding` et `buildSSHArgs`, et les fonctions système `runRemote` et
-  `runRemoteJson`.
+  `withOutputEncoding`, `parseRemoteJson` et `buildSSHArgs`, et les fonctions système
+  `runRemote`, `runRemoteChecked` et `runRemoteJson`.
   `src/steps/network-windows.ts`, `src/lib/preflight.ts` et `src/commands/doctor.ts`
   en dépendent.
 
@@ -735,7 +735,15 @@ export function encodePowerShell(script: string): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
-const OUTPUT_UTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()";
+const SCRIPT_PREAMBLE = [
+  // -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell
+  // part dans la page de code OEM de la console — cp850 sur un Windows
+  // francais — ce qui mutile les accents au retour.
+  "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+  // Sans cela, une commande en echec ecrit sur le flux d'erreur mais laisse
+  // PowerShell sortir avec le code 0 : l'appelant croirait la commande passee.
+  "$ErrorActionPreference = 'Stop'",
+].join("\n");
 
 /**
  * -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell part
@@ -744,7 +752,7 @@ const OUTPUT_UTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new
  * d'ordre des octets.
  */
 export function withOutputEncoding(script: string): string {
-  return `${OUTPUT_UTF8}\n${script}`;
+  return `${SCRIPT_PREAMBLE}\n${script}`;
 }
 
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
@@ -793,6 +801,29 @@ export async function runRemote(
  * Windows. Renvoie toujours un tableau : ConvertTo-Json emet un objet nu
  * quand il n'y a qu'un element, et rien du tout quand il n'y en a aucun.
  */
+/**
+ * Comme runRemote, mais leve si la commande distante a echoue. A utiliser pour
+ * tout ce qui MODIFIE la machine : une etape qui ignore le code de retour se
+ * declare appliquee alors qu'elle ne l'est pas, et l'orchestrateur enregistre
+ * une convergence qui n'a pas eu lieu.
+ */
+export async function runRemoteChecked(
+  target: SSHTarget,
+  script: string,
+  timeoutMs = 120_000,
+): Promise<RemoteResult> {
+  const result = await runRemote(target, script, timeoutMs);
+
+  if (result.exitCode !== 0) {
+    throw new RemoteError(
+      `Commande distante en echec (code ${result.exitCode}) : ${result.stderr || result.stdout}`,
+      result,
+    );
+  }
+
+  return result;
+}
+
 export async function runRemoteJson<T>(
   target: SSHTarget,
   script: string,
@@ -1373,6 +1404,13 @@ describe("apply", () => {
     expect(setManual).toHaveBeenCalledTimes(1);
     expect(setManual).toHaveBeenCalledWith("AX88179A", "10.10.10.2", "255.255.255.0");
   });
+
+  test("echoue si networksetup rend un code non nul", async () => {
+    // Ignorer le code de retour ferait declarer l'etape appliquee alors que
+    // sudo a refuse : la panne serait invisible jusqu'au diagnostic.
+    setManual.mockImplementationOnce(async () => 1);
+    expect(macNetworkStep.apply(CONFIG)).rejects.toThrow(/networksetup/i);
+  });
 });
 
 describe("restore", () => {
@@ -1465,11 +1503,20 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
   },
 
   async apply(config: Config) {
-    await setServiceManualIP(
+    // Le code de retour de networksetup ne doit pas etre ignore : sans cette
+    // verification, l'etape se declare appliquee meme quand sudo a refuse, et
+    // l'orchestrateur enregistre une convergence qui n'a pas eu lieu.
+    const exitCode = await setServiceManualIP(
       config.mac.serviceName,
       config.mac.ip,
       config.mac.subnetMask,
     );
+
+    if (exitCode !== 0) {
+      throw new Error(
+        `networksetup a refuse de poser ${config.mac.ip} sur "${config.mac.serviceName}" (code ${exitCode}). Droits administrateur ?`,
+      );
+    }
   },
 
   async restore(config: Config, previous: ServiceIPConfig) {
@@ -1497,7 +1544,7 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/steps/network-mac.test.ts`
-Expected: PASS, neuf tests.
+Expected: PASS, dix tests.
 
 - [ ] **Step 6: Lancer la suite complète pour vérifier l'absence de régression**
 
@@ -1514,18 +1561,30 @@ git commit -m "feat: contrat des etapes et adresse fixe cote Mac"
 ---
 ### Task 6: Adresse fixe et profil réseau privé côté Windows
 
-Même contrat que la tâche précédente, appliqué de l'autre côté du tunnel SSH. Le point
-délicat est le profil réseau : Windows classe par défaut un nouveau lien en *public*, ce
+Même contrat que la tâche 5, appliqué de l'autre côté du tunnel SSH. Trois points
+délicats s'y concentrent.
+
+Le **profil réseau** d'abord : Windows classe par défaut un nouveau lien en *public*, ce
 qui referme le pare-feu et rend la machine muette sans le moindre message d'erreur.
-C'est la panne qui a été rencontrée pendant l'exploration, et elle doit être traitée
-comme un état à faire converger, pas comme un réglage posé une fois.
+C'est la panne rencontrée pendant l'exploration, et elle doit être traitée comme un état
+à faire converger, pas comme un réglage posé une fois.
+
+La **fidélité de la restauration** ensuite. `restore` ne doit pas rétablir le DHCP par
+défaut : si le PC portait une adresse statique avant l'installation, la lui rendre est
+la seule conduite acceptable. L'état capturé distingue donc les adresses posées à la
+main de celles obtenues par DHCP, et retient si le client DHCP était actif.
+
+La **détection des échecs** enfin. `apply` et `restore` modifient la machine : ils
+passent par `runRemoteChecked`, qui lève quand la commande distante échoue. Sans cela
+une étape se déclarerait appliquée alors qu'une élévation de privilèges a été refusée —
+exactement le genre de panne silencieuse que cette tâche existe pour éviter.
 
 **Files:**
 - Create: `src/steps/network-windows.ts`
 - Test: `test/steps/network-windows.test.ts`
 
 **Interfaces:**
-- Consumes: `runRemote`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
+- Consumes: `runRemoteChecked`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
   `src/steps/types.ts` (Task 5).
 - Produces: le type `WindowsNetworkState` et l'étape `windowsNetworkStep`.
 
@@ -1538,7 +1597,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
 
 let remoteState: unknown[];
-const runRemote = mock(async (..._args: unknown[]) => ({
+const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   exitCode: 0,
   stdout: "",
   stderr: "",
@@ -1546,62 +1605,72 @@ const runRemote = mock(async (..._args: unknown[]) => ({
 
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => remoteState,
-  runRemote,
+  runRemoteChecked,
 }));
 
 const { windowsNetworkStep } = await import("../../src/steps/network-windows");
 
-beforeEach(() => runRemote.mockClear());
+const CONFORME = {
+  adapterPresent: true,
+  adapterStatus: "Up",
+  addresses: ["10.10.10.1/24"],
+  manualAddresses: ["10.10.10.1/24"],
+  dhcpEnabled: false,
+  category: "Private",
+};
+
+beforeEach(() => runRemoteChecked.mockClear());
+
+function scriptOf(call: number): string {
+  return String((runRemoteChecked.mock.calls[call] as unknown[])[1]);
+}
 
 describe("inspect", () => {
   test("declare conforme quand adresse et profil sont corrects", async () => {
-    remoteState = [
-      {
-        adapterPresent: true,
-        adapterStatus: "Up",
-        addresses: ["10.10.10.1/24"],
-        category: "Private",
-      },
-    ];
-    const state = await windowsNetworkStep.inspect(CONFIG);
-    expect(state.conforming).toBe(true);
+    remoteState = [CONFORME];
+    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(true);
   });
 
   test("declare non conforme quand le profil est public", async () => {
     // Cas le plus important : l'adresse est bonne mais le pare-feu est ferme.
-    remoteState = [
-      {
-        adapterPresent: true,
-        adapterStatus: "Up",
-        addresses: ["10.10.10.1/24"],
-        category: "Public",
-      },
-    ];
+    remoteState = [{ ...CONFORME, category: "Public" }];
     expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(false);
   });
 
   test("declare non conforme quand l'adresse cible est absente", async () => {
     remoteState = [
-      {
-        adapterPresent: true,
-        adapterStatus: "Up",
-        addresses: ["169.254.168.1/16"],
-        category: "Private",
-      },
+      { ...CONFORME, addresses: ["169.254.168.1/16"], manualAddresses: [] },
     ];
     expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(false);
   });
 
   test("tolere des adresses supplementaires si la cible est presente", async () => {
     remoteState = [
+      { ...CONFORME, addresses: ["169.254.168.1/16", "10.10.10.1/24"] },
+    ];
+    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(true);
+  });
+
+  test("declare non conforme quand le client DHCP est reste actif", async () => {
+    remoteState = [{ ...CONFORME, dhcpEnabled: true }];
+    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(false);
+  });
+
+  test("conserve l'etat anterieur complet pour la restauration", async () => {
+    remoteState = [
       {
         adapterPresent: true,
         adapterStatus: "Up",
-        addresses: ["169.254.168.1/16", "10.10.10.1/24"],
-        category: "Private",
+        addresses: ["192.168.1.48/24"],
+        manualAddresses: [],
+        dhcpEnabled: true,
+        category: "Public",
       },
     ];
-    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(true);
+    const state = await windowsNetworkStep.inspect(CONFIG);
+    expect(state.current.dhcpEnabled).toBe(true);
+    expect(state.current.manualAddresses).toEqual([]);
+    expect(state.current.category).toBe("Public");
   });
 
   test("echoue explicitement si l'interface n'existe pas", async () => {
@@ -1610,6 +1679,8 @@ describe("inspect", () => {
         adapterPresent: false,
         adapterStatus: null,
         addresses: [],
+        manualAddresses: [],
+        dhcpEnabled: false,
         category: null,
       },
     ];
@@ -1623,39 +1694,98 @@ describe("inspect", () => {
 });
 
 describe("apply", () => {
-  test("envoie un script qui pose l'adresse et bascule le profil", async () => {
+  test("pose l'adresse cible avec le bon prefixe sur la bonne interface", async () => {
     await windowsNetworkStep.apply(CONFIG);
-    expect(runRemote).toHaveBeenCalledTimes(1);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    expect(runRemoteChecked).toHaveBeenCalledTimes(1);
+    const script = scriptOf(0);
     expect(script).toContain("New-NetIPAddress");
-    expect(script).toContain("10.10.10.1");
-    expect(script).toContain("Set-NetConnectionProfile");
-    expect(script).toContain("Private");
+    expect(script).toContain("-InterfaceAlias 'Ethernet'");
+    expect(script).toContain("-IPAddress '10.10.10.1'");
+    expect(script).toContain("-PrefixLength 24");
+  });
+
+  test("desactive le client DHCP avant de poser l'adresse", async () => {
+    // Sinon l'interface conserve une adresse APIPA a cote de la notre.
+    await windowsNetworkStep.apply(CONFIG);
+    const script = scriptOf(0);
+    expect(script).toContain("-Dhcp Disabled");
+    expect(script.indexOf("-Dhcp Disabled")).toBeLessThan(
+      script.indexOf("New-NetIPAddress"),
+    );
+  });
+
+  test("bascule le profil en prive dans le meme script", async () => {
+    const script = (await windowsNetworkStep.apply(CONFIG), scriptOf(0));
+    expect(script).toMatch(
+      /Set-NetConnectionProfile[^\n]*-InterfaceAlias 'Ethernet'[^\n]*Private/,
+    );
+  });
+
+  test("propage l'echec d'une commande distante", async () => {
+    runRemoteChecked.mockImplementationOnce(async () => {
+      throw new Error("acces refuse");
+    });
+    expect(windowsNetworkStep.apply(CONFIG)).rejects.toThrow("acces refuse");
   });
 });
 
 describe("restore", () => {
-  test("remet l'interface en DHCP et restitue la categorie d'origine", async () => {
+  test("reactive le DHCP si l'interface etait en DHCP", async () => {
     await windowsNetworkStep.restore(CONFIG, {
-      adapterPresent: true,
-      adapterStatus: "Up",
+      ...CONFORME,
       addresses: [],
+      manualAddresses: [],
+      dhcpEnabled: true,
       category: "Public",
     });
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
-    expect(script).toContain("Dhcp Enabled");
-    expect(script).toContain("Public");
+    const script = scriptOf(0);
+    expect(script).toContain("-Dhcp Enabled");
+    expect(script).not.toContain("-Dhcp Disabled");
+  });
+
+  test("rend une adresse statique preexistante au lieu de basculer en DHCP", async () => {
+    // Le PC pouvait porter une IP fixe avant hardline : la remplacer par du
+    // DHCP serait deviner, pas restaurer.
+    await windowsNetworkStep.restore(CONFIG, {
+      ...CONFORME,
+      addresses: ["192.168.50.10/24"],
+      manualAddresses: ["192.168.50.10/24"],
+      dhcpEnabled: false,
+      category: "Private",
+    });
+    const script = scriptOf(0);
+    expect(script).toContain("-IPAddress '192.168.50.10'");
+    expect(script).toContain("-PrefixLength 24");
+    expect(script).not.toContain("-Dhcp Enabled");
+  });
+
+  test("restitue la categorie reseau d'origine", async () => {
+    await windowsNetworkStep.restore(CONFIG, {
+      ...CONFORME,
+      dhcpEnabled: true,
+      category: "Public",
+    });
+    expect(scriptOf(0)).toMatch(
+      /Set-NetConnectionProfile[^\n]*-InterfaceAlias 'Ethernet'[^\n]*Public/,
+    );
   });
 
   test("ne tente pas de restituer une categorie inconnue", async () => {
     await windowsNetworkStep.restore(CONFIG, {
-      adapterPresent: true,
-      adapterStatus: "Up",
-      addresses: [],
+      ...CONFORME,
+      dhcpEnabled: true,
       category: null,
     });
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
-    expect(script).not.toContain("Set-NetConnectionProfile");
+    expect(scriptOf(0)).not.toContain("Set-NetConnectionProfile");
+  });
+
+  test("propage l'echec d'une commande distante", async () => {
+    runRemoteChecked.mockImplementationOnce(async () => {
+      throw new Error("acces refuse");
+    });
+    expect(
+      windowsNetworkStep.restore(CONFIG, { ...CONFORME, dhcpEnabled: true }),
+    ).rejects.toThrow("acces refuse");
   });
 });
 ```
@@ -1670,39 +1800,70 @@ Expected: FAIL — le module `../../src/steps/network-windows` n'existe pas.
 `src/steps/network-windows.ts` :
 
 ```ts
-import { runRemote, runRemoteJson } from "../lib/ssh";
+import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
 import type { Step } from "./types";
 
 export type WindowsNetworkState = {
   adapterPresent: boolean;
   adapterStatus: string | null;
+  /** Toutes les adresses IPv4, au format "adresse/prefixe". */
   addresses: string[];
+  /** Celles que quelqu'un a posees a la main : les seules a restaurer. */
+  manualAddresses: string[];
+  dhcpEnabled: boolean;
   category: "Public" | "Private" | "DomainAuthenticated" | null;
 };
 
 const INSPECT = (alias: string) => `
 $adapter = Get-NetAdapter -Name '${alias}' -ErrorAction SilentlyContinue
 $addresses = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue
-$profile = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue
+$interface = Get-NetIPInterface -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue
+$connection = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue
 [pscustomobject]@{
-  adapterPresent = [bool]$adapter
-  adapterStatus  = if ($adapter) { [string]$adapter.Status } else { $null }
-  addresses      = @($addresses | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
-  category       = if ($profile) { [string]$profile.NetworkCategory } else { $null }
+  adapterPresent  = [bool]$adapter
+  adapterStatus   = if ($adapter) { [string]$adapter.Status } else { $null }
+  addresses       = @($addresses | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
+  manualAddresses = @($addresses | Where-Object { $_.PrefixOrigin -eq 'Manual' } | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
+  dhcpEnabled     = if ($interface) { [bool]($interface.Dhcp -eq 'Enabled') } else { $false }
+  category        = if ($connection) { [string]$connection.NetworkCategory } else { $null }
 }`;
 
+const clearAddresses = (alias: string) =>
+  `Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue`;
+
 const APPLY = (alias: string, ip: string, prefix: number) => `
-Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+${clearAddresses(alias)}
+Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Disabled -ErrorAction SilentlyContinue
 New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -PrefixLength ${prefix} | Out-Null
 Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory Private`;
 
-const RESTORE = (alias: string, category: string | null) => `
-Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled -ErrorAction SilentlyContinue
-${category ? `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${category} -ErrorAction SilentlyContinue` : ""}`;
+function restoreAddressing(alias: string, previous: WindowsNetworkState): string {
+  if (previous.dhcpEnabled) {
+    return `Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled`;
+  }
+
+  // Aucune adresse manuelle et pas de DHCP : l'interface n'avait rien, on la
+  // laisse nue plutot que de lui inventer une configuration.
+  return previous.manualAddresses
+    .map((entry) => {
+      const [address, prefix] = entry.split("/");
+      return `New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null`;
+    })
+    .join("\n");
+}
+
+const RESTORE = (alias: string, previous: WindowsNetworkState) =>
+  [
+    clearAddresses(alias),
+    restoreAddressing(alias, previous),
+    previous.category
+      ? `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${previous.category} -ErrorAction SilentlyContinue`
+      : "",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 
 export const windowsNetworkStep: Step<WindowsNetworkState> = {
   name: "network-windows",
@@ -1729,19 +1890,19 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
     const target = `${config.windows.ip}/${config.windows.prefixLength}`;
     const hasAddress = current.addresses.includes(target);
     const isPrivate = current.category === "Private";
-    const conforming = hasAddress && isPrivate;
+    const conforming = hasAddress && isPrivate && !current.dhcpEnabled;
 
     return {
       conforming,
       current,
       detail: conforming
         ? `${config.windows.interfaceAlias} deja en ${target}, profil prive`
-        : `adresse ${hasAddress ? "correcte" : "absente"}, profil ${current.category ?? "inconnu"}`,
+        : `adresse ${hasAddress ? "correcte" : "absente"}, profil ${current.category ?? "inconnu"}${current.dhcpEnabled ? ", DHCP actif" : ""}`,
     };
   },
 
   async apply(config: Config) {
-    await runRemote(
+    await runRemoteChecked(
       config.ssh,
       APPLY(
         config.windows.interfaceAlias,
@@ -1752,9 +1913,9 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
   },
 
   async restore(config: Config, previous: WindowsNetworkState) {
-    await runRemote(
+    await runRemoteChecked(
       config.ssh,
-      RESTORE(config.windows.interfaceAlias, previous.category),
+      RESTORE(config.windows.interfaceAlias, previous),
     );
   },
 };
@@ -1763,14 +1924,16 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/steps/network-windows.test.ts`
-Expected: PASS, neuf tests.
+Expected: PASS, dix-sept tests.
 
 - [ ] **Step 5: Vérifier `inspect` contre le vrai PC**
 
 `inspect` ne modifie rien, il est sans risque à exécuter.
 
 Run: `bun -e 'import {windowsNetworkStep} from "./src/steps/network-windows"; import {CONFIG} from "./src/config"; console.log(await windowsNetworkStep.inspect({...CONFIG, ssh:{...CONFIG.ssh, host:"192.168.1.48"}}))'`
-Expected: un objet décrivant l'état réel de l'interface `Ethernet` du PC.
+Expected: un objet décrivant l'état réel de l'interface `Ethernet`, avec les champs
+`manualAddresses` et `dhcpEnabled` renseignés. Reporter la sortie exacte : elle indique
+si le PC porte encore une adresse APIPA à côté de la nôtre.
 
 - [ ] **Step 6: Commit**
 
@@ -1780,6 +1943,7 @@ git commit -m "feat: adresse fixe et profil prive cote Windows"
 ```
 
 ---
+
 ### Task 6b: Persistance du profil réseau au redémarrage
 
 Sans cette tâche, tout le reste se dégrade silencieusement. Windows reclasse le lien en
