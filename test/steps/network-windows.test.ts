@@ -31,6 +31,27 @@ function scriptOf(call: number): string {
   return String((runRemoteChecked.mock.calls[call] as unknown[])[1]);
 }
 
+/**
+ * $sshLocal doit etre affecte avant sa premiere lecture. Une simple assertion
+ * de presence laisserait passer l'affectation deplacee apres son usage : la
+ * comparaison serait alors faite contre $null, l'adresse de la session serait
+ * traitee comme n'importe quelle autre, et le script la supprimerait.
+ */
+function sshLocalIsAssignedBeforeUse(script: string): boolean {
+  const assignment = script.indexOf("$sshLocal = ");
+  const firstUse = script.search(/\$sshLocal(?!\s*=)/);
+  return assignment >= 0 && firstUse >= 0 && assignment < firstUse;
+}
+
+/** La ligne du processus detache, seule ligne ou les $ doivent etre echappes. */
+function detachedLine(script: string): string {
+  const line = script
+    .split("\n")
+    .find((candidate) => candidate.includes("Start-Process powershell"));
+  expect(line).toBeDefined();
+  return line as string;
+}
+
 describe("inspect", () => {
   test("declare conforme quand adresse et profil sont corrects", async () => {
     remoteState = [CONFORME];
@@ -143,6 +164,9 @@ describe("apply", () => {
     expect(script).toContain("Get-NetTCPConnection -LocalPort 22");
     expect(script).toMatch(/\$_\.IPAddress -ne \$sshLocal/);
     expect(script).toMatch(/\$_\.IPAddress -ne '10\.10\.10\.1'/);
+    // Lue apres avoir servi, la variable vaut $null et le filtre ne protege
+    // plus rien : l'ordre est la substance de ce test.
+    expect(sshLocalIsAssignedBeforeUse(script)).toBe(true);
   });
 
   test("ne recree pas une adresse cible deja presente", async () => {
@@ -277,19 +301,63 @@ describe("restore, ordre des operations", () => {
     category: "Public" as const,
   };
 
-  test("retablit l'etat anterieur avant de retirer l'adresse de hardline", async () => {
+  test("retablit l'etat anterieur avant tout ce qui peut couper le canal", async () => {
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
     const script = scriptOf(0);
 
-    const drop = script.indexOf("Remove-NetIPAddress");
-    expect(drop).toBeGreaterThan(0);
-    expect(script.indexOf("-Dhcp Enabled")).toBeLessThan(drop);
-    expect(script.indexOf("-IPAddress '192.168.1.48'")).toBeLessThan(drop);
-    expect(script.indexOf("-NetworkCategory Public")).toBeLessThan(drop);
+    const cut = script.indexOf("$sshLocal");
+    expect(cut).toBeGreaterThan(0);
+    expect(script.indexOf("-IPAddress '192.168.1.48'")).toBeLessThan(cut);
+    expect(script.indexOf("-Dhcp Enabled")).toBeLessThan(cut);
+    expect(script.indexOf("Remove-NetIPAddress")).toBeGreaterThan(cut);
+    expect(script.indexOf("-NetworkCategory Public")).toBeGreaterThan(cut);
   });
 
-  test("detache le retrait quand il couperait la session en cours", async () => {
-    // Retire en ligne, ce retrait tuerait la commande SSH : runRemoteChecked
+  test("repose les adresses enregistrees avant de rallumer le DHCP", async () => {
+    // Sinon l'invariant repose sur une affirmation non verifiee : que
+    // -Dhcp Enabled laisse les adresses Manual en place.
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    const script = scriptOf(0);
+    expect(script.indexOf("-IPAddress '192.168.1.48'")).toBeLessThan(
+      script.indexOf("-Dhcp Enabled"),
+    );
+  });
+
+  test("corrige le prefixe d'une adresse anterieure encore presente", async () => {
+    // Meme traitement que dans apply : on corrige sur place, on ne retire pas
+    // pour reposer.
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    const script = scriptOf(0);
+    expect(script).toMatch(
+      /if \(\$prev\.PrefixLength -ne 24\)[\s\S]{0,140}Set-NetIPAddress[^\n]*-IPAddress '192\.168\.1\.48'[^\n]*-PrefixLength 24/,
+    );
+  });
+
+  test("ne flippe jamais le profil avant d'avoir retire l'adresse", async () => {
+    // La regle de pare-feu qui ouvre le port 22 est portee par le profil
+    // Private, et la tache de maintien vient d'etre supprimee : passer le
+    // profil en Public tue la session a cette instruction meme. Tout ce qui
+    // suivrait — le retrait de 10.10.10.1 — ne serait jamais execute.
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    const script = scriptOf(0);
+    expect(script.indexOf("-NetworkCategory Public")).toBeGreaterThan(
+      script.indexOf("Remove-NetIPAddress"),
+    );
+  });
+
+  test("retrait et profil partent ensemble dans la queue detachee", async () => {
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    const line = detachedLine(scriptOf(0));
+
+    expect(line).toContain("Start-Sleep -Seconds 2");
+    expect(line.indexOf("Remove-NetIPAddress")).toBeGreaterThan(0);
+    expect(line.indexOf("-NetworkCategory Public")).toBeGreaterThan(
+      line.indexOf("Remove-NetIPAddress"),
+    );
+  });
+
+  test("detache la queue quand elle couperait la session en cours", async () => {
+    // Executee en ligne, elle tuerait la commande SSH : runRemoteChecked
     // remonterait un echec pour une restauration pourtant reussie, et
     // l'orchestrateur garderait l'entree de manifeste.
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
@@ -297,18 +365,56 @@ describe("restore, ordre des operations", () => {
 
     expect(script).toContain("Get-NetTCPConnection -LocalPort 22");
     expect(script).toMatch(/if \(\$sshLocal -eq '10\.10\.10\.1'\)/);
-    expect(script).toContain("Start-Process powershell");
-    expect(script).toContain("Start-Sleep -Seconds 2");
+    expect(sshLocalIsAssignedBeforeUse(script)).toBe(true);
   });
 
-  test("retire l'adresse de hardline en ligne quand la session ne l'utilise pas", async () => {
+  test("echappe les $ confies au processus detache", async () => {
+    // Sans le backtick, le shell appelant developpe $false en chaine vide et
+    // Remove-NetIPAddress reclame une confirmation que personne ne donnera.
+    const line = detachedLine((await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE), scriptOf(0)));
+
+    expect(line).toContain("-Confirm:`$false");
+    expect(line).not.toContain("-Confirm:$false");
+  });
+
+  test("n'echappe pas les $ de la branche executee en ligne", async () => {
+    // Contre-epreuve de l'assertion precedente : le backtick est une exigence
+    // du seul chemin detache, pas une decoration a semer partout.
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
-    const script = scriptOf(0);
-    const branches = script.split("} else {");
-    expect(branches).toHaveLength(2);
-    expect(branches[1]).toContain(
+    const inline = scriptOf(0)
+      .split("} else {")
+      .pop() as string;
+    expect(inline).toContain("-Confirm:$false");
+    expect(inline).not.toContain("-Confirm:`$false");
+  });
+
+  test("execute la queue en ligne quand la session n'utilise pas l'adresse", async () => {
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    const inline = scriptOf(0)
+      .split("} else {")
+      .pop() as string;
+    expect(inline).toContain(
       "Remove-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress '10.10.10.1'",
     );
+    expect(inline).toContain("-NetworkCategory Public");
+    expect(inline).not.toContain("Start-Process");
+  });
+
+  test("n'ecrit aucune instruction de profil pour DomainAuthenticated", async () => {
+    // Set-NetConnectionProfile n'accepte que Public et Private :
+    // DomainAuthenticated est une erreur de liaison de parametre, que
+    // -ErrorAction SilentlyContinue ne peut pas etouffer. L'uninstall
+    // echouait a tous les coups sur un PC joint a un domaine.
+    await windowsNetworkStep.restore(CONFIG, {
+      ...SANS_NOTRE_ADRESSE,
+      category: "DomainAuthenticated",
+    });
+    const script = scriptOf(0);
+    expect(script).not.toContain("Set-NetConnectionProfile");
+    expect(script).not.toContain("DomainAuthenticated");
+    // Le reste de la restauration a bien lieu.
+    expect(script).toContain("Remove-NetIPAddress");
+    expect(script).toContain("-Dhcp Enabled");
   });
 
   test("ne retire pas une adresse que le PC portait deja avant hardline", async () => {

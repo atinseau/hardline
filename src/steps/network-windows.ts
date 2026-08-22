@@ -61,9 +61,15 @@ Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory Private`;
 
 /**
  * Windows accepte le client DHCP et des adresses fixes en meme temps : rendre
- * l'un sans l'autre ne serait pas rendre l'etat anterieur. Le DHCP est reactive
- * en premier pour que sa remise en route n'interfere pas avec les adresses
- * qu'on vient de reposer.
+ * l'un sans l'autre ne serait pas rendre l'etat anterieur.
+ *
+ * Les adresses enregistrees sont reposees AVANT de toucher au client DHCP :
+ * l'ordre inverse ferait reposer tout l'invariant sur une affirmation non
+ * verifiee — que `-Dhcp Enabled` laisse les adresses `Manual` en place. Reposer
+ * d'abord ne coute rien et supprime l'hypothese.
+ *
+ * Le prefixe est traite comme dans APPLY : une adresse presente avec le mauvais
+ * prefixe est corrigee sur place, jamais retiree puis reposee.
  */
 function restoreAddressing(
   alias: string,
@@ -71,40 +77,80 @@ function restoreAddressing(
 ): string[] {
   const lines: string[] = [];
 
-  if (previous.dhcpEnabled) {
-    lines.push(`Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled`);
-  }
-
   for (const entry of previous.manualAddresses) {
     const [address, prefix] = entry.split("/");
     lines.push(
-      `if (-not (Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -IPAddress '${address}' -ErrorAction SilentlyContinue)) {`,
+      `$prev = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -IPAddress '${address}' -ErrorAction SilentlyContinue`,
+      `if ($prev) {`,
+      `  if ($prev.PrefixLength -ne ${prefix}) {`,
+      `    Set-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null`,
+      `  }`,
+      `} else {`,
       `  New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null`,
       `}`,
     );
+  }
+
+  if (previous.dhcpEnabled) {
+    lines.push(`Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled`);
   }
 
   return lines;
 }
 
 /**
- * Le retrait de l'adresse de hardline vient en dernier, une fois l'etat
- * anterieur reellement en place. S'il coupe la session — c'est le cas des que
- * la session roule sur cette adresse — la commande SSH doit quand meme rendre
- * la main proprement : le retrait est alors delegue a un processus detache qui
- * survit a la fermeture de la session. Sans ce detour, un retrait pourtant
- * reussi remonterait en echec et l'orchestrateur conserverait une entree de
- * manifeste pour une etape deja restauree.
+ * `Set-NetConnectionProfile -NetworkCategory` n'accepte que Public et Private.
+ * DomainAuthenticated est une valeur que Windows s'attribue lui-meme quand un
+ * controleur de domaine est joignable ; la lui passer est une erreur de liaison
+ * de parametre, que -ErrorAction SilentlyContinue ne peut pas etouffer. Sur un
+ * PC joint a un domaine, uninstall echouait donc a tous les coups.
+ *
+ * La seule restitution correcte est de ne rien ecrire et de laisser Windows
+ * reclasser l'interface. L'etape ne pretend rien restituer dans ce cas : elle
+ * n'emet aucune instruction de profil.
  */
-const dropOwnAddress = (alias: string, ip: string): string[] => [
-  SSH_LOCAL_ADDRESS,
-  `if ($sshLocal -eq '${ip}') {`,
-  `  Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command',"Start-Sleep -Seconds 2; Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:\`$false -ErrorAction SilentlyContinue"`,
-  `} else {`,
-  `  Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:$false -ErrorAction SilentlyContinue`,
-  `}`,
-];
+const ASSIGNABLE_CATEGORIES = new Set(["Public", "Private"]);
 
+function setProfileStatement(
+  alias: string,
+  category: WindowsNetworkState["category"],
+): string | null {
+  if (!category || !ASSIGNABLE_CATEGORIES.has(category)) return null;
+  return `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${category} -ErrorAction SilentlyContinue`;
+}
+
+const removeStatement = (alias: string, ip: string): string =>
+  `Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:$false -ErrorAction SilentlyContinue`;
+
+/**
+ * Un processus detache qui survit a la fermeture de la session SSH. Les `$` du
+ * script confie doivent etre echappes en `` `$ `` : sans cet echappement, le
+ * shell appelant developpe $false en chaine vide et Remove-NetIPAddress
+ * reclame une confirmation interactive que personne ne donnera jamais.
+ */
+const detachTail = (statements: string[]): string =>
+  "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command'," +
+  `"Start-Sleep -Seconds 2; ${statements.join("; ").replaceAll("$", "`$")}"`;
+
+/**
+ * Tout ce qui peut couper le canal part ensemble, en dernier.
+ *
+ * Deux instructions coupent la session : le retrait de l'adresse qui la porte,
+ * et le retour du profil a Public — la regle de pare-feu qui ouvre le port 22
+ * est portee sur le profil Private, et la tache de maintien du profil a deja
+ * ete supprimee par l'etape precedente de l'uninstall. Les separer, en
+ * particulier flipper le profil avant de retirer l'adresse, tue la session au
+ * milieu du script : le retrait n'a jamais lieu et 10.10.10.1 reste orpheline
+ * sur un PC devenu injoignable.
+ *
+ * Les deux forment donc une queue indivisible, executee en ligne quand la
+ * session ne roule pas sur l'adresse visee, et deleguee a un processus detache
+ * quand elle y roule — pour qu'une restauration reussie ne remonte pas en echec
+ * et que l'orchestrateur n'ait pas a conserver une entree de manifeste pour une
+ * etape deja restauree. Dans la queue, le retrait precede le profil : si le
+ * processus detache mourait entre les deux, mieux vaut une adresse rendue et un
+ * profil de trop qu'une adresse orpheline.
+ */
 const RESTORE = (
   alias: string,
   ip: string,
@@ -112,18 +158,28 @@ const RESTORE = (
 ): string => {
   const lines = restoreAddressing(alias, previous);
 
-  if (previous.category) {
-    lines.push(
-      `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${previous.category} -ErrorAction SilentlyContinue`,
-    );
-  }
+  const tail: string[] = [];
 
   // Si le PC portait deja cette adresse avant hardline, la retirer serait
   // detruire l'etat anterieur au lieu de le rendre.
   const preexisting = previous.addresses.some(
     (entry) => entry.split("/")[0] === ip,
   );
-  if (!preexisting) lines.push(...dropOwnAddress(alias, ip));
+  if (!preexisting) tail.push(removeStatement(alias, ip));
+
+  const profile = setProfileStatement(alias, previous.category);
+  if (profile) tail.push(profile);
+
+  if (tail.length > 0) {
+    lines.push(
+      SSH_LOCAL_ADDRESS,
+      `if ($sshLocal -eq '${ip}') {`,
+      `  ${detachTail(tail)}`,
+      `} else {`,
+      ...tail.map((statement) => `  ${statement}`),
+      `}`,
+    );
+  }
 
   return lines.join("\n");
 };
