@@ -2236,8 +2236,9 @@ rattrapage.
 
 **Interfaces:**
 - Consumes: `@clack/prompts`.
-- Produces: `isInteractive`, `configureOutput`, l'objet `ui`, `withSpinner`, et
-  `confirmOrExit`. Les quatre commandes en dépendent.
+- Produces: `isInteractive`, `configureOutput`, l'objet `ui`, `withSpinner`,
+  `askConfirmation`, la classe `CancelledError` et le type `ConfirmOptions`. Les quatre
+  commandes en dépendent.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -2247,6 +2248,7 @@ rattrapage.
 import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
 
 const calls: string[] = [];
+let cancelNext = false;
 const spinnerStop = mock((m?: string) => calls.push(`stop:${m}`));
 const spinnerError = mock((m?: string) => calls.push(`error:${m}`));
 
@@ -2256,7 +2258,7 @@ mock.module("@clack/prompts", () => ({
   note: (m: string, t?: string) => calls.push(`note:${t}:${m}`),
   cancel: (m: string) => calls.push(`cancel:${m}`),
   isCancel: (v: unknown) => typeof v === "symbol",
-  confirm: async () => true,
+  confirm: async () => (cancelNext ? Symbol("cancel") : true),
   log: {
     step: (m: string) => calls.push(`step:${m}`),
     success: (m: string) => calls.push(`success:${m}`),
@@ -2272,7 +2274,8 @@ mock.module("@clack/prompts", () => ({
   }),
 }));
 
-const { configureOutput, ui, withSpinner } = await import("../../src/lib/ui");
+const { configureOutput, ui, withSpinner, askConfirmation, CancelledError } =
+  await import("../../src/lib/ui");
 
 const savedCI = process.env.CI;
 beforeEach(() => {
@@ -2298,20 +2301,25 @@ describe("configureOutput", () => {
 
 describe("statuts d'etape", () => {
   test("une etape deja conforme est visible, pas silencieuse", () => {
-    ui.skipped({ label: "Adresse Mac", detail: "deja en 10.10.10.2" });
+    ui.skipped({ label: "Adresse Mac", detail: "en 10.10.10.2" });
     expect(calls[0]).toContain("step:");
     expect(calls[0]).toContain("Adresse Mac");
-    expect(calls[0]).toContain("deja");
+    // Accents exiges par les contraintes du projet, et verifies ici : le
+    // detail fourni par le test n'en contient aucun, donc seule la chaine
+    // produite par le module peut satisfaire cette assertion.
+    expect(calls[0]).toContain("déjà conforme");
   });
 
   test("une etape appliquee est distinguee d'une etape sautee", () => {
     ui.applied({ label: "Adresse Mac", detail: "posee" });
     expect(calls[0]).toContain("success:");
+    expect(calls[0]).toContain("appliqué");
   });
 
   test("une etape en echec passe par le canal d'erreur", () => {
     ui.failed({ label: "Adresse Mac", detail: "sudo refuse" });
     expect(calls[0]).toContain("error:");
+    expect(calls[0]).toContain("échec");
   });
 });
 
@@ -2339,6 +2347,41 @@ describe("withSpinner", () => {
     });
     expect(calls).toContain("message:telechargement");
     expect(calls).toContain("message:configuration");
+  });
+});
+
+describe("askConfirmation", () => {
+  test("ne demande rien quand --yes est passe", async () => {
+    expect(await askConfirmation("Continuer ?", { assumeYes: true })).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("ne demande rien hors terminal", async () => {
+    // Poser une question a un flux non interactif bloquerait indefiniment.
+    expect(
+      await askConfirmation("Continuer ?", { assumeYes: false, interactive: false }),
+    ).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("rend la reponse de l'utilisateur en mode interactif", async () => {
+    expect(
+      await askConfirmation("Continuer ?", { assumeYes: false, interactive: true }),
+    ).toBe(true);
+  });
+
+  test("leve CancelledError sur annulation, sans quitter le processus", async () => {
+    // process.exit ici rendrait la fonction intestable et empecherait tout
+    // nettoyage par l'appelant.
+    cancelNext = true;
+    const attempt = askConfirmation("Continuer ?", {
+      assumeYes: false,
+      interactive: true,
+    });
+    expect(attempt).rejects.toBeInstanceOf(CancelledError);
+    await attempt.catch(() => {});
+    expect(calls.some((c) => c.startsWith("cancel:"))).toBe(true);
+    cancelNext = false;
   });
 });
 
@@ -2399,17 +2442,17 @@ export const ui = {
     outro(message);
   },
 
-  /** Etat "rien a faire". Doit rester visible : c'est une information utile. */
+  /** État "rien à faire". Doit rester visible : c'est une information utile. */
   skipped({ label, detail }: StepReport): void {
-    log.step(`${label} — deja conforme (${detail})`);
+    log.step(`${label} — déjà conforme (${detail})`);
   },
 
   applied({ label, detail }: StepReport): void {
-    log.success(`${label} — applique (${detail})`);
+    log.success(`${label} — appliqué (${detail})`);
   },
 
   failed({ label, detail }: StepReport): void {
-    log.error(`${label} — echec : ${detail}`);
+    log.error(`${label} — échec : ${detail}`);
   },
 
   info(message: string): void {
@@ -2441,21 +2484,42 @@ export async function withSpinner<T>(
     s.stop(label);
     return result;
   } catch (error) {
-    s.error(`${label} — echec`);
+    s.error(`${label} — échec`);
     throw error;
   }
 }
 
-export async function confirmOrExit(
+/** Levee quand l'utilisateur annule une invite. L'appelant decide du sort. */
+export class CancelledError extends Error {
+  constructor() {
+    super("Interrompu par l'utilisateur.");
+    this.name = "CancelledError";
+  }
+}
+
+export type ConfirmOptions = {
+  /** Passe outre l'invite : le drapeau --yes. */
+  assumeYes: boolean;
+  /** Injectable pour les tests ; par defaut, detection du terminal. */
+  interactive?: boolean;
+};
+
+/**
+ * Ne sort pas du processus elle-meme : elle leve. Un appel a process.exit
+ * ici rendrait la fonction intestable et court-circuiterait tout traitement
+ * de nettoyage de l'appelant.
+ */
+export async function askConfirmation(
   message: string,
-  assumeYes: boolean,
+  options: ConfirmOptions,
 ): Promise<boolean> {
-  if (assumeYes || !isInteractive()) return true;
+  const interactive = options.interactive ?? isInteractive();
+  if (options.assumeYes || !interactive) return true;
 
   const answer = await confirm({ message });
   if (isCancel(answer)) {
     cancel("Interrompu.");
-    process.exit(1);
+    throw new CancelledError();
   }
   return answer;
 }
@@ -2464,7 +2528,7 @@ export async function confirmOrExit(
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/lib/ui.test.ts`
-Expected: PASS, neuf tests.
+Expected: PASS, treize tests.
 
 - [ ] **Step 5: Vérifier le rendu à l'œil**
 
@@ -3441,15 +3505,15 @@ import { CONFIG } from "../config";
 import { ALL_STEPS } from "../steps";
 import { revertSteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
-import { configureOutput, confirmOrExit, ui } from "../lib/ui";
+import { askConfirmation, configureOutput, ui } from "../lib/ui";
 
 export async function uninstallCommand(options: { yes: boolean }): Promise<void> {
   configureOutput();
   ui.start("hardline — desinstallation");
 
-  const confirmed = await confirmOrExit(
-    "Restaurer la configuration reseau anterieure des deux machines ?",
-    options.yes,
+  const confirmed = await askConfirmation(
+    "Restaurer la configuration réseau antérieure des deux machines ?",
+    { assumeYes: options.yes },
   );
   if (!confirmed) {
     ui.finish("Rien n'a ete modifie.");
