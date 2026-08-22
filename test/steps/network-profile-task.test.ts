@@ -48,13 +48,23 @@ describe("apply", () => {
     expect(script).toContain("SYSTEM");
   });
 
-  test("le script planifie attend que le profil d'interface existe", async () => {
-    // Au demarrage, l'interface n'est pas prete immediatement :
-    // sans attente, Set-NetConnectionProfile echoue et la tache ne sert a rien.
+  test("le script planifie attend l'apparition du profil, sous une limite de temps", async () => {
+    // Au demarrage, l'interface n'est pas prete immediatement : sans attente,
+    // Set-NetConnectionProfile echoue et la tache ne sert a rien.
+    //
+    // Mais une attente NON BORNEE serait pire : la tache tournerait
+    // indefiniment sous le compte SYSTEM a chaque demarrage du PC. Ce test
+    // doit donc verifier la borne elle-meme, pas la simple presence d'une
+    // boucle — une assertion sur "while ou for ou Start-Sleep" laisserait
+    // passer `while ($true)`.
     await windowsProfileTaskStep.apply(CONFIG);
     const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+
     expect(script).toContain("Get-NetConnectionProfile");
-    expect(script).toMatch(/while|for|Start-Sleep/);
+    expect(script).toContain("Start-Sleep");
+    expect(script).toMatch(/\$deadline\s*=\s*\(Get-Date\)\.AddMinutes\(\d+\)/);
+    expect(script).toMatch(/while\s*\(\(Get-Date\)\s*-lt\s*\$deadline\)/);
+    expect(script).not.toMatch(/while\s*\(\s*\$true\s*\)/);
   });
 
   test("le script planifie vise la seule interface du lien direct", async () => {
