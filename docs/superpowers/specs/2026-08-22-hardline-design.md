@@ -170,7 +170,13 @@ indicateur d'activité, `spinner()` installe `block()`
 **immédiatement et de façon synchrone**, sans exécuter le moindre traitement
 asynchrone de rattrapage. Le comportement diffère pendant une *invite*, où l'annulation
 remonte comme une valeur, devient une `CancelledError` et laisse les `finally`
-s'exécuter — mais la convergence, elle, tourne sous indicateur.
+s'exécuter.
+
+La convergence, elle, ne tourne sous aucun indicateur — `withSpinner` n'enveloppe que
+les vérifications et l'attente du PC. Ce n'est pas une consolation : un Ctrl+C y tombe
+sur le comportement par défaut de SIGINT, qui termine le processus tout aussi sèchement.
+Le partage entre les deux cas n'a donc aucune valeur défensive, ce qui amène à la
+seconde raison.
 
 La seconde raison est plus solide parce qu'elle ne suppose rien : **aucun traitement de
 rattrapage n'est garanti**, jamais. Une mise à mort du processus, une coupure de
@@ -224,9 +230,11 @@ remettre. Il reste une fenêtre de deux appels système entre la vérification e
 qu'aucune primitive disponible ne ferme — Bun n'expose pas `O_EXLOCK` — et elle est écrite
 dans le code plutôt que tue.
 
-Voler un verrou tenu serait exactement le dégât que le verrou existe pour empêcher — et
-lorsque le doute subsiste, **le message nomme le fichier à supprimer**, pour qu'un refus
-n'ait jamais le dernier mot.
+Voler un verrou tenu serait exactement le dégât que le verrou existe pour empêcher. En
+contrepartie, un refus doit toujours laisser une porte : quand le verrou est illisible ou
+que son détenteur ne peut pas être écarté, **le message nomme le fichier à supprimer**.
+Le cas d'un verrou simplement tenu par une exécution vivante, lui, ne la nomme pas : il
+n'y a rien à supprimer, seulement à attendre.
 
 ## 10. Persistance au redémarrage
 
