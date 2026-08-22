@@ -181,11 +181,23 @@ l'écriture ne protège pas la séquence lire-modifier-écrire : deux `hardline 
 lancés ensemble lisaient le même manifeste, chacun y ajoutait son étape, et le second
 effaçait l'enregistrement du premier. L'état antérieur d'une machine disparaissait sans
 un mot. Le verrou est un fichier voisin du manifeste, publié par un lien dur — donc déjà
-rempli quand il apparaît — et rendu en fin d'exécution, y compris sur un Ctrl+C. La
-seconde exécution dit qu'une autre est en cours, nomme son processus, et ne modifie
-rien. Un verrou orphelin n'est repris que sur *preuve* que le processus qui le détenait
-n'existe plus : voler un verrou tenu serait exactement le dégât que le verrou existe
-pour empêcher.
+rempli quand il apparaît, jamais anonyme — et rendu à la fin de l'exécution, succès comme
+échec. La seconde exécution dit qu'une autre est en cours, nomme son processus, et ne
+modifie rien.
+
+**Un verrou orphelin est un état prévu, pas un accident à conjurer.** Aucun traitement de
+sortie n'est garanti : une mise à mort du processus, une coupure de courant, un plantage
+laissent le verrou en place, et c'est la reprise qui rattrape cela. Elle n'a lieu que sur
+*preuve* que le détenteur n'existe plus — le processus nommé a disparu, ou la machine a
+redémarré depuis que le verrou a été posé. Cette seconde preuve n'est pas un raffinement :
+les identifiants de processus sont recyclés, un verrou laissé avant un redémarrage nomme
+ensuite un processus étranger bien vivant, et sans elle l'outil se refusait à son
+propriétaire définitivement. La reprise elle-même passe par un renommage, atomique, pour
+qu'entre plusieurs exécutions ayant constaté le même orphelin une seule l'emporte ; une
+suppression, que toutes réussissent, ferait effacer par la perdante le verrou tout neuf de
+la gagnante. Voler un verrou tenu serait exactement le dégât que le verrou existe pour
+empêcher — et lorsque le doute subsiste, **le message nomme le fichier à supprimer**, pour
+qu'un refus n'ait jamais le dernier mot.
 
 ## 10. Persistance au redémarrage
 

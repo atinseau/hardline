@@ -1,7 +1,14 @@
-import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, uptime } from "node:os";
 
 export type StepRecord = {
   step: string;
@@ -146,8 +153,22 @@ export function manifestLockPath(manifestPath: string): string {
   return `${manifestPath}.lock`;
 }
 
-/** Qui detient le verrou. Ecrit dedans pour que le message puisse le nommer. */
-type LockHolder = { pid: number; startedAt: string };
+/**
+ * Qui detient le verrou.
+ *
+ * `pid` seul ne suffit pas a identifier un detenteur : les pid sont recycles,
+ * et macOS les redistribue depuis le bas apres un demarrage. Un verrou orphelin
+ * laisse avant un redemarrage a donc toutes les chances de nommer, apres, un
+ * processus etranger bien vivant — et l'outil se refusait alors a lui-meme,
+ * definitivement, en accusant un inconnu. `bootedAt` est ce qui manquait :
+ * l'instant du demarrage de la machine ou le verrou a ete pose.
+ */
+type LockHolder = {
+  pid: number;
+  startedAt: string;
+  /** null pour un verrou pose par une version anterieure de hardline. */
+  bootedAt: string | null;
+};
 
 async function readHolder(path: string): Promise<LockHolder | null> {
   try {
@@ -155,20 +176,42 @@ async function readHolder(path: string): Promise<LockHolder | null> {
     if (typeof parsed !== "object" || parsed === null) return null;
     const candidate = parsed as Record<string, unknown>;
     if (typeof candidate["pid"] !== "number") return null;
+    const bootedAt = candidate["bootedAt"];
     return {
       pid: candidate["pid"],
       startedAt: String(candidate["startedAt"] ?? "date inconnue"),
+      bootedAt: typeof bootedAt === "string" ? bootedAt : null,
     };
   } catch {
     return null;
   }
 }
 
+/** Deux lectures decrivent-elles le MEME verrou, et non deux poses du meme pid. */
+function sameHolder(a: LockHolder, b: LockHolder): boolean {
+  return (
+    a.pid === b.pid && a.startedAt === b.startedAt && a.bootedAt === b.bootedAt
+  );
+}
+
 /**
- * Le signal 0 ne fait rien : il ne sert qu'a demander au noyau si le processus
- * existe. EPERM veut dire qu'il existe mais appartient a quelqu'un d'autre,
- * donc bien vivant. Les deux machines etant les memes d'une execution a
- * l'autre, c'est une reponse fiable ici.
+ * Tolerance sur l'instant de demarrage. `uptime` est compte par le noyau,
+ * `Date.now` peut etre corrige par le reseau en cours de session : la
+ * difference des deux derive de quelques secondes au plus. Une minute laisse
+ * toute la marge voulue sans jamais declarer vivant un verrou d'avant
+ * redemarrage.
+ */
+const BOOT_DRIFT_MS = 60_000;
+
+function bootInstantMs(): number {
+  return Date.now() - uptime() * 1000;
+}
+
+/**
+ * Le signal 0 ne fait rien : il ne sert qu'a demander au noyau si UN processus
+ * porte ce numero. EPERM veut dire qu'il existe mais appartient a quelqu'un
+ * d'autre, donc bien vivant. Ce que cette fonction ne sait pas dire, c'est si
+ * ce processus est le notre : voir isReclaimable.
  */
 function isAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -180,11 +223,48 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function heldMessage(holder: LockHolder): string {
+/**
+ * Un verrou est reprenable sur PREUVE, jamais sur presomption. Deux preuves,
+ * dans cet ordre :
+ *
+ *  - la machine a redemarre depuis que le verrou a ete pose. Aucun processus ne
+ *    survit a un redemarrage : celui qui est nomme n'existe plus, quoi que
+ *    porte son numero aujourd'hui. C'est la preuve qui compte, parce que le
+ *    scenario reel est exactement celui-la (Ctrl+C pendant la convergence,
+ *    redemarrage, pid reattribue) et que sans elle install et uninstall se
+ *    refusaient definitivement en accusant un processus etranger ;
+ *  - a defaut, pour un verrou pose par une version anterieure qui n'ecrivait
+ *    pas d'instant de demarrage, le pid ne correspond a aucun processus.
+ *
+ * Reste hors de portee : un pid recycle SANS redemarrage, ce qui suppose
+ * d'epuiser les pid de la machine dans la meme session. Le message nomme alors
+ * le fichier a supprimer, ce qui ramene le blocage a dix secondes.
+ */
+function isReclaimable(holder: LockHolder): boolean {
+  if (holder.bootedAt !== null) {
+    const recorded = Date.parse(holder.bootedAt);
+    if (
+      Number.isFinite(recorded) &&
+      Math.abs(bootInstantMs() - recorded) > BOOT_DRIFT_MS
+    ) {
+      return true;
+    }
+  }
+  return !isAlive(holder.pid);
+}
+
+/**
+ * Le chemin du verrou est dans le message, comme il l'est dans celui d'un
+ * verrou illisible. Un outil capable de se refuser a son proprietaire doit lui
+ * dire comment revenir : sans ce chemin, un pid recycle ou un cas non prevu
+ * laisse l'utilisateur devant un refus definitif et muet.
+ */
+function heldMessage(holder: LockHolder, path: string): string {
   return (
     `Une autre exécution de hardline est en cours (processus ${holder.pid}, ` +
-    `démarré le ${holder.startedAt}). Attendre qu'elle se termine\u00a0; ` +
-    `rien n'a été modifié.`
+    `démarré le ${holder.startedAt})\u00a0: attendre qu'elle se termine. ` +
+    `Si aucune ne tourne, ce processus n'est pas hardline\u00a0: supprimer ` +
+    `${path}. Rien n'a été modifié.`
   );
 }
 
@@ -197,11 +277,14 @@ function unreadableMessage(path: string): string {
 }
 
 function hold(path: string): ManifestLock {
-  // La bibliotheque d'affichage intercepte Ctrl+C pendant un indicateur
-  // d'activite et termine le processus immediatement et de facon synchrone :
-  // aucun traitement asynchrone n'a lieu. Un filet synchrone sur 'exit' est
-  // donc le seul qui tienne, et c'est exactement le cas qui laisserait sinon
-  // un verrou orphelin.
+  // Ce qui rend le verrou est le `finally` de l'appelant, succes comme echec.
+  //
+  // Le gestionnaire ci-dessous ne double qu'un cas : un process.exit, qu'aucune
+  // commande n'appelle aujourd'hui. Il ne rattrape RIEN d'autre, et surtout pas
+  // une mise a mort du processus : un signal non intercepte, une coupure de
+  // courant, un plantage du runtime n'executent aucun traitement de sortie. Un
+  // verrou orphelin est donc un etat prevu et non un accident a conjurer, et
+  // c'est la reprise sur preuve qui le rattrape.
   const onExit = (): void => {
     try {
       unlinkSync(path);
@@ -226,8 +309,17 @@ function hold(path: string): ManifestLock {
   };
 }
 
-/** Distingue deux poses simultanees venues du meme processus. */
+/** Distingue deux noms de travail simultanes venus du meme processus. */
 let stagingCounter = 0;
+
+/** Un fichier de travail dont la disparition n'est jamais une erreur. */
+async function forget(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
+    /* Deja parti : c'est le resultat voulu. */
+  }
+}
 
 /**
  * Pose le verrou, ou rend null s'il existe deja.
@@ -242,6 +334,7 @@ async function claim(path: string): Promise<ManifestLock | null> {
   const holder: LockHolder = {
     pid: process.pid,
     startedAt: new Date().toISOString(),
+    bootedAt: new Date(bootInstantMs()).toISOString(),
   };
   stagingCounter += 1;
   const staging = `${path}.${process.pid}.${stagingCounter}.tmp`;
@@ -253,13 +346,60 @@ async function claim(path: string): Promise<ManifestLock | null> {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
     throw error;
   } finally {
-    try {
-      await unlink(staging);
-    } catch {
-      /* Le lien dur publie le contenu : le nom temporaire ne sert plus. */
-    }
+    // Le lien dur publie le contenu : le nom de travail ne sert plus.
+    await forget(staging);
   }
   return hold(path);
+}
+
+/**
+ * Reprend un verrou orphelin. Rend true si la reprise nous revient.
+ *
+ * Le vol passe par `rename` vers un nom UNIQUE, et c'est toute la substance de
+ * cette fonction. Deplacer une entree de repertoire est atomique : parmi
+ * plusieurs executions qui ont constate le meme orphelin, une seule emporte le
+ * fichier, les autres echouent et n'ont rien supprime. `unlink` ne donnait pas
+ * cette propriete — deux executions le reussissaient toutes les deux, et la
+ * seconde effacait le verrou tout neuf que la premiere venait de publier, si
+ * bien que les deux tenaient le manifeste ensemble. C'est exactement le degat
+ * que ce verrou existe pour empecher. Le nom de destination est unique parce
+ * qu'un nom commun ramenerait le meme defaut : deux renames vers la meme cible
+ * reussiraient tous les deux.
+ *
+ * Reste une fenetre : notre renommage peut arriver APRES qu'un gagnant a
+ * republie, et emporter alors un verrou vivant. On relit donc ce qu'on a
+ * deplace ; si ce n'est pas l'orphelin constate, on le remet ou il etait et on
+ * cede.
+ */
+async function reclaim(path: string, orphan: LockHolder): Promise<boolean> {
+  stagingCounter += 1;
+  const aside = `${path}.stale.${process.pid}.${stagingCounter}`;
+
+  try {
+    await rename(path, aside);
+  } catch {
+    // Plus de fichier a ce nom : une autre execution l'a emporte avant nous.
+    // Elle a gagne le droit de reprendre, pas nous, et nous n'avons rien
+    // supprime.
+    return false;
+  }
+
+  const moved = await readHolder(aside);
+  if (moved && sameHolder(moved, orphan)) {
+    await forget(aside);
+    return true;
+  }
+
+  // Ce n'est pas l'orphelin qu'on avait constate : quelqu'un a republie entre
+  // notre lecture et notre renommage. On le remet ou il etait. `link` echoue si
+  // un tiers detient deja le verrou, auquel cas il n'y a rien a remettre.
+  try {
+    await link(aside, path);
+  } catch {
+    /* Un tiers tient le verrou : le remettre l'ecraserait. */
+  }
+  await forget(aside);
+  return false;
 }
 
 /**
@@ -275,10 +415,12 @@ async function claim(path: string): Promise<ManifestLock | null> {
  * le systeme de fichiers, tenu pour toute la duree de l'execution.
  *
  * Un verrou orphelin, laisse par un processus tue avant d'avoir pu le rendre,
- * n'est repris que sur PREUVE que son detenteur n'existe plus. Un verrou dont le detenteur
- * vit encore n'est jamais vole, et un verrou illisible n'est pas vole non
- * plus : voler un verrou tenu serait exactement le degat que ce verrou existe
- * pour empecher, et le message dit alors quel fichier regarder.
+ * n'est repris que sur PREUVE que son detenteur n'existe plus : la machine a
+ * redemarre depuis, ou le pid ne correspond a aucun processus. Un verrou dont
+ * le detenteur vit encore n'est jamais vole, et un verrou illisible n'est pas
+ * vole non plus : voler un verrou tenu serait exactement le degat que ce verrou
+ * existe pour empecher. Dans les deux cas le message nomme le fichier, pour que
+ * le refus n'ait jamais le dernier mot.
  */
 export async function acquireManifestLock(
   manifestPath: string,
@@ -291,21 +433,19 @@ export async function acquireManifestLock(
 
   const holder = await readHolder(path);
   if (!holder) throw new ManifestLockedError(unreadableMessage(path));
-  if (isAlive(holder.pid)) throw new ManifestLockedError(heldMessage(holder));
-
-  // Orphelin avere. On le retire et on retente UNE fois : si une troisieme
-  // execution nous a coiffes entre-temps, elle est legitime et on lui cede.
-  try {
-    await unlink(path);
-  } catch {
-    /* Un autre l'a deja retire : la tentative suivante tranchera. */
+  if (!isReclaimable(holder)) {
+    throw new ManifestLockedError(heldMessage(holder, path));
   }
 
-  const second = await claim(path);
-  if (second) return second;
+  // Orphelin avere. La reprise elle-meme est atomique : si une autre execution
+  // nous coiffe, elle est legitime et on lui cede.
+  if (await reclaim(path, holder)) {
+    const second = await claim(path);
+    if (second) return second;
+  }
 
   const winner = await readHolder(path);
   throw new ManifestLockedError(
-    winner ? heldMessage(winner) : unreadableMessage(path),
+    winner ? heldMessage(winner, path) : unreadableMessage(path),
   );
 }

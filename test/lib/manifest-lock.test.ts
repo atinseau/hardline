@@ -102,7 +102,7 @@ describe("deux executions concurrentes", () => {
     expect(refusees).toHaveLength(1);
     // Elle dit clairement qu'une autre execution tient le verrou.
     expect(refusees[0]).toContain("Une autre exécution de hardline est en cours");
-    expect(refusees[0]).toContain("rien n'a été modifié");
+    expect(refusees[0]).toContain("Rien n'a été modifié");
 
     // Et le manifeste ne porte que l'execution qui a gagne : sans verrou, les
     // deux ecrivaient et la seconde effacait la premiere.
@@ -142,11 +142,46 @@ describe("acquireManifestLock", () => {
     await lock.release();
   });
 
-  test("nomme le processus qui tient le verrou", async () => {
+  test("nomme le processus qui tient le verrou ET le fichier a supprimer", async () => {
+    // Sans le chemin, un refus que l'utilisateur ne comprend pas — un pid
+    // recycle, un cas non prevu — le laisse sans le moindre geste possible.
+    // Un outil capable de se refuser a son proprietaire doit dire comment
+    // revenir, exactement comme le fait le message d'un verrou illisible.
     const lock = await acquireManifestLock(manifestPath);
     try {
-      await expect(acquireManifestLock(manifestPath)).rejects.toThrow(
-        new RegExp(`processus ${process.pid}`),
+      const refus = await acquireManifestLock(manifestPath).catch(errorMessage);
+      expect(refus).toContain(`processus ${process.pid}`);
+      expect(refus).toContain(lockPath);
+    } finally {
+      await lock.release();
+    }
+  });
+
+  test("reprend un verrou pose avant le dernier demarrage, pid vivant ou non", async () => {
+    // Le scenario qui condamnait l'outil : Ctrl+C pendant la convergence,
+    // redemarrage, pid reattribue a n'importe quoi. Ici le pid est celui du
+    // processus de test, donc rigoureusement vivant — et pourtant le verrou est
+    // reprenable, parce qu'aucun processus ne survit a un redemarrage.
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: "2020-01-01T00:00:00.000Z",
+        bootedAt: "2020-01-01T00:00:00.000Z",
+      }),
+    );
+    const lock = await acquireManifestLock(manifestPath);
+    expect(await readFile(lockPath, "utf8")).toContain(`"pid":${process.pid}`);
+    await lock.release();
+  });
+
+  test("ne reprend pas un verrou pose depuis le dernier demarrage", async () => {
+    // Le controle : sans lui, une reprise inconditionnelle passerait aussi le
+    // test precedent, et le verrou ne verrouillerait plus rien.
+    const lock = await acquireManifestLock(manifestPath);
+    try {
+      await expect(acquireManifestLock(manifestPath)).rejects.toBeInstanceOf(
+        ManifestLockedError,
       );
     } finally {
       await lock.release();
