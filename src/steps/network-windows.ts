@@ -183,7 +183,7 @@ const RESTORE = (
   alias: string,
   ip: string,
   previous: WindowsNetworkState,
-): string => {
+): { script: string; marked: boolean } => {
   const lines = restoreAddressing(alias, previous);
 
   const tail: string[] = [];
@@ -211,7 +211,10 @@ const RESTORE = (
     );
   }
 
-  return lines.join("\n");
+  // `marked` dit si un marqueur est ATTENDU. Sans queue, il n'y en a aucun a
+  // lire et tout ce que fait le script tient dans la session : son absence ne
+  // veut alors rien dire d'inquietant.
+  return { script: lines.join("\n"), marked: tail.length > 0 };
 };
 
 export const windowsNetworkStep: Step<WindowsNetworkState> = {
@@ -293,18 +296,35 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
       };
     }
 
-    const result = await runRemoteChecked(
-      config.ssh,
-      RESTORE(config.windows.interfaceAlias, config.windows.ip, previous),
+    const { script, marked } = RESTORE(
+      config.windows.interfaceAlias,
+      config.windows.ip,
+      previous,
     );
+    const result = await runRemoteChecked(config.ssh, script);
 
-    // Le PC a choisi sa branche ; on ne rapporte comme observe que ce qui l'a
-    // reellement ete.
+    // Aucune queue : tout tenait dans la session, et son code de retour a ete
+    // verifie. C'est observe.
+    if (!marked) return;
+
+    // Le PC dit avoir tout fait en ligne : la aussi le code de retour repond.
+    if (result.stdout.includes(INLINE_MARK)) return;
+
     if (result.stdout.includes(DETACHED_MARK)) {
       return {
         detached:
           "retrait de l'adresse et retour du profil confiés à un processus détaché sur le PC",
       };
     }
+
+    // Aucun marqueur alors qu'on en attendait un. C'est le cas qu'il ne faut
+    // surtout pas lire du cote optimiste : ce mecanisme existe pour empecher
+    // exactement l'optimisme qu'il produirait ici. Sortie tronquee, script
+    // interrompu, version du PC qui n'ecrit rien : on ne sait pas, et ne pas
+    // savoir se rapporte comme ne pas savoir.
+    return {
+      detached:
+        "le PC n'a pas dit quelle branche il a empruntée\u00a0: la fin de la restauration n'est pas observable",
+    };
   },
 };

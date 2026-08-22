@@ -23,11 +23,14 @@ import type { Manifest } from "../../src/lib/manifest";
 
 const remoteScripts: string[] = [];
 
+/** Ce que le PC repond : c'est lui qui dit quelle branche sa queue a prise. */
+let remoteStdout = "";
+
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => [],
   runRemoteChecked: async (_target: unknown, script: string) => {
     remoteScripts.push(script);
-    return { exitCode: 0, stdout: "", stderr: "" };
+    return { exitCode: 0, stdout: remoteStdout, stderr: "" };
   },
 }));
 
@@ -150,6 +153,7 @@ const withTail = (scripts: string[]): string[] =>
 beforeEach(() => {
   remoteScripts.length = 0;
   rapports.length = 0;
+  remoteStdout = "";
 });
 
 describe("ceder n'est pas restaurer", () => {
@@ -162,9 +166,35 @@ describe("ceder n'est pas restaurer", () => {
   test("elle se declare restauree quand la queue lui appartient", async () => {
     // Le controle : sans lui, une etape declarant toujours "cede"
     // satisferait aussi le test precedent.
+    // Le PC dit avoir tout fait en ligne : son code de retour repond de tout,
+    // et l'etape est reellement observee.
+    remoteStdout = "hardline:queue-en-ligne\n";
     await revert(["network-windows", "network-profile-task"]);
     expect(rapports).toContain(`restauré:${RESEAU_PC}`);
     expect(rapports).not.toContain(`cédé:${RESEAU_PC}`);
+  });
+
+  test("elle se declare lancee quand le PC a detache sa queue", async () => {
+    remoteStdout = "hardline:queue-detachee\n";
+    const { unconfirmed } = await revertWith([
+      "network-windows",
+      "network-profile-task",
+    ]);
+    expect(unconfirmed).toEqual(["network-windows"]);
+    expect(rapports).toContain(`lancé:${RESEAU_PC}`);
+    expect(rapports).not.toContain(`restauré:${RESEAU_PC}`);
+  });
+
+  test("un PC muet vaut incertitude, jamais reussite", async () => {
+    // L'absence de marqueur alors qu'on en attendait un (sortie tronquee,
+    // script interrompu, version du PC qui n'ecrit rien) est le cas qu'il ne
+    // faut surtout pas lire du cote optimiste.
+    const { unconfirmed } = await revertWith([
+      "network-windows",
+      "network-profile-task",
+    ]);
+    expect(unconfirmed).toEqual(["network-windows"]);
+    expect(rapports).toContain(`lancé:${RESEAU_PC}`);
   });
 
   test("elle ne cede rien a une etape que cette version ignore", async () => {
@@ -179,7 +209,8 @@ describe("ceder n'est pas restaurer", () => {
 
     expect(unrestored).toEqual(["bootstrap-windows"]);
     expect(withTail(scripts)).toHaveLength(1);
-    expect(rapports).toContain(`restauré:${RESEAU_PC}`);
+    // Elle a bel et bien agi pour son compte, au lieu de ceder a personne.
+    expect(rapports).toContain(`lancé:${RESEAU_PC}`);
     expect(rapports).not.toContain(`cédé:${RESEAU_PC}`);
   });
 });

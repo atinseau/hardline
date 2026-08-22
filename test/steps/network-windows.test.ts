@@ -505,6 +505,42 @@ describe("restore, ordre des operations", () => {
     ).toBeUndefined();
   });
 
+  test("un PC muet vaut incertitude, jamais reussite", async () => {
+    // Sortie tronquee, script interrompu, version du PC qui n'ecrit rien : on
+    // ne sait pas quelle branche a tourne. Ce mecanisme existe pour empecher
+    // l'optimisme, il ne doit pas en produire par son absence.
+    remoteStdout = "";
+    const outcome = await windowsNetworkStep.restore(
+      CONFIG,
+      SANS_NOTRE_ADRESSE,
+      NO_PENDING,
+    );
+    expect(outcome).toEqual({
+      detached:
+        "le PC n'a pas dit quelle branche il a empruntée\u00a0: la fin de la restauration n'est pas observable",
+    });
+  });
+
+  test("un PC muet ne vaut PAS incertitude quand aucune queue n'existe", async () => {
+    // Le controle : sans queue, il n'y a aucun marqueur a attendre, tout tient
+    // dans la session et son code de retour repond de tout. Lire ce silence
+    // comme une incertitude ferait garder au manifeste un enregistrement dont
+    // on n'a plus besoin.
+    remoteStdout = "";
+    const outcome = await windowsNetworkStep.restore(
+      CONFIG,
+      {
+        ...CONFORME,
+        addresses: ["10.10.10.1/24"],
+        manualAddresses: ["10.10.10.1/24"],
+        dhcpEnabled: true,
+        category: "DomainAuthenticated",
+      },
+      NO_PENDING,
+    );
+    expect(outcome).toBeUndefined();
+  });
+
   test("ne supprime jamais en bloc les adresses de l'interface", async () => {
     // La forme fautive : un Get-NetIPAddress sans filtre pipe dans
     // Remove-NetIPAddress, qui emporte l'adresse de la session SSH.
