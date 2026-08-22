@@ -17,22 +17,40 @@ export type Diagnostic = {
   ping: PingStats;
 };
 
-function pad(label: string): string {
-  return `${label} :`.padEnd(22);
+// Libelles fixes utilises par les lignes de latence, quelle que soit la
+// branche empruntee : inclus dans le calcul de largeur pour que la colonne
+// reste alignee d'une execution a l'autre, meme si le rapport rendu ne
+// contient qu'une seule de ces lignes.
+const FIXED_LABELS = ["Liaison", "Latence", "Latence moyenne", "Gigue", "Perte de paquets"];
+
+function columnWidth(labels: string[]): number {
+  const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+  return Math.max(22, longest + 3);
+}
+
+function pad(label: string, width: number): string {
+  return `${label} :`.padEnd(width);
 }
 
 export function formatDiagnostic(diagnostic: Diagnostic): string[] {
   const lines: string[] = [];
+  const width = columnWidth([
+    ...diagnostic.checks.map((c) => c.name),
+    ...diagnostic.steps.map((s) => s.label),
+    ...FIXED_LABELS,
+  ]);
 
   for (const check of diagnostic.checks) {
-    lines.push(`${check.ok ? "OK  " : "KO  "}${pad(check.name)}${check.detail}`);
+    lines.push(
+      `${check.ok ? "OK  " : "KO  "}${pad(check.name, width)}${check.detail}`,
+    );
   }
 
   lines.push("");
 
   for (const step of diagnostic.steps) {
     lines.push(
-      `${step.conforming ? "OK  " : "KO  "}${pad(step.label)}${step.detail}`,
+      `${step.conforming ? "OK  " : "KO  "}${pad(step.label, width)}${step.detail}`,
     );
   }
 
@@ -41,15 +59,22 @@ export function formatDiagnostic(diagnostic: Diagnostic): string[] {
   const { ping } = diagnostic;
   if (ping.received === 0) {
     lines.push(
-      `KO  ${pad("Liaison")}injoignable (${ping.transmitted} paquets envoyés)`,
+      `KO  ${pad("Liaison", width)}injoignable (${ping.transmitted} paquets envoyés)`,
     );
     return lines;
   }
 
-  lines.push(`OK  ${pad("Latence moyenne")}${ping.avgMs?.toFixed(2)} ms`);
-  lines.push(`    ${pad("Gigue")}${ping.stddevMs?.toFixed(2)} ms`);
+  if (ping.avgMs === null || ping.stddevMs === null) {
+    lines.push(
+      `KO  ${pad("Latence", width)}${ping.received}/${ping.transmitted} paquets reçus, statistiques indisponibles`,
+    );
+    return lines;
+  }
+
+  lines.push(`OK  ${pad("Latence moyenne", width)}${ping.avgMs.toFixed(2)} ms`);
+  lines.push(`    ${pad("Gigue", width)}${ping.stddevMs.toFixed(2)} ms`);
   lines.push(
-    `${ping.lossPercent === 0 ? "OK  " : "KO  "}${pad("Perte de paquets")}${ping.lossPercent} %`,
+    `${ping.lossPercent === 0 ? "OK  " : "KO  "}${pad("Perte de paquets", width)}${ping.lossPercent} %`,
   );
 
   return lines;
@@ -90,7 +115,9 @@ export async function doctorCommand(): Promise<void> {
   const healthy =
     checks.every((c) => c.ok || !c.blocking) &&
     steps.every((s) => s.conforming) &&
-    ping.received > 0;
+    ping.received > 0 &&
+    ping.avgMs !== null &&
+    ping.stddevMs !== null;
 
   if (healthy) {
     ui.finish("Liaison opérationnelle.");

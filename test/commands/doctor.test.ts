@@ -54,6 +54,25 @@ describe("formatDiagnostic", () => {
     expect(lines.join("\n")).not.toContain("null");
   });
 
+  test("evite d'afficher undefined quand les paquets arrivent sans statistiques", () => {
+    const lines = formatDiagnostic({
+      ...HEALTHY,
+      ping: {
+        transmitted: 20,
+        received: 18,
+        lossPercent: 10,
+        minMs: null,
+        avgMs: null,
+        maxMs: null,
+        stddevMs: null,
+      },
+    });
+    const text = lines.join("\n");
+    expect(text).toMatch(/^KO\s+Latence\s*:\s*18\/20 paquets reçus, statistiques indisponibles/m);
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("null");
+  });
+
   test("distingue une etape conforme d'une etape derivee", () => {
     const lines = formatDiagnostic({
       ...HEALTHY,
