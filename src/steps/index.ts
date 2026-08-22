@@ -1,3 +1,4 @@
+import { bootstrapWindowsStep } from "./bootstrap-windows";
 import { macNetworkStep } from "./network-mac";
 import { windowsNetworkStep } from "./network-windows";
 import { windowsProfileTaskStep } from "./network-profile-task";
@@ -10,9 +11,22 @@ import type { Step } from "./types";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const LOCAL_STEPS: Step<any>[] = [macNetworkStep];
 
-/** Etapes cote PC, atteignables seulement une fois LOCAL_STEPS appliquees. */
+/**
+ * Etapes cote PC, atteignables seulement une fois LOCAL_STEPS appliquees.
+ *
+ * L'amorcage vient en PREMIER, donc il est restaure en DERNIER : c'est la
+ * couche la plus profonde, et son releve est le seul a decrire le PC d'avant
+ * hardline. Sur l'adressage, il doit avoir le dernier mot — ce que
+ * windowsNetworkStep a enregistre comme « etat anterieur » n'est que l'etat
+ * d'apres amorcage, puisque cette etape ne peut observer le PC qu'une fois SSH
+ * ouvert, c'est-a-dire une fois l'amorcage passe.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const REMOTE_STEPS: Step<any>[] = [windowsNetworkStep, windowsProfileTaskStep];
+export const REMOTE_STEPS: Step<any>[] = [
+  bootstrapWindowsStep,
+  windowsNetworkStep,
+  windowsProfileTaskStep,
+];
 
 /**
  * L'ordre local puis distant est une contrainte de surete : uninstall defait

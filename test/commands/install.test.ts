@@ -120,7 +120,7 @@ const MAC_OK = [ok("service-mac")];
 const PC_OK = [ok("ssh"), ok("windows-version"), ok("gpu"), ok("lien-windows")];
 
 const LOCAL_GROUP = ["network-mac"];
-const REMOTE_GROUP = ["network-windows", "network-profile-task"];
+const REMOTE_GROUP = ["bootstrap-windows", "network-windows", "network-profile-task"];
 
 beforeEach(() => {
   trace.length = 0;
@@ -152,7 +152,7 @@ describe("installCommand", () => {
       "preflight-local",
       "apply:network-mac",
       "preflight-remote",
-      "apply:network-windows+network-profile-task",
+      "apply:bootstrap-windows+network-windows+network-profile-task",
     ]);
     expect(process.exitCode).toBe(0);
   });
@@ -187,7 +187,7 @@ describe("installCommand", () => {
       "wait",
       "stop",
       "preflight-remote",
-      "apply:network-windows+network-profile-task",
+      "apply:bootstrap-windows+network-windows+network-profile-task",
     ]);
     expect(finishes.join("\n")).toContain("Liaison établie");
     expect(finishes.join("\n")).not.toContain("Relancer");
@@ -200,7 +200,7 @@ describe("installCommand", () => {
     await installCommand();
     expect(remoteCalls).toBe(1);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
-    expect(trace).not.toContain("apply:network-windows+network-profile-task");
+    expect(trace).not.toContain("apply:bootstrap-windows+network-windows+network-profile-task");
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
@@ -265,7 +265,7 @@ describe("installCommand", () => {
   });
 
   test("un echec de la convergence du PC dit comment reprendre", async () => {
-    applyThrowsOn = "network-windows+network-profile-task";
+    applyThrowsOn = "bootstrap-windows+network-windows+network-profile-task";
     await installCommand();
     expect(failures.join("\n")).toContain("Convergence du PC — boum");
     const message = finishes.join("\n");
