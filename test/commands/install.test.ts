@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
 import type { CheckResult } from "../../src/lib/preflight";
+import type { Manifest } from "../../src/lib/manifest";
 import type { Step } from "../../src/steps/types";
 
 // Les fonctions pures de preflight restent les vraies : hasBlockingFailure et
@@ -25,6 +26,10 @@ let applyThrowsOn: string | null = null;
 let publicKey: string | null = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 const appliedGroups: string[][] = [];
 const manifestPaths: string[] = [];
+/** L'ordre reellement enregistre, tel que le manifeste le porterait. */
+const manifestOrder: string[] = [];
+/** Faux quand le PC ne porte aucun releve exploitable : l'etape n'enregistre rien. */
+let releveEnregistrable = true;
 
 mock.module("../../src/lib/preflight", () => ({
   ...realPreflight,
@@ -45,6 +50,22 @@ mock.module("../../src/lib/preflight", () => ({
   },
 }));
 
+// Le manifeste que rend applySteps n'est pas un decor : install y lit ce qui a
+// REELLEMENT ete enregistre. Une etape peut se declarer conforme sans rien
+// enregistrer — c'est exactement le cas d'un PC sans releve d'amorcage.
+function manifestOf(order: string[]): Manifest {
+  const now = "2026-08-22T10:00:00.000Z";
+  return {
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    order,
+    steps: Object.fromEntries(
+      order.map((n) => [n, { step: n, appliedAt: now, previous: {} }]),
+    ),
+  };
+}
+
 mock.module("../../src/lib/orchestrator", () => ({
   applySteps: async (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,6 +78,11 @@ mock.module("../../src/lib/orchestrator", () => ({
     if (applyThrowsOn === names.join("+")) throw new Error("boum");
     appliedGroups.push(names);
     manifestPaths.push(manifestPath);
+    for (const name of names) {
+      if (name === "bootstrap-windows" && !releveEnregistrable) continue;
+      if (!manifestOrder.includes(name)) manifestOrder.push(name);
+    }
+    return manifestOf(manifestOrder);
   },
 }));
 
@@ -131,6 +157,8 @@ beforeEach(() => {
   publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
   appliedGroups.length = 0;
   manifestPaths.length = 0;
+  manifestOrder.length = 0;
+  releveEnregistrable = true;
   localChecks = MAC_OK;
   remoteRounds = [PC_OK];
   remoteCalls = 0;
@@ -244,6 +272,24 @@ describe("installCommand", () => {
     ]);
     expect(process.exitCode).toBe(1);
     expect(finishes.join("\n")).toContain("relevé d'amorçage du PC enregistré");
+  });
+
+  test("n'annonce aucun releve quand le PC n'en a livre aucun", async () => {
+    // Un PC amorce par une version anterieure de hardline n'en porte pas :
+    // l'etape se declare conforme et n'enregistre rien. Annoncer « relevé
+    // enregistré » sur la seule foi d'une session SSH ouverte etait un
+    // mensonge, et le seul que l'utilisateur n'avait aucun moyen de detecter.
+    releveEnregistrable = false;
+    remoteRounds = [[ok("ssh"), ko("gpu")]];
+    await installCommand();
+
+    // L'etape a bien tourne : c'est ce qu'elle a enregistre qui differe.
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
+    const message = finishes.join("\n");
+    expect(message).not.toContain("relevé d'amorçage du PC enregistré");
+    expect(message).toContain("aucun relevé d'amorçage exploitable");
+    expect(message).toContain("rend le Mac à son état d'origine");
+    expect(process.exitCode).toBe(1);
   });
 
   test("l'enregistrement du releve precede la porte des preconditions", async () => {

@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { CONFIG } from "../config";
 import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
+import { BOOTSTRAP_STEP_NAME } from "../steps/bootstrap-name";
 import { applySteps } from "../lib/orchestrator";
-import { defaultManifestPath } from "../lib/manifest";
+import { defaultManifestPath, type Manifest } from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
 import {
   SSH_CHECK,
@@ -82,17 +83,19 @@ async function bootstrapRemote(): Promise<boolean> {
  * Applique une phase de convergence. Une etape qui echoue ne doit pas remonter
  * nue jusqu'au CLI : l'etat anterieur de tout ce qui a ete touche est sur
  * disque, et l'utilisateur doit savoir qu'il peut reprendre ou tout rendre.
- * Rend false quand la phase a echoue.
+ *
+ * Rend le manifeste tel qu'il est apres la phase, ou null si elle a echoue.
+ * L'appelant y lit ce qui est reellement enregistre : une phase qui se termine
+ * sans exception n'a pas forcement enregistre quoi que ce soit.
  */
 async function converge(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   steps: Step<any>[],
   label: string,
   manifestPath: string,
-): Promise<boolean> {
+): Promise<Manifest | null> {
   try {
-    await applySteps(steps, CONFIG, manifestPath, ui);
-    return true;
+    return await applySteps(steps, CONFIG, manifestPath, ui);
   } catch (error) {
     ui.failed({ label, detail: errorMessage(error) });
     ui.finish(
@@ -101,7 +104,7 @@ async function converge(
         "ou «\u00a0hardline uninstall\u00a0» pour tout rendre.",
     );
     process.exitCode = 1;
-    return false;
+    return null;
   }
 }
 
@@ -177,23 +180,39 @@ export async function installCommand(): Promise<void> {
   // et un PC dont l'adressage d'origine n'existait plus nulle part. On
   // enregistre ce qu'on peut perdre dès l'instant où on ne peut plus le perdre.
   const joignable = remote.some((c) => c.name === SSH_CHECK && c.ok);
-  if (
-    joignable &&
-    !(await converge(CAPTURE_STEPS, "Relevé d'amorçage du PC", manifestPath))
-  ) {
-    return;
+
+  // Joignable ne veut pas dire relevé. Un PC amorcé par une version antérieure
+  // de hardline n'en porte aucun : l'étape le dit et se déclare conforme sans
+  // rien enregistrer, et le message ci-dessous annonçait pourtant un relevé qui
+  // n'existe nulle part. Le manifeste rendu par la convergence est la seule
+  // source qui sache la différence : on la lui demande.
+  let releveEnregistre = false;
+  if (joignable) {
+    const manifest = await converge(
+      CAPTURE_STEPS,
+      "Relevé d'amorçage du PC",
+      manifestPath,
+    );
+    if (!manifest) return;
+    releveEnregistre = BOOTSTRAP_STEP_NAME in manifest.steps;
   }
 
   if (hasBlockingFailure(remote)) {
     ui.finish(
       "Installation interrompue\u00a0: le PC n'est pas prêt. " +
-        (joignable
+        (releveEnregistre
           ? "Le Mac est configuré et le relevé d'amorçage du PC enregistré\u00a0: " +
             "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
             "rend les deux machines à leur état d'origine."
-          : "Le Mac est configuré et son état antérieur enregistré\u00a0: " +
-            "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
-            "rend le Mac à son état d'origine."),
+          : joignable
+            ? "Le Mac est configuré et son état antérieur enregistré, mais le PC " +
+              "n'a livré aucun relevé d'amorçage exploitable\u00a0: ce que l'amorçage " +
+              "a modifié ne pourra pas être défait. «\u00a0hardline install\u00a0» " +
+              "reprendra ici, «\u00a0hardline uninstall\u00a0» rend le Mac à son état " +
+              "d'origine."
+            : "Le Mac est configuré et son état antérieur enregistré\u00a0: " +
+              "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
+              "rend le Mac à son état d'origine."),
     );
     process.exitCode = 1;
     return;
