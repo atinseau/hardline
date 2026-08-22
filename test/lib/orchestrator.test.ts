@@ -54,11 +54,27 @@ function makeStatefulStep(name: string, trace: Trace): Step<{ marker: string }> 
   };
 }
 
+/** Une etape qui note ce que `pending` lui annonce au moment de restaurer. */
+function makeContextSpy(name: string, seen: string[][]): Step<{ marker: string }> {
+  return {
+    name,
+    label: `Etape ${name}`,
+    async inspect() {
+      return { conforming: false, current: { marker: `avant-${name}` }, detail: "d" };
+    },
+    async apply() {},
+    async restore(_c, _p, context) {
+      seen.push([...context.pending]);
+    },
+  };
+}
+
 const reports: string[] = [];
 const fakeUi = {
   skipped: ({ label }: { label: string }) => reports.push(`skipped:${label}`),
   applied: ({ label }: { label: string }) => reports.push(`applied:${label}`),
   restored: ({ label }: { label: string }) => reports.push(`restored:${label}`),
+  yielded: ({ label }: { label: string }) => reports.push(`yielded:${label}`),
   failed: ({ label }: { label: string }) => reports.push(`failed:${label}`),
 };
 
@@ -197,6 +213,48 @@ describe("revertSteps", () => {
     // bloquer l'autre. Et le libelle de l'etape est conserve dans le rapport.
     expect(reports).toEqual(["restored:Etape b", "failed:Etape a"]);
     expect(unrestored).toEqual(["a"]);
+  });
+
+  test("annonce a une etape les restaurations connues qui la suivent", async () => {
+    // Le controle du test suivant : sans lui, un `pending` toujours vide le
+    // satisferait aussi, et le filtre ne prouverait rien.
+    const seen: string[][] = [];
+    const a = makeStep("a", false, []);
+    const b = makeContextSpy("b", seen);
+    await applySteps([a, b], CONFIG, manifestPath, fakeUi);
+    await revertSteps([a, b], CONFIG, manifestPath, fakeUi);
+    expect(seen).toEqual([["a"]]);
+  });
+
+  test("n'annonce jamais une etape que cette version ne sait plus restaurer", async () => {
+    // `pending` sert a ceder le travail a une couche plus profonde. Une etape
+    // dont le code a disparu ne restaurera rien : lui ceder, c'est ceder a
+    // personne — zero script emis, machine intacte, et l'enregistrement de
+    // celle qui a cede efface au passage.
+    const seen: string[][] = [];
+    const a = makeStep("a", false, []);
+    const b = makeContextSpy("b", seen);
+    await applySteps([a, b], CONFIG, manifestPath, fakeUi);
+
+    const unrestored = await revertSteps([b], CONFIG, manifestPath, fakeUi);
+    expect(seen).toEqual([[]]);
+    expect(unrestored).toEqual(["a"]);
+  });
+
+  test("une etape qui cede n'est pas rapportee comme restauree", async () => {
+    const yielding: Step<{ marker: string }> = {
+      ...makeStep("a", false, []),
+      async restore() {
+        return { yielded: "cédée à plus profond" };
+      },
+    };
+    await applySteps([yielding], CONFIG, manifestPath, fakeUi);
+    reports.length = 0;
+    await revertSteps([yielding], CONFIG, manifestPath, fakeUi);
+
+    expect(reports).toEqual(["yielded:Etape a"]);
+    // L'enregistrement part quand meme : la couche profonde le supplante.
+    expect((await readManifest(manifestPath)).order).toEqual([]);
   });
 
   test("ecrit le manifeste apres chaque restauration, pas a la fin", async () => {

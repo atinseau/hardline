@@ -241,7 +241,12 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
     previous: WindowsNetworkState,
     context: RestoreContext,
   ) {
-    if (context.pending.includes(BOOTSTRAP_STEP_NAME)) return;
+    if (context.pending.includes(BOOTSTRAP_STEP_NAME)) {
+      return {
+        yielded:
+          "restauration cédée au relevé d'amorçage, seul à décrire le PC d'avant hardline",
+      };
+    }
 
     await runRemoteChecked(
       config.ssh,

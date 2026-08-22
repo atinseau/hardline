@@ -91,12 +91,18 @@ const PREVIOUS: Record<string, unknown> = {
   "network-profile-task": { present: false, state: null },
 };
 
+/** Ce que la desinstallation a DIT, par opposition a ce qu'elle a envoye. */
+const rapports: string[] = [];
+
 const reporter = {
   skipped: () => {},
   applied: () => {},
-  restored: () => {},
-  failed: () => {},
+  restored: ({ label }: { label: string }) => rapports.push(`restauré:${label}`),
+  yielded: ({ label }: { label: string }) => rapports.push(`cédé:${label}`),
+  failed: ({ label }: { label: string }) => rapports.push(`échec:${label}`),
 };
+
+const RESEAU_PC = "Adresse fixe et profil privé sur le lien direct (PC)";
 
 function manifestOf(order: string[]): Manifest {
   const now = "2026-08-22T10:00:00.000Z";
@@ -111,17 +117,25 @@ function manifestOf(order: string[]): Manifest {
   };
 }
 
-async function revert(order: string[]): Promise<string[]> {
+async function revertWith(
+  order: string[],
+  steps: typeof ALL_STEPS = ALL_STEPS,
+): Promise<{ scripts: string[]; unrestored: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), "hardline-tails-"));
   const path = join(dir, "manifest.json");
   try {
     await writeManifest(path, manifestOf(order));
-    const unrestored = await revertSteps(ALL_STEPS, CONFIG, path, reporter);
-    expect(unrestored).toEqual([]);
-    return [...remoteScripts];
+    const unrestored = await revertSteps(steps, CONFIG, path, reporter);
+    return { scripts: [...remoteScripts], unrestored };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function revert(order: string[]): Promise<string[]> {
+  const { scripts, unrestored } = await revertWith(order);
+  expect(unrestored).toEqual([]);
+  return scripts;
 }
 
 const withTail = (scripts: string[]): string[] =>
@@ -129,6 +143,39 @@ const withTail = (scripts: string[]): string[] =>
 
 beforeEach(() => {
   remoteScripts.length = 0;
+  rapports.length = 0;
+});
+
+describe("ceder n'est pas restaurer", () => {
+  test("l'etape reseau se declare cedante quand l'amorcage suit", async () => {
+    await revert(["bootstrap-windows", "network-windows"]);
+    expect(rapports).toContain(`cédé:${RESEAU_PC}`);
+    expect(rapports).not.toContain(`restauré:${RESEAU_PC}`);
+  });
+
+  test("elle se declare restauree quand la queue lui appartient", async () => {
+    // Le controle : sans lui, une etape declarant toujours « cédé »
+    // satisferait aussi le test precedent.
+    await revert(["network-windows", "network-profile-task"]);
+    expect(rapports).toContain(`restauré:${RESEAU_PC}`);
+    expect(rapports).not.toContain(`cédé:${RESEAU_PC}`);
+  });
+
+  test("elle ne cede rien a une etape que cette version ignore", async () => {
+    // Le manifeste nomme l'amorcage, le registre ne le connait plus : ceder ici
+    // serait ceder a personne. Zero script, zero queue, PC intact — et le
+    // manifeste debarrasse de l'etape qui aurait du agir.
+    const amputé = ALL_STEPS.filter((s) => s.name !== "bootstrap-windows");
+    const { scripts, unrestored } = await revertWith(
+      ["bootstrap-windows", "network-windows"],
+      amputé,
+    );
+
+    expect(unrestored).toEqual(["bootstrap-windows"]);
+    expect(withTail(scripts)).toHaveLength(1);
+    expect(rapports).toContain(`restauré:${RESEAU_PC}`);
+    expect(rapports).not.toContain(`cédé:${RESEAU_PC}`);
+  });
 });
 
 describe("une seule queue detachee par desinstallation", () => {
