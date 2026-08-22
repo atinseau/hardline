@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { installCommand } from "./commands/install";
 import { uninstallCommand } from "./commands/uninstall";
+import { doctorCommand } from "./commands/doctor";
 import { CancelledError, ui } from "./lib/ui";
 import { errorMessage } from "./lib/errors";
 
@@ -39,7 +40,7 @@ export function buildProgram(): Command {
   program
     .command("doctor")
     .description("Diagnostique la liaison et les services")
-    .action(NOT_IMPLEMENTED("doctor"));
+    .action(doctorCommand);
 
   return program;
 }
