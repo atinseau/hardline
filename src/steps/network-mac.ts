@@ -8,6 +8,24 @@ import {
 import type { Config } from "../config";
 import type { Step } from "./types";
 
+/**
+ * Le code de retour de networksetup ne doit jamais etre ignore : sans cette
+ * verification l'etape se declare accomplie meme quand sudo a refuse, et
+ * l'orchestrateur enregistre une convergence — ou une restauration — qui n'a
+ * pas eu lieu. Cote restauration c'est le pire cas possible : l'orchestrateur
+ * appelle forgetStep et efface la seule trace de l'etat anterieur.
+ */
+function ensureAccepted(
+  exitCode: number,
+  action: string,
+  service: string,
+): void {
+  if (exitCode === 0) return;
+  throw new Error(
+    `networksetup a refusé de ${action} sur «\u00a0${service}\u00a0» (code ${exitCode}). Droits administrateur\u00a0?`,
+  );
+}
+
 export const macNetworkStep: Step<ServiceIPConfig> = {
   name: "network-mac",
   label: "Adresse fixe sur le lien direct (Mac)",
@@ -25,34 +43,32 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
       conforming,
       current,
       detail: conforming
-        ? `${config.mac.serviceName} deja en ${config.mac.ip}`
+        ? `${config.mac.serviceName} déjà en ${config.mac.ip}`
         : `${config.mac.serviceName} en ${current.mode}${current.ip ? ` (${current.ip})` : ""}`,
     };
   },
 
   async apply(config: Config) {
-    // Le code de retour de networksetup ne doit pas etre ignore : sans cette
-    // verification, l'etape se declare appliquee meme quand sudo a refuse, et
-    // l'orchestrateur enregistre une convergence qui n'a pas eu lieu.
     const exitCode = await setServiceManualIP(
       config.mac.serviceName,
       config.mac.ip,
       config.mac.subnetMask,
     );
 
-    if (exitCode !== 0) {
-      throw new Error(
-        `networksetup a refuse de poser ${config.mac.ip} sur "${config.mac.serviceName}" (code ${exitCode}). Droits administrateur ?`,
-      );
-    }
+    ensureAccepted(exitCode, `poser ${config.mac.ip}`, config.mac.serviceName);
   },
 
   async restore(config: Config, previous: ServiceIPConfig) {
     if (previous.mode === "manual" && previous.ip && previous.subnetMask) {
-      await setServiceManualIP(
+      const exitCode = await setServiceManualIP(
         config.mac.serviceName,
         previous.ip,
         previous.subnetMask,
+      );
+      ensureAccepted(
+        exitCode,
+        `rendre ${previous.ip}`,
+        config.mac.serviceName,
       );
       return;
     }
@@ -60,10 +76,12 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
       // Restaurer en DHCP un service que l'utilisateur avait desactive serait
       // deviner a sa place : la spec exige de rendre l'etat anterieur, pas un
       // etat plausible.
-      await setServiceIPv4Off(config.mac.serviceName);
+      const exitCode = await setServiceIPv4Off(config.mac.serviceName);
+      ensureAccepted(exitCode, "redésactiver IPv4", config.mac.serviceName);
       return;
     }
 
-    await setServiceDHCP(config.mac.serviceName);
+    const exitCode = await setServiceDHCP(config.mac.serviceName);
+    ensureAccepted(exitCode, "rendre le DHCP", config.mac.serviceName);
   },
 };

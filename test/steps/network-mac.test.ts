@@ -77,7 +77,9 @@ describe("apply", () => {
 
   test("rejette quand networksetup echoue", async () => {
     setManual.mockImplementationOnce(async () => 1);
-    expect(macNetworkStep.apply(CONFIG)).rejects.toThrow(/networksetup a refuse/);
+    await expect(macNetworkStep.apply(CONFIG)).rejects.toThrow(
+      /networksetup a refusé/,
+    );
   });
 });
 
@@ -123,6 +125,81 @@ describe("restore", () => {
       subnetMask: null,
       router: null,
     });
+    expect(setDhcp).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Une restauration qui avale le code de retour est le pire defaut possible du
+// programme : l'orchestrateur la croit reussie, appelle forgetStep, et efface
+// la seule trace de l'etat anterieur pendant que la machine reste epinglee sur
+// l'adresse de hardline. Chacun de ces tests echoue si une seule des trois
+// branches de restore cesse de verifier son code de retour.
+describe("restore, echec de networksetup", () => {
+  const PREVIOUS = {
+    manual: {
+      mode: "manual" as const,
+      ip: "192.168.5.5",
+      subnetMask: "255.255.255.0",
+      router: null,
+    },
+    off: { mode: "off" as const, ip: null, subnetMask: null, router: null },
+    dhcp: { mode: "dhcp" as const, ip: null, subnetMask: null, router: null },
+  };
+
+  test("rejette quand -setmanual est refuse", async () => {
+    setManual.mockImplementationOnce(async () => 1);
+    await expect(
+      macNetworkStep.restore(CONFIG, PREVIOUS.manual),
+    ).rejects.toThrow(/networksetup a refusé/);
+  });
+
+  test("rejette quand -setv4off est refuse", async () => {
+    setOff.mockImplementationOnce(async () => 1);
+    await expect(macNetworkStep.restore(CONFIG, PREVIOUS.off)).rejects.toThrow(
+      /networksetup a refusé/,
+    );
+  });
+
+  test("rejette quand -setdhcp est refuse", async () => {
+    // Le scenario exact observe en revue : cache sudo expire pendant
+    // l'uninstall, -setdhcp sort en 1, et hardline annoncait la restauration.
+    setDhcp.mockImplementationOnce(async () => 1);
+    await expect(macNetworkStep.restore(CONFIG, PREVIOUS.dhcp)).rejects.toThrow(
+      /networksetup a refusé/,
+    );
+  });
+
+  test("rejette quand le repli sur DHCP est refuse", async () => {
+    setDhcp.mockImplementationOnce(async () => 1);
+    await expect(
+      macNetworkStep.restore(CONFIG, {
+        mode: "manual",
+        ip: null,
+        subnetMask: null,
+        router: null,
+      }),
+    ).rejects.toThrow(/networksetup a refusé/);
+  });
+
+  test("le message porte le code de retour et l'insecable avant le point d'interrogation", async () => {
+    // L'insecable ne peut venir que du module : le test ne fournit aucune
+    // chaine, seulement le code 77.
+    setDhcp.mockImplementationOnce(async () => 77);
+    const error = await macNetworkStep
+      .restore(CONFIG, PREVIOUS.dhcp)
+      .then(() => null)
+      .catch((err: unknown) => err as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain("(code 77)");
+    expect(error?.message).toContain("Droits administrateur\u00a0?");
+    expect(error?.message).toContain("«\u00a0AX88179A\u00a0»");
+  });
+
+  test("laisse passer une restauration acceptee", async () => {
+    // Contre-epreuve : sans elle, un restore qui rejette toujours passerait
+    // les tests ci-dessus.
+    await macNetworkStep.restore(CONFIG, PREVIOUS.dhcp);
     expect(setDhcp).toHaveBeenCalledTimes(1);
   });
 });
