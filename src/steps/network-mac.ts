@@ -31,11 +31,20 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
   },
 
   async apply(config: Config) {
-    await setServiceManualIP(
+    // Le code de retour de networksetup ne doit pas etre ignore : sans cette
+    // verification, l'etape se declare appliquee meme quand sudo a refuse, et
+    // l'orchestrateur enregistre une convergence qui n'a pas eu lieu.
+    const exitCode = await setServiceManualIP(
       config.mac.serviceName,
       config.mac.ip,
       config.mac.subnetMask,
     );
+
+    if (exitCode !== 0) {
+      throw new Error(
+        `networksetup a refuse de poser ${config.mac.ip} sur "${config.mac.serviceName}" (code ${exitCode}). Droits administrateur ?`,
+      );
+    }
   },
 
   async restore(config: Config, previous: ServiceIPConfig) {

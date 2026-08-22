@@ -1,5 +1,6 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
+import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
 let remoteState: unknown[];
 const runRemoteChecked = mock(async (..._args: unknown[]) => ({
@@ -15,7 +16,7 @@ mock.module("../../src/lib/ssh", () => ({
 
 const { windowsNetworkStep } = await import("../../src/steps/network-windows");
 
-const CONFORME = {
+const CONFORME: WindowsNetworkState = {
   adapterPresent: true,
   adapterStatus: "Up",
   addresses: ["10.10.10.1/24"],

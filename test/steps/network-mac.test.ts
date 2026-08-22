@@ -74,6 +74,11 @@ describe("apply", () => {
     expect(setManual).toHaveBeenCalledTimes(1);
     expect(setManual).toHaveBeenCalledWith("AX88179A", "10.10.10.2", "255.255.255.0");
   });
+
+  test("rejette quand networksetup echoue", async () => {
+    setManual.mockImplementationOnce(async () => 1);
+    expect(macNetworkStep.apply(CONFIG)).rejects.toThrow(/networksetup a refuse/);
+  });
 });
 
 describe("restore", () => {
