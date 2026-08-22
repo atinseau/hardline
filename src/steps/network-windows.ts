@@ -102,14 +102,24 @@ function restoreAddressing(
  * la queue s'execute) Windows ne lui associe plus aucun profil reseau, et
  * Set-NetConnectionProfile echoue sans bruit sous -ErrorAction SilentlyContinue.
  *
- * Rendre cet echec observable depuis le Mac est impossible, et ce n'est pas une
- * negligence : la queue est detachee PRECISEMENT parce qu'elle coupe le seul
- * canal qui mene ici. Quand elle s'execute, l'adresse est partie et le profil
- * Public a referme la regle de pare-feu ; plus rien ne peut remonter. Un journal
- * ecrit sur le PC ne serait lisible que depuis le clavier du PC, ou
- * Get-NetConnectionProfile repond deja la question plus surement qu'un fichier
- * ne le ferait, et ce fichier survivrait a une desinstallation qui promet de ne
- * rien laisser derriere elle.
+ * Rendre cet echec observable depuis le Mac est impossible : la queue est
+ * detachee PRECISEMENT parce qu'elle coupe le seul canal qui mene ici. Quand
+ * elle s'execute, l'adresse est partie et le profil Public a referme la regle
+ * de pare-feu ; plus rien ne peut remonter.
+ *
+ * Reste le journal ecrit sur le PC, que network-profile-task.ts emploie pour un
+ * probleme voisin. La regle du projet, une seule pour les deux :
+ *
+ *   Un journal cote PC est legitime exactement quand (a) quelque chose, plus
+ *   tard, le supprimera, et (b) la panne qu'il consigne est recurrente et
+ *   autrement indiagnosticable.
+ *
+ * La tache planifiee satisfait les deux : elle retente a CHAQUE demarrage,
+ * indefiniment, son echec est une panne silencieuse et durable (profil Public,
+ * donc pare-feu ferme), et sa propre restauration efface le journal. La queue
+ * d'uninstall n'en satisfait aucun : elle ne passe qu'une fois, plus rien ne
+ * repassera jamais derriere elle pour nettoyer, et l'etat qu'elle laisse se lit
+ * directement par Get-NetConnectionProfile depuis le clavier du PC.
  *
  * Ce qui borne le degat : le cas ne survient que sur une interface qui n'avait
  * pas d'adressage propre avant hardline, et Windows reclasse l'interface de

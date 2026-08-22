@@ -133,9 +133,21 @@ describe("restore", () => {
     expect(script).toContain("Unregister-ScheduledTask");
   });
 
-  test("ne supprime rien si une tache de ce nom preexistait", async () => {
+  test("ne touche pas a une tache de ce nom qui preexistait", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" }, NO_PENDING);
-    expect(runRemoteChecked).not.toHaveBeenCalled();
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    expect(script).not.toContain("Unregister-ScheduledTask");
+  });
+
+  test("emporte le journal MEME quand la tache preexistait", async () => {
+    // Le journal porte le nom de hardline et vit dans son repertoire, quelle
+    // que soit la tache qui l'a rempli. Lier son retrait a celui de la tache
+    // laissait un residu apres une desinstallation qui promet de ne rien
+    // laisser, et plus rien ne repassera derriere pour l'effacer.
+    await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" }, NO_PENDING);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    expect(script).toContain("network-profile.log");
+    expect(script).toContain("Remove-Item");
   });
 
   test("emporte le journal laisse par la tache", async () => {

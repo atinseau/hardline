@@ -93,12 +93,33 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigger \`
   -Principal $principal -Settings $settings -Force | Out-Null`;
 
-const RESTORE = `Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item -Path (Join-Path ${LOG_DIR} '${LOG_NAME}') -Force -ErrorAction SilentlyContinue
-$dir = ${LOG_DIR}
-if ((Test-Path $dir) -and -not (Get-ChildItem -Path $dir -Force -ErrorAction SilentlyContinue)) {
-  Remove-Item -Path $dir -Force -ErrorAction SilentlyContinue
-}`;
+/**
+ * Deux gestes independants, et c'est la correction : le retrait de la tache est
+ * conditionne a ce que hardline l'ait posee, le retrait du journal ne l'est pas.
+ *
+ * Le journal est ecrit sous le nom de hardline, dans le repertoire de hardline,
+ * quelle que soit la tache qui l'a rempli. Le lier au retrait de la tache
+ * laissait un residu apres une desinstallation qui promet de ne rien laisser,
+ * des lors qu'une tache du meme nom existait avant — le seul cas ou l'etape
+ * sortait avant d'avoir nettoye.
+ *
+ * Un journal cote PC est legitime exactement quand quelque chose, plus tard, le
+ * supprimera, et quand la panne qu'il consigne est recurrente et autrement
+ * indiagnosticable. Cette etape satisfait les deux ; ce « plus tard » est ici.
+ */
+const RESTORE = (removeTask: boolean): string =>
+  [
+    ...(removeTask
+      ? [
+          `Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue`,
+        ]
+      : []),
+    `Remove-Item -Path (Join-Path ${LOG_DIR} '${LOG_NAME}') -Force -ErrorAction SilentlyContinue`,
+    `$dir = ${LOG_DIR}`,
+    "if ((Test-Path $dir) -and -not (Get-ChildItem -Path $dir -Force -ErrorAction SilentlyContinue)) {",
+    "  Remove-Item -Path $dir -Force -ErrorAction SilentlyContinue",
+    "}",
+  ].join("\n");
 
 export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
   name: "network-profile-task",
@@ -130,8 +151,9 @@ export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
   },
 
   async restore(config: Config, previous: ScheduledTaskState) {
-    // Si une tache de ce nom existait avant hardline, on n'y touche pas.
-    if (previous.present) return;
-    await runRemoteChecked(config.ssh, RESTORE);
+    // Si une tache de ce nom existait avant hardline, on n'y touche pas. Le
+    // journal part quand meme : il porte le nom de hardline et vit dans son
+    // repertoire, et plus rien ne repassera derriere pour l'effacer.
+    await runRemoteChecked(config.ssh, RESTORE(!previous.present));
   },
 };
