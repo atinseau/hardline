@@ -590,8 +590,9 @@ jamais en texte formaté.
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: le type `SSHTarget`, les fonctions pures `encodePowerShell` et
-  `buildSSHArgs`, et les fonctions système `runRemote` et `runRemoteJson`.
+- Produces: le type `SSHTarget`, les fonctions pures `encodePowerShell`,
+  `withOutputEncoding` et `buildSSHArgs`, et les fonctions système `runRemote` et
+  `runRemoteJson`.
   `src/steps/network-windows.ts`, `src/lib/preflight.ts` et `src/commands/doctor.ts`
   en dépendent.
 
@@ -601,7 +602,12 @@ jamais en texte formaté.
 
 ```ts
 import { test, expect, describe } from "bun:test";
-import { encodePowerShell, buildSSHArgs, type SSHTarget } from "../../src/lib/ssh";
+import {
+  encodePowerShell,
+  withOutputEncoding,
+  buildSSHArgs,
+  type SSHTarget,
+} from "../../src/lib/ssh";
 
 const TARGET: SSHTarget = {
   host: "10.10.10.1",
@@ -627,6 +633,19 @@ describe("encodePowerShell", () => {
     expect(Buffer.from(encodePowerShell(script), "base64").toString("utf16le")).toBe(
       script,
     );
+  });
+});
+
+describe("withOutputEncoding", () => {
+  test("prefixe le script pour forcer une sortie UTF-8", () => {
+    const wrapped = withOutputEncoding("Write-Output 'réseau privé'");
+    expect(wrapped).toContain("OutputEncoding");
+    expect(wrapped).toContain("UTF8Encoding");
+  });
+
+  test("laisse le script d'origine intact a la fin", () => {
+    const script = "Get-NetAdapter | Select-Object Name";
+    expect(withOutputEncoding(script).endsWith(script)).toBe(true);
   });
 });
 
@@ -698,6 +717,18 @@ export function encodePowerShell(script: string): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
+const OUTPUT_UTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()";
+
+/**
+ * -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell part
+ * dans la page de code OEM de la console — cp850 sur un Windows francais — ce qui
+ * mutile les accents au retour. Ce prefixe force une sortie UTF-8 sans marque
+ * d'ordre des octets.
+ */
+export function withOutputEncoding(script: string): string {
+  return `${OUTPUT_UTF8}\n${script}`;
+}
+
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
   return [
     "ssh",
@@ -721,7 +752,7 @@ export async function runRemote(
   script: string,
   timeoutMs = 120_000,
 ): Promise<RemoteResult> {
-  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(script)}`;
+  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(withOutputEncoding(script))}`;
 
   const proc = Bun.spawn(buildSSHArgs(target, remoteCommand), {
     stdout: "pipe",
@@ -778,7 +809,7 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test test/lib/ssh.test.ts`
-Expected: PASS, sept tests.
+Expected: PASS, neuf tests.
 
 - [ ] **Step 5: Vérifier contre le vrai PC**
 
