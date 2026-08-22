@@ -17,6 +17,11 @@ Request timeout for icmp_seq 0
 3 packets transmitted, 0 packets received, 100.0% packet loss
 `;
 
+const SERVICES_DISABLED = `An asterisk (*) denotes that a network service is disabled.
+(1) *AX88179A
+(Hardware Port: AX88179A, Device: en14)
+`;
+
 const SERVICES = `An asterisk (*) denotes that a network service is disabled.
 (1) Thunderbolt Ethernet
 (Hardware Port: Thunderbolt Ethernet, Device: en4)
@@ -97,6 +102,7 @@ describe("parseNetworkServices", () => {
       name: "AX88179A",
       hardwarePort: "AX88179A",
       device: "en14",
+      enabled: true,
     });
   });
 
@@ -106,6 +112,16 @@ describe("parseNetworkServices", () => {
       "AX88179A",
       "Wi-Fi",
     ]);
+  });
+
+  test("retire l'asterisque et marque le service desactive", () => {
+    const [service] = parseNetworkServices(SERVICES_DISABLED);
+    expect(service?.name).toBe("AX88179A");
+    expect(service?.enabled).toBe(false);
+  });
+
+  test("marque actifs les services sans asterisque", () => {
+    expect(parseNetworkServices(SERVICES).every((s) => s.enabled)).toBe(true);
   });
 });
 

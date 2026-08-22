@@ -15,6 +15,8 @@ export type NetworkService = {
   name: string;
   hardwarePort: string;
   device: string;
+  /** `networksetup` préfixe d'un astérisque les services désactivés. */
+  enabled: boolean;
 };
 
 export type ServiceIPConfig = {
@@ -57,11 +59,15 @@ export function parseNetworkServices(stdout: string): NetworkService[] {
     const device = lines[i + 1]?.match(SERVICE_DEVICE);
     if (!device) continue;
 
+    const rawName = header[2]!;
+    const enabled = !rawName.startsWith("*");
+
     services.push({
       order: Number(header[1]),
-      name: header[2]!,
+      name: enabled ? rawName : rawName.slice(1),
       hardwarePort: device[1]!,
       device: device[2]!,
+      enabled,
     });
   }
 
