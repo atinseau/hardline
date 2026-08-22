@@ -1595,6 +1595,9 @@ exactement le genre de panne silencieuse que cette tâche existe pour éviter.
 ```ts
 import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
+// Import de type pur : efface a la compilation, donc sans effet sur l'ordre
+// du remplacement de module ci-dessous.
+import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
 let remoteState: unknown[];
 const runRemoteChecked = mock(async (..._args: unknown[]) => ({
@@ -1610,7 +1613,8 @@ mock.module("../../src/lib/ssh", () => ({
 
 const { windowsNetworkStep } = await import("../../src/steps/network-windows");
 
-const CONFORME = {
+// Annote : sans cela `category` est infere `string` et le type-check echoue.
+const CONFORME: WindowsNetworkState = {
   adapterPresent: true,
   adapterStatus: "Up",
   addresses: ["10.10.10.1/24"],
