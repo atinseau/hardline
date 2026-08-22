@@ -4,6 +4,7 @@ import { errorMessage } from "./errors";
 import {
   forgetStep,
   type Manifest,
+  markLaunched,
   readManifest,
   recordStep,
   stepsInReverseOrder,
@@ -130,6 +131,20 @@ export async function revertSteps(
     try {
       outcome = await step.restore(config, record.previous, context);
     } catch (error) {
+      // Une etape deja lancee lors d'une desinstallation precedente ne peut pas
+      // echouer a neuf : la queue detachee a rendu le PC injoignable par
+      // construction, et c'est le resultat attendu d'une reussite. Rapporter
+      // une panne ici ferait conclure a une restauration incomplete sur un etat
+      // final correct. Le doute est le meme qu'avant, ni plus ni moins.
+      if (typeof record.launchedAt === "string") {
+        reporter.detached({
+          label: step.label,
+          detail: `déjà lancée le ${record.launchedAt}, et toujours pas confirmable\u00a0: ${errorMessage(error)}`,
+        });
+        unconfirmed.push(record.step);
+        continue;
+      }
+
       // Une machine qui refuse de revenir en arriere ne doit pas empecher
       // l'autre d'etre restauree : on signale, on garde, on continue.
       reporter.failed({ label: step.label, detail: errorMessage(error) });
@@ -143,6 +158,12 @@ export async function revertSteps(
     if (outcome && "detached" in outcome) {
       reporter.detached({ label: step.label, detail: outcome.detached });
       unconfirmed.push(record.step);
+      // Le lancement est date dans le manifeste. L'enregistrement lui-meme ne
+      // bouge pas : une desinstallation ulterieure saura seulement que le geste
+      // a deja eu lieu, et ne rapportera pas comme un echec neuf ce qui n'est
+      // que le meme doute.
+      manifest = markLaunched(manifest, record.step, new Date().toISOString());
+      await writeManifest(manifestPath, manifest);
       continue;
     }
 

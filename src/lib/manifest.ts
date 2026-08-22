@@ -15,6 +15,14 @@ export type StepRecord = {
   step: string;
   appliedAt: string;
   previous: unknown;
+  /**
+   * Quand une restauration a ete LANCEE sans pouvoir etre confirmee : une queue
+   * detachee sur le PC, qui rend la main avant d'avoir agi. L'enregistrement
+   * reste (c'est la seule description de l'etat d'origine), mais une
+   * desinstallation ulterieure doit savoir que le geste a deja eu lieu, sans
+   * quoi elle rapporte comme un echec neuf ce qui n'est que le meme doute.
+   */
+  launchedAt?: string;
 };
 
 export type Manifest = {
@@ -58,8 +66,32 @@ export function recordStep(
     order: existing ? manifest.order : [...manifest.order, step],
     steps: {
       ...manifest.steps,
-      [step]: existing ?? { step, appliedAt: now, previous },
+      // L'etat anterieur d'origine est conserve, mais PAS le drapeau de
+      // lancement : reappliquer l'etape reconfigure la machine, et le doute
+      // laisse par une desinstallation precedente n'a plus d'objet.
+      [step]: existing
+        ? { step, appliedAt: existing.appliedAt, previous: existing.previous }
+        : { step, appliedAt: now, previous },
     },
+  };
+}
+
+/**
+ * Note qu'une restauration a ete lancee sans pouvoir etre confirmee. Le reste
+ * de l'enregistrement est intact : on n'ecrit qu'une date, jamais un verdict.
+ */
+export function markLaunched(
+  manifest: Manifest,
+  step: string,
+  now: string,
+): Manifest {
+  const existing = manifest.steps[step];
+  if (!existing) return manifest;
+
+  return {
+    ...manifest,
+    updatedAt: now,
+    steps: { ...manifest.steps, [step]: { ...existing, launchedAt: now } },
   };
 }
 

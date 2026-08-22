@@ -283,6 +283,99 @@ describe("revertSteps", () => {
     expect(manifest.steps["a"]?.previous).toEqual({ marker: "avant-a" });
   });
 
+  test("date le lancement dans le manifeste", async () => {
+    const detached: Step<{ marker: string }> = {
+      ...makeStep("a", false, []),
+      async restore() {
+        return { detached: "queue confiée à un processus détaché" };
+      },
+    };
+    await applySteps([detached], CONFIG, manifestPath, fakeUi);
+    await revertSteps([detached], CONFIG, manifestPath, fakeUi);
+
+    const record = (await readManifest(manifestPath)).steps["a"];
+    expect(typeof record?.launchedAt).toBe("string");
+    // Et l'etat anterieur, lui, n'a pas bouge : on ecrit une date, pas un verdict.
+    expect(record?.previous).toEqual({ marker: "avant-a" });
+  });
+
+  test("une seconde desinstallation ne rapporte pas un echec neuf", async () => {
+    // La queue detachee a rendu le PC injoignable par construction : c'est le
+    // resultat attendu d'une REUSSITE. Une seconde desinstallation qui echoue
+    // a le joindre ne decouvre aucune panne, elle retrouve le meme doute.
+    const detached: Step<{ marker: string }> = {
+      ...makeStep("a", false, []),
+      async restore() {
+        return { detached: "queue confiée à un processus détaché" };
+      },
+    };
+    await applySteps([detached], CONFIG, manifestPath, fakeUi);
+    await revertSteps([detached], CONFIG, manifestPath, fakeUi);
+
+    const injoignable: Step<{ marker: string }> = {
+      ...detached,
+      async restore() {
+        throw new Error("PC injoignable");
+      },
+    };
+    reports.length = 0;
+    const report = await revertSteps(
+      [injoignable],
+      CONFIG,
+      manifestPath,
+      fakeUi,
+    );
+
+    expect(report.unconfirmed).toEqual(["a"]);
+    expect(report.unrestored).toEqual([]);
+    expect(reports).toEqual(["detached:Etape a"]);
+    expect((await readManifest(manifestPath)).order).toEqual(["a"]);
+  });
+
+  test("une etape JAMAIS lancee qui echoue reste un echec", async () => {
+    // Le controle : sans lui, toute panne deviendrait une incertitude et
+    // le verdict de restauration incomplete ne se dirait plus jamais.
+    const step = makeStep("a", false, []);
+    await applySteps([step], CONFIG, manifestPath, fakeUi);
+
+    const failing: Step<{ marker: string }> = {
+      ...step,
+      async restore() {
+        throw new Error("sudo refuse");
+      },
+    };
+    reports.length = 0;
+    const report = await revertSteps([failing], CONFIG, manifestPath, fakeUi);
+
+    expect(report.unrestored).toEqual(["a"]);
+    expect(report.unconfirmed).toEqual([]);
+    expect(reports).toEqual(["failed:Etape a"]);
+  });
+
+  test("reappliquer une etape efface le doute laisse par une desinstallation", async () => {
+    // Le drapeau de lancement decrit une restauration, pas un etat anterieur :
+    // reappliquer l'etape reconfigure la machine et le doute n'a plus d'objet.
+    // Le laisser ferait passer un futur echec reel pour une simple incertitude.
+    const detached: Step<{ marker: string }> = {
+      ...makeStatefulStep("a", []),
+      async restore() {
+        return { detached: "queue confiée à un processus détaché" };
+      },
+    };
+    await applySteps([detached], CONFIG, manifestPath, fakeUi);
+    await revertSteps([detached], CONFIG, manifestPath, fakeUi);
+    expect(
+      typeof (await readManifest(manifestPath)).steps["a"]?.launchedAt,
+    ).toBe("string");
+
+    // L'etape n'est plus conforme apres restauration : elle se reapplique.
+    await applySteps([makeStep("a", false, [])], CONFIG, manifestPath, fakeUi);
+    const record = (await readManifest(manifestPath)).steps["a"];
+    expect(record?.launchedAt).toBeUndefined();
+    // Et l'etat anterieur d'origine, lui, est toujours celui du premier passage.
+    expect(record?.previous).toEqual({ marker: "avant-a" });
+  });
+
   test("une etape observee, elle, perd son enregistrement", async () => {
     // Le controle : sans lui, un manifeste jamais vide satisferait aussi le
     // test precedent, et "restaure" ne voudrait plus rien dire.
