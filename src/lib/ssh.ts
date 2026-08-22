@@ -132,3 +132,29 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
     );
   }
 }
+
+/**
+ * Execute un script de modification, en verifiant que tout a reussi.
+ * Contrairement a runRemote, leve une exception si le code de retour est
+ * non-zero, sans quoi les echecs distants (elevations de privilege refusees,
+ * par exemple) passent inapercus.
+ */
+export async function runRemoteChecked(
+  target: SSHTarget,
+  script: string,
+  timeoutMs = 120_000,
+): Promise<RemoteResult> {
+  const wrapped = `$ErrorActionPreference = 'Stop'
+${script}`;
+
+  const result = await runRemote(target, wrapped, timeoutMs);
+
+  if (result.exitCode !== 0) {
+    throw new RemoteError(
+      `Commande distante en echec (code ${result.exitCode}) : ${result.stderr || result.stdout}`,
+      result,
+    );
+  }
+
+  return result;
+}
