@@ -1,5 +1,7 @@
+import { psInteger, psKeyword, psQuote } from "../lib/powershell";
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
+import { BOOTSTRAP_STEP_NAME } from "./bootstrap-name";
 import { detachTail } from "./detach";
 import type { Step } from "./types";
 
@@ -19,6 +21,9 @@ export const STATE_FILE = "bootstrap-state.json";
  * laisserait tronque. Un marqueur separe ne peut rien abimer.
  */
 export const ACK_FILE = "bootstrap-state.acknowledged";
+
+/** La seule version de releve que cette version de hardline sait lire. */
+export const CAPTURE_VERSION = 1;
 
 const statePath = `(Join-Path ${STATE_DIR} '${STATE_FILE}')`;
 const ackPath = `(Join-Path ${STATE_DIR} '${ACK_FILE}')`;
@@ -58,22 +63,41 @@ export type BootstrapCapture = {
   };
 };
 
+/** Pourquoi il n'y a pas de releve exploitable. Sert a le dire, pas a deviner. */
+export type CaptureDefect = "absent" | "illisible" | "version";
+
 export type BootstrapState = {
-  /** null quand le PC ne porte aucun releve : on ne l'invente pas. */
+  /** null quand le PC ne porte aucun releve exploitable : on ne l'invente pas. */
   capture: BootstrapCapture | null;
   acknowledged: boolean;
+  /** Rempli par le PC : le fichier existe mais n'a pas pu etre relu. */
+  unreadable?: boolean;
 };
 
+/**
+ * Le `try/catch` n'est pas une decoration : le script tourne sous
+ * $ErrorActionPreference = 'Stop', prependu par runRemoteJson. Sans lui, un
+ * bootstrap-state.json corrompu — edite a la main, abime par un secteur mort,
+ * ecrit par une version future — fait sortir powershell en 1, et TOUTE la
+ * convergence distante s'arrete a la premiere etape. Un fichier dont l'unique
+ * raison d'etre est d'aider plus tard ne doit jamais empecher une installation.
+ */
 const INSPECT = `
 $path = ${statePath}
 $capture = $null
+$unreadable = $false
 if (Test-Path $path) {
   $raw = Get-Content -Path $path -Raw -ErrorAction SilentlyContinue
-  if ($raw) { $capture = $raw | ConvertFrom-Json }
+  if ($raw) {
+    try { $capture = $raw | ConvertFrom-Json } catch { $capture = $null; $unreadable = $true }
+  } else {
+    $unreadable = $true
+  }
 }
 [pscustomobject]@{
   capture      = $capture
   acknowledged = [bool](Test-Path ${ackPath})
+  unreadable   = [bool]$unreadable
 }`;
 
 /**
@@ -87,9 +111,59 @@ $dir = ${STATE_DIR}
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 Set-Content -Path ${ackPath} -Value (Get-Date).ToString('s') -Encoding ascii`;
 
+// --- Validation du releve. -----------------------------------------------
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/**
+ * Un cast sans verification laisserait la restauration coudre des champs dont
+ * elle ignore la forme, ou dereferencer des champs absents. Le manifeste du
+ * projet refuse deja franchement tout ce qui n'est pas `version === 1` : la
+ * meme rigueur vaut pour ce que le PC renvoie.
+ *
+ * Rend `null` plutot que de lever : un releve inexploitable doit degrader
+ * exactement comme un releve absent, jamais bloquer une installation.
+ */
+export function readCapture(
+  value: unknown,
+): { capture: BootstrapCapture } | { defect: CaptureDefect } {
+  if (!isRecord(value)) return { defect: "absent" };
+  if (value["version"] !== CAPTURE_VERSION) return { defect: "version" };
+
+  for (const section of [
+    "capability",
+    "sshd",
+    "firewall",
+    "authorizedKeys",
+    "network",
+  ]) {
+    if (!isRecord(value[section])) return { defect: "illisible" };
+  }
+
+  const network = value["network"] as Record<string, unknown>;
+  if (
+    !Array.isArray(network["addresses"]) ||
+    !Array.isArray(network["manualAddresses"])
+  ) {
+    return { defect: "illisible" };
+  }
+
+  return { capture: value as unknown as BootstrapCapture };
+}
+
 // --- Restauration. -------------------------------------------------------
 
-const ASSIGNABLE_CATEGORIES = new Set(["Public", "Private"]);
+const ASSIGNABLE_CATEGORIES = ["Public", "Private"] as const;
+
+/** Les seules valeurs que Get-Service peut rendre pour StartType. */
+const STARTUP_TYPES = [
+  "Automatic",
+  "Manual",
+  "Disabled",
+  "Boot",
+  "System",
+] as const;
 
 /**
  * Repose l'adressage d'avant amorcage. Meme discipline que l'etape reseau :
@@ -99,48 +173,69 @@ const ASSIGNABLE_CATEGORIES = new Set(["Public", "Private"]);
  */
 function restoreAddressing(alias: string, capture: BootstrapCapture): string[] {
   const lines: string[] = [];
+  const quotedAlias = psQuote(alias, "interfaceAlias");
 
   for (const entry of capture.network.manualAddresses ?? []) {
-    const [address, prefix] = entry.split("/");
+    const [address, prefix] = String(entry).split("/");
+    const quoted = psQuote(address ?? "", `adresse relevée « ${entry} »`);
+    const length = psInteger(prefix, `préfixe de « ${entry} »`, 32);
     lines.push(
-      `$prev = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -IPAddress '${address}' -ErrorAction SilentlyContinue`,
-      `if ($prev) { if ($prev.PrefixLength -ne ${prefix}) { Set-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null } } else { New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null }`,
+      `$prev = Get-NetIPAddress -InterfaceAlias ${quotedAlias} -AddressFamily IPv4 -IPAddress ${quoted} -ErrorAction SilentlyContinue`,
+      `if ($prev) { if ($prev.PrefixLength -ne ${length}) { Set-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${quoted} -PrefixLength ${length} | Out-Null } } else { New-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${quoted} -PrefixLength ${length} | Out-Null }`,
     );
   }
 
   if (capture.network.dhcp === "Enabled") {
-    lines.push(`Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled -ErrorAction SilentlyContinue`);
+    lines.push(
+      `Set-NetIPInterface -InterfaceAlias ${quotedAlias} -Dhcp Enabled -ErrorAction SilentlyContinue`,
+    );
   }
 
   return lines;
 }
 
 /**
- * Le retrait de la cle du Mac. Le fichier est reecrit sans la ligne plutot que
- * supprime : un compte administrateur peut y avoir d'autres cles, et les
- * emporter serait couper l'acces de quelqu'un d'autre. En ascii et non en
- * utf8, car PowerShell 5.1 pose une marque d'ordre des octets en utf8 qui rend
- * le fichier silencieusement illisible pour OpenSSH.
+ * Le retrait de la cle du Mac, en LISANT avant d'ecrire.
+ *
+ * C'etaient les deux seules instructions du lot a modifier sans regarder l'etat
+ * courant, et c'est precisement la que l'argument « un drapeau leve pour une
+ * modification qui n'a pas eu lieu reste sans effet » tombait :
+ *
+ * - `fileExisted: false` releve des semaines plus tot faisait supprimer le
+ *   fichier ENTIER. Amorcage mort pendant Add-WindowsCapability, utilisateur
+ *   qui installe OpenSSH et depose sa propre cle, relance de l'amorcage (le
+ *   releve n'est jamais reecrit, par conception) : l'uninstall emportait la cle
+ *   de l'utilisateur et coupait son propre acces.
+ * - la reecriture partait des que `changed` etait vrai, meme si la ligne du Mac
+ *   n'avait jamais ete ajoutee : les cles des autres administrateurs etaient
+ *   re-encodees en ascii, et un `Get-Content` muet (fichier verrouille, chemin
+ *   devenu faux) faisait ecrire `$kept` vide, donc un fichier a zero octet.
+ *
+ * La forme ci-dessous n'ecrit QUE si la ligne du Mac a reellement ete trouvee
+ * — `$kept.Count -lt $lines.Count` est faux quand le fichier est illisible,
+ * vide, ou ne contient pas la cle — et ne supprime le fichier que si l'amorcage
+ * l'avait cree ET qu'il ne reste plus rien dedans. Toute autre ligne est laissee
+ * telle quelle : ni retiree, ni re-encodee.
+ *
+ * En ascii et non en utf8 : PowerShell 5.1 pose une marque d'ordre des octets
+ * en utf8 qui rend le fichier silencieusement illisible pour OpenSSH.
  */
 function restoreAuthorizedKeys(capture: BootstrapCapture): string[] {
   const keys = capture.authorizedKeys;
   const lines: string[] = [];
-
-  // Le fichier n'existait pas : l'amorcage l'a cree, donc il repart entier et
-  // il n'y a aucun descripteur de securite d'origine a rendre.
-  if (!keys.fileExisted) {
-    if (keys.changed) {
-      lines.push(
-        `Remove-Item -Path '${keys.path}' -Force -ErrorAction SilentlyContinue`,
-      );
-    }
-    return lines;
-  }
+  const path = psQuote(keys.path, "chemin du fichier de clés");
+  const publicKey = psQuote(keys.publicKey, "clé publique relevée");
 
   if (keys.changed) {
+    // Vide, le fichier repart si l'amorcage l'avait cree ; sinon il reste, vide.
+    const emptied = keys.fileExisted
+      ? `Clear-Content -Path ${path} -Force -ErrorAction SilentlyContinue`
+      : `Remove-Item -Path ${path} -Force -ErrorAction SilentlyContinue`;
+
     lines.push(
-      `$kept = @(Get-Content -Path '${keys.path}' -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne '${keys.publicKey}' })`,
-      `Set-Content -Path '${keys.path}' -Value $kept -Encoding ascii -ErrorAction SilentlyContinue`,
+      `$lines = @(Get-Content -Path ${path} -ErrorAction SilentlyContinue)`,
+      `$kept = @($lines | Where-Object { $_.Trim() -ne ${publicKey} })`,
+      `if ($kept.Count -lt $lines.Count) { if ($kept.Count -eq 0) { ${emptied} } else { Set-Content -Path ${path} -Value $kept -Encoding ascii -ErrorAction SilentlyContinue } }`,
     );
   }
 
@@ -149,10 +244,9 @@ function restoreAuthorizedKeys(capture: BootstrapCapture): string[] {
   // ete releve : le rendre est la seule facon de ne pas laisser un fichier
   // commun avec des droits que hardline lui a imposes.
   if (keys.aclChanged && keys.aclSddl) {
+    const sddl = psQuote(keys.aclSddl, "descripteur de sécurité relevé");
     lines.push(
-      `$acl = Get-Acl -Path '${keys.path}'`,
-      `$acl.SetSecurityDescriptorSddlForm('${keys.aclSddl}')`,
-      `Set-Acl -Path '${keys.path}' -AclObject $acl -ErrorAction SilentlyContinue`,
+      `if (Test-Path ${path}) { $acl = Get-Acl -Path ${path}; $acl.SetSecurityDescriptorSddlForm(${sddl}); Set-Acl -Path ${path} -AclObject $acl -ErrorAction SilentlyContinue }`,
     );
   }
 
@@ -163,18 +257,18 @@ function restoreAuthorizedKeys(capture: BootstrapCapture): string[] {
  * Ce que l'amorcage a fait et qui coupe le canal en le defaisant. Tout y passe :
  * l'adresse qui porte la session, le profil qui autorise la regle de pare-feu,
  * la regle elle-meme, la cle qui a authentifie la session, et sshd. Contrairement
- * a l'etape reseau, il n'y a rien a conditionner : la session roule TOUJOURS sur
- * au moins un de ces elements, quelle que soit son adresse locale. La queue part
- * donc toujours detachee.
+ * a l'etape reseau, il n'y a rien a conditionner sur l'adresse locale : la session
+ * roule TOUJOURS sur au moins un de ces elements. La queue part donc toujours
+ * detachee.
  *
  * L'ordre est celui du degat decroissant si le processus detache mourait en
  * cours de route. Chaque prefixe laisse le PC sur un reseau qu'il connaissait
- * deja, et ce sont les moyens d'acces — cle, regle, service — qui tombent en
- * dernier :
+ * deja, et ce sont les moyens d'acces qui tombent en dernier :
  *
  *   1-3. l'adressage d'origine revient, puis seulement apres, celui de hardline
  *        s'en va : a aucun instant l'interface n'est sans adresse ;
- *   4.   le profil reseau d'origine revient ;
+ *   4.   le profil reseau d'origine revient — c'est LUI qui ferme la porte, la
+ *        regle hardline-sshd etant portee sur le profil Private ;
  *   5-6. la cle du Mac et les droits du fichier ;
  *   7-8. la regle de pare-feu puis sshd.
  */
@@ -184,6 +278,7 @@ function cuttingTail(
   capture: BootstrapCapture,
 ): string[] {
   const tail: string[] = [];
+  const quotedAlias = psQuote(alias, "interfaceAlias");
 
   if (capture.network.addressingChanged) {
     tail.push(...restoreAddressing(alias, capture));
@@ -191,7 +286,7 @@ function cuttingTail(
     // dit addressingChanged = false et on n'arrive jamais ici : la retirer
     // serait detruire l'etat anterieur au lieu de le rendre.
     tail.push(
-      `Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:$false -ErrorAction SilentlyContinue`,
+      `Remove-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${psQuote(ip, "adresse cible")} -Confirm:$false -ErrorAction SilentlyContinue`,
     );
   }
 
@@ -199,14 +294,24 @@ function cuttingTail(
   if (
     capture.network.categoryChanged &&
     category &&
-    ASSIGNABLE_CATEGORIES.has(category)
+    (ASSIGNABLE_CATEGORIES as readonly string[]).includes(category)
   ) {
+    // Deux gardes en une instruction.
+    //
     // Set-NetConnectionProfile n'accepte que Public et Private :
     // DomainAuthenticated est une erreur de liaison de parametre qu'aucun
-    // -ErrorAction ne peut etouffer. On n'ecrit alors rien et on laisse
-    // Windows reclasser l'interface lui-meme.
+    // -ErrorAction ne peut etouffer. On n'ecrit alors rien et on laisse Windows
+    // reclasser l'interface lui-meme.
+    //
+    // Et on ne repose la categorie que si l'interface porte encore celle que
+    // l'amorcage y aurait mise. `categoryChanged` est une prevision : si
+    // l'amorcage est mort avant Set-NetConnectionProfile, le profil n'a jamais
+    // ete touche, et le reforcer serait defaire un geste de l'utilisateur.
+    // Reste un cas indiscernable de l'exterieur — l'utilisateur qui bascule
+    // lui-meme l'interface en Private apres un amorcage avorte — que rien ici
+    // ne peut distinguer d'un profil pose par hardline.
     tail.push(
-      `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${category} -ErrorAction SilentlyContinue`,
+      `if ((Get-NetConnectionProfile -InterfaceAlias ${quotedAlias} -ErrorAction SilentlyContinue).NetworkCategory -eq 'Private') { Set-NetConnectionProfile -InterfaceAlias ${quotedAlias} -NetworkCategory ${psKeyword(category, "catégorie réseau relevée", ASSIGNABLE_CATEGORIES)} -ErrorAction SilentlyContinue }`,
     );
   }
 
@@ -214,7 +319,7 @@ function cuttingTail(
 
   if (capture.firewall.changed) {
     tail.push(
-      `Remove-NetFirewallRule -Name '${capture.firewall.name}' -ErrorAction SilentlyContinue`,
+      `Remove-NetFirewallRule -Name ${psQuote(capture.firewall.name, "nom de règle relevé")} -ErrorAction SilentlyContinue`,
     );
   }
 
@@ -227,12 +332,18 @@ function cuttingTail(
   // demarrage d'origine a rendre. Le laisser en Automatic reviendrait a laisser
   // en ecoute permanente un service que la machine n'avait pas : on le desactive,
   // et l'uninstall le dit.
+  //
+  // La garde `-eq 'Automatic'` a la meme raison d'etre que celle du profil : si
+  // l'amorcage est mort avant Set-Service et que l'utilisateur a installe et
+  // active OpenSSH lui-meme, il n'y a rien a defaire.
   if (capture.sshd.startupChanged) {
-    const startupType = capture.sshd.present
-      ? (capture.sshd.startupType ?? "Disabled")
-      : "Disabled";
+    const startupType = psKeyword(
+      capture.sshd.present ? (capture.sshd.startupType ?? "Disabled") : "Disabled",
+      "type de démarrage relevé",
+      STARTUP_TYPES,
+    );
     tail.push(
-      `Set-Service -Name sshd -StartupType ${startupType} -ErrorAction SilentlyContinue`,
+      `if ((Get-Service -Name sshd -ErrorAction SilentlyContinue).StartType -eq 'Automatic') { Set-Service -Name sshd -StartupType ${startupType} -ErrorAction SilentlyContinue }`,
     );
   }
   if (capture.sshd.statusChanged) {
@@ -257,16 +368,28 @@ const RESTORE = (
   capture: BootstrapCapture,
 ): string => {
   const tail = cuttingTail(alias, ip, capture);
-  const lines = [`Remove-Item -Path ${ackPath} -Force -ErrorAction SilentlyContinue`];
+  const lines = [
+    `Remove-Item -Path ${ackPath} -Force -ErrorAction SilentlyContinue`,
+  ];
   if (tail.length > 0) lines.push(detachTail(tail));
   return lines.join("\n");
+};
+
+/** Ce que le detail doit dire quand il n'y a rien d'exploitable a rapatrier. */
+const DEFECT_DETAIL: Record<CaptureDefect, string> = {
+  absent:
+    "aucun relevé d'amorçage sur le PC : ce que l'amorçage a modifié ne pourra pas être défait",
+  illisible:
+    "relevé d'amorçage illisible sur le PC : ce que l'amorçage a modifié ne pourra pas être défait",
+  version:
+    "relevé d'amorçage d'une version inconnue : ce que l'amorçage a modifié ne pourra pas être défait",
 };
 
 // --- L'etape. ------------------------------------------------------------
 
 export const bootstrapWindowsStep: Step<BootstrapState> = {
-  name: "bootstrap-windows",
-  label: "Amorçage du PC : OpenSSH, pare-feu, clé et adressage (PC)",
+  name: BOOTSTRAP_STEP_NAME,
+  label: "Amorçage du PC : OpenSSH, pare-feu, clé et adressage (PC)",
 
   async inspect(config: Config) {
     const rows = await runRemoteJson<BootstrapState>(config.ssh, INSPECT);
@@ -278,19 +401,22 @@ export const bootstrapWindowsStep: Step<BootstrapState> = {
       );
     }
 
-    const capture = current.capture ?? null;
+    const read = readCapture(current.capture);
 
-    // Un PC amorcé par une version antérieure de hardline n'a pas de relevé.
-    // On ne bloque pas l'installation pour autant, et on n'invente surtout pas
-    // un état antérieur : on le dit, et on ne promet rien.
-    if (!capture) {
+    // Un PC amorcé par une version antérieure de hardline n'a pas de relevé ;
+    // un relevé abîmé ou d'une autre version n'est pas exploitable non plus.
+    // Aucun des trois ne bloque l'installation, et aucun n'invente un état
+    // antérieur : on le dit, et on ne promet rien.
+    if (!("capture" in read)) {
+      const defect = current.unreadable ? "illisible" : read.defect;
       return {
         conforming: true,
         current: { capture: null, acknowledged: current.acknowledged },
-        detail:
-          "aucun relevé d'amorçage sur le PC : ce que l'amorçage a modifié ne pourra pas être défait",
+        detail: DEFECT_DETAIL[defect],
       };
     }
+
+    const { capture } = read;
 
     return {
       conforming: current.acknowledged,
@@ -310,9 +436,16 @@ export const bootstrapWindowsStep: Step<BootstrapState> = {
     // faire » : le detail d'inspect l'a dit, et l'entree n'existe pas.
     if (!previous.capture) return;
 
+    // Le releve est l'autorite sur l'interface qu'il decrit : c'est celle-la
+    // que l'amorcage a modifiee. Si CONFIG a change entre l'installation et la
+    // desinstallation, reposer l'adressage d'origine sur l'interface courante
+    // serait le reposer au mauvais endroit.
+    const alias =
+      previous.capture.interfaceAlias || config.windows.interfaceAlias;
+
     await runRemoteChecked(
       config.ssh,
-      RESTORE(config.windows.interfaceAlias, config.windows.ip, previous.capture),
+      RESTORE(alias, config.windows.ip, previous.capture),
     );
   },
 };

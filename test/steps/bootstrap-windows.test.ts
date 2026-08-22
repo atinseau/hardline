@@ -1,4 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
+
+/** Aucune etape ne suit : cette restauration est la derniere a passer. */
+const NO_PENDING = { pending: [] as string[] };
 import { CONFIG } from "../../src/config";
 import type {
   BootstrapCapture,
@@ -101,7 +104,7 @@ async function restoreWith(patch: Partial<BootstrapCapture>): Promise<string> {
   await bootstrapWindowsStep.restore(CONFIG, {
     capture: capture(patch),
     acknowledged: true,
-  });
+  }, NO_PENDING);
   return scriptOf(0);
 }
 
@@ -157,6 +160,63 @@ describe("inspect", () => {
     expect(inspectScript).not.toContain("Remove-Item");
   });
 
+  test("degrade comme un releve absent quand le PC dit ne pas savoir le lire", async () => {
+    // Le PC met un try/catch autour de ConvertFrom-Json : sans lui, sous
+    // $ErrorActionPreference = 'Stop', un octet abime faisait sortir powershell
+    // en 1 et arretait TOUTE la convergence distante des la premiere etape.
+    remoteState = [{ capture: null, acknowledged: false, unreadable: true }];
+    const state = await bootstrapWindowsStep.inspect(CONFIG);
+    expect(state.conforming).toBe(true);
+    expect(state.current.capture).toBeNull();
+    expect(state.detail).toContain("illisible");
+  });
+
+  test("le script distant n'abandonne pas sur un JSON invalide", async () => {
+    remoteState = [{ capture: null, acknowledged: false }];
+    await bootstrapWindowsStep.inspect(CONFIG);
+    expect(inspectScript).toContain("try {");
+    expect(inspectScript).toContain("catch {");
+    expect(inspectScript.indexOf("try {")).toBeLessThan(
+      inspectScript.indexOf("ConvertFrom-Json"),
+    );
+  });
+
+  test("refuse un releve d'une autre version au lieu de le consommer comme un v1", async () => {
+    // Le manifeste du projet refuse deja franchement tout ce qui n'est pas
+    // version 1 ; consommer un releve v2 dereferencerait des champs absents.
+    remoteState = [{ capture: { ...CAPTURE, version: 2 }, acknowledged: false }];
+    const state = await bootstrapWindowsStep.inspect(CONFIG);
+    expect(state.conforming).toBe(true);
+    expect(state.current.capture).toBeNull();
+    expect(state.detail).toContain("version inconnue");
+  });
+
+  test("refuse un releve ampute d'une de ses sections", async () => {
+    const { network: _absent, ...ampute } = CAPTURE;
+    remoteState = [{ capture: ampute, acknowledged: false }];
+    const state = await bootstrapWindowsStep.inspect(CONFIG);
+    expect(state.conforming).toBe(true);
+    expect(state.current.capture).toBeNull();
+    expect(state.detail).toContain("illisible");
+  });
+
+  test("refuse un releve dont les adresses ne sont pas des listes", async () => {
+    remoteState = [
+      {
+        capture: { ...CAPTURE, network: { ...CAPTURE.network, addresses: "10.0.0.1" } },
+        acknowledged: false,
+      },
+    ];
+    expect((await bootstrapWindowsStep.inspect(CONFIG)).current.capture).toBeNull();
+  });
+
+  test("un releve scalaire n'est pas pris pour un releve", async () => {
+    remoteState = [{ capture: "n'importe quoi", acknowledged: false }];
+    const state = await bootstrapWindowsStep.inspect(CONFIG);
+    expect(state.current.capture).toBeNull();
+    expect(state.detail).not.toContain("undefined");
+  });
+
   test("echoue explicitement si le PC ne repond rien", async () => {
     remoteState = [];
     expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(/amorçage/);
@@ -202,7 +262,7 @@ describe("apply", () => {
 describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
   test("ne parle pas au PC quand aucun releve n'a ete enregistre", async () => {
     const previous: BootstrapState = { capture: null, acknowledged: true };
-    await bootstrapWindowsStep.restore(CONFIG, previous);
+    await bootstrapWindowsStep.restore(CONFIG, previous, NO_PENDING);
     expect(runRemoteChecked).not.toHaveBeenCalled();
   });
 
@@ -284,12 +344,51 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     expect(script).not.toContain("Remove-NetFirewallRule");
   });
 
-  test("supprime le fichier de cles que l'amorcage avait cree", async () => {
+  test("lit le fichier de cles avant d'y toucher, toujours", async () => {
+    // C'etaient les deux seules instructions du lot a ecrire sans regarder
+    // l'etat courant, et c'est exactement la que l'argument des drapeaux-
+    // previsions tombait.
     const script = await restoreWith({});
-    expect(script).toContain(`Remove-Item -Path '${KEY_PATH}'`);
-    // Rien a reecrire ni a re-permissionner : le fichier n'existe plus.
-    expect(script).not.toContain("Set-Acl");
-    expect(script).not.toContain(`Set-Content -Path '${KEY_PATH}'`);
+    const lit = script.indexOf(`Get-Content -Path '${KEY_PATH}'`);
+    expect(lit).toBeGreaterThan(0);
+    for (const ecriture of ["Remove-Item -Path '" + KEY_PATH, "Set-Content -Path '" + KEY_PATH]) {
+      const at = script.indexOf(ecriture);
+      if (at >= 0) expect(at).toBeGreaterThan(lit);
+    }
+  });
+
+  test("n'ecrit rien quand la ligne du Mac n'est pas dans le fichier", async () => {
+    // Le drapeau `changed` est une prevision : l'amorcage a pu mourir avant
+    // d'ajouter la ligne. La reecriture re-encodait alors en ascii les cles
+    // d'autres administrateurs, et un Get-Content muet tronquait le fichier.
+    const script = await restoreWith({});
+    // Dans la queue detachee les $ sont echappes : c'est la forme reelle.
+    const GARDE = "if (`$kept.Count -lt `$lines.Count)";
+    expect(script).toContain(GARDE);
+    // La suppression comme la reecriture vivent dans cette garde.
+    const garde = script.indexOf(GARDE);
+    expect(script.indexOf(`Remove-Item -Path '${KEY_PATH}'`)).toBeGreaterThan(garde);
+  });
+
+  test("ne supprime le fichier que si l'amorcage l'avait cree ET qu'il est vide", async () => {
+    const cree = await restoreWith({});
+    expect(cree).toContain(`Remove-Item -Path '${KEY_PATH}'`);
+    expect(cree).not.toContain("Clear-Content");
+    // Rien a re-permissionner : le fichier n'existe plus.
+    expect(cree).not.toContain("Set-Acl");
+
+    runRemoteChecked.mockClear();
+    const preexistant = await restoreWith({
+      authorizedKeys: {
+        ...CAPTURE.authorizedKeys,
+        fileExisted: true,
+        aclSddl: SDDL,
+        aclChanged: true,
+      },
+    });
+    // Un fichier que l'utilisateur avait deja ne disparait jamais.
+    expect(preexistant).not.toContain(`Remove-Item -Path '${KEY_PATH}'`);
+    expect(preexistant).toContain("Clear-Content");
   });
 
   test("retire la seule ligne du Mac d'un fichier de cles preexistant", async () => {
@@ -416,6 +515,93 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     expect(script).not.toContain("bootstrap-state.json");
   });
 
+  test("repose l'adressage sur l'interface que le releve decrit", async () => {
+    // Le releve est l'autorite sur l'interface qu'il decrit : c'est celle-la
+    // que l'amorcage a modifiee. Si CONFIG change entre l'installation et la
+    // desinstallation, viser l'interface courante reposerait l'adressage
+    // d'origine au mauvais endroit.
+    const script = await restoreWith({ interfaceAlias: "Ethernet 2" });
+    expect(script).toContain("-InterfaceAlias 'Ethernet 2'");
+    expect(script).not.toContain("-InterfaceAlias 'Ethernet'");
+  });
+
+  test("retombe sur la configuration si le releve n'a pas d'alias", async () => {
+    const script = await restoreWith({ interfaceAlias: "" });
+    expect(script).toContain("-InterfaceAlias 'Ethernet'");
+  });
+
+  test("ne repose le profil que si l'interface porte encore celui de hardline", async () => {
+    // `categoryChanged` est une prevision : si l'amorcage est mort avant
+    // Set-NetConnectionProfile, le profil n'a jamais ete touche, et le
+    // reforcer serait defaire un geste de l'utilisateur.
+    const script = await restoreWith({});
+    const garde = script.indexOf("Get-NetConnectionProfile");
+    expect(garde).toBeGreaterThan(0);
+    expect(garde).toBeLessThan(script.indexOf("Set-NetConnectionProfile"));
+    expect(script).toContain("NetworkCategory -eq 'Private'");
+  });
+
+  test("ne desactive sshd que s'il porte encore le demarrage de hardline", async () => {
+    // Meme motif : l'utilisateur a pu installer et activer OpenSSH lui-meme
+    // apres un amorcage avorte.
+    const script = await restoreWith({});
+    const garde = script.indexOf("Get-Service -Name sshd");
+    expect(garde).toBeGreaterThan(0);
+    expect(garde).toBeLessThan(script.indexOf("Set-Service -Name sshd"));
+    expect(script).toContain("StartType -eq 'Automatic'");
+  });
+
+  test("refuse un prefixe absent plutot que de ne rien reposer en silence", async () => {
+    // -PrefixLength undefined echoue en silence dans une queue tournant en
+    // Continue : l'adresse d'origine ne reviendrait jamais et personne ne le
+    // saurait. L'exception, elle, conserve l'entree du manifeste.
+    await expect(
+      bootstrapWindowsStep.restore(
+        CONFIG,
+        {
+          capture: capture({
+            network: { ...CAPTURE.network, manualAddresses: ["192.168.1.50"] },
+          }),
+          acknowledged: true,
+        },
+        NO_PENDING,
+      ),
+    ).rejects.toThrow(/préfixe/);
+    expect(runRemoteChecked).not.toHaveBeenCalled();
+  });
+
+  test("refuse une valeur du releve qui casserait le script", async () => {
+    await expect(
+      bootstrapWindowsStep.restore(
+        CONFIG,
+        { capture: capture({ interfaceAlias: "Réseau d'Arthur" }), acknowledged: true },
+        NO_PENDING,
+      ),
+    ).rejects.toThrow(/apostrophe/);
+    expect(runRemoteChecked).not.toHaveBeenCalled();
+  });
+
+  test("refuse un type de demarrage hors de l'ensemble connu", async () => {
+    await expect(
+      bootstrapWindowsStep.restore(
+        CONFIG,
+        {
+          capture: capture({
+            sshd: {
+              present: true,
+              startupType: "Automatic; Remove-Item C:\\",
+              status: "Stopped",
+              startupChanged: true,
+              statusChanged: true,
+            },
+          }),
+          acknowledged: true,
+        },
+        NO_PENDING,
+      ),
+    ).rejects.toThrow(/démarrage/);
+  });
+
   test("n'avale pas un code de retour non nul", async () => {
     runRemoteChecked.mockImplementationOnce(async () => {
       throw new Error("Commande distante en echec (code 1) : Access is denied");
@@ -424,7 +610,7 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
       bootstrapWindowsStep.restore(CONFIG, {
         capture: CAPTURE,
         acknowledged: true,
-      }),
+      }, NO_PENDING),
     ).rejects.toThrow(/code 1/);
   });
 });
