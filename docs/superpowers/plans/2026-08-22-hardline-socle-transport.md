@@ -944,6 +944,71 @@ describe("persistance", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("une lecture concurrente ne voit jamais un fichier tronque", async () => {
+    // Le test precedent ne prouve PAS l'atomicite : une ecriture directe sans
+    // fichier temporaire le passerait aussi, puisque rien ne "survit". Celui-ci
+    // exerce l'invariant reel — pendant qu'un gros manifeste s'ecrit, toute
+    // lecture doit rendre un JSON complet, l'ancien ou le nouveau, jamais un
+    // fragment. Une ecriture non atomique fait echouer JSON.parse.
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      let big = emptyManifest(T1);
+      for (let i = 0; i < 3000; i++) {
+        big = recordStep(big, `etape-${i}`, { index: i, blob: "x".repeat(80) }, T2);
+      }
+
+      await writeManifest(path, emptyManifest(T1));
+
+      const writing = writeManifest(path, big);
+      const readings = Array.from({ length: 40 }, () => readManifest(path));
+      await writing;
+
+      for (const manifest of await Promise.all(readings)) {
+        expect(manifest.version).toBe(1);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("robustesse a la lecture", () => {
+  test("rejette un fichier qui n'est pas du JSON", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, "{ ceci n'est pas du json");
+      expect(readManifest(path)).rejects.toThrow(/illisible/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejette un JSON valide qui n'est pas un manifeste", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, JSON.stringify({ hello: "world" }));
+      expect(readManifest(path)).rejects.toThrow(/invalide/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejette un manifeste d'une version inconnue", async () => {
+    // Une version future decrit un etat anterieur dont cette version du code
+    // ignore la forme : restaurer a l'aveugle serait pire que refuser.
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, JSON.stringify({ ...emptyManifest(T1), version: 2 }));
+      expect(readManifest(path)).rejects.toThrow(/invalide/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 ```
 
@@ -1031,12 +1096,41 @@ export function stepsInReverseOrder(manifest: Manifest): StepRecord[] {
 
 // --- Frontière fichier. ---
 
+function isManifest(value: unknown): value is Manifest {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate["version"] === 1 &&
+    Array.isArray(candidate["order"]) &&
+    typeof candidate["steps"] === "object" &&
+    candidate["steps"] !== null
+  );
+}
+
 export async function readManifest(path: string): Promise<Manifest> {
   const file = Bun.file(path);
   if (!(await file.exists())) {
     return emptyManifest(new Date().toISOString());
   }
-  return (await file.json()) as Manifest;
+
+  let parsed: unknown;
+  try {
+    parsed = await file.json();
+  } catch {
+    throw new Error(
+      `Manifeste illisible : ${path} n'est pas un JSON valide. Ne pas le supprimer sans l'inspecter, il decrit ce que hardline a modifie sur les deux machines.`,
+    );
+  }
+
+  // Un cast sans verification laisserait la desinstallation restaurer des
+  // valeurs dont elle ignore la forme. Mieux vaut refuser franchement.
+  if (!isManifest(parsed)) {
+    throw new Error(
+      `Manifeste invalide : ${path} ne correspond pas au format attendu (version 1).`,
+    );
+  }
+
+  return parsed;
 }
 
 /**
@@ -1055,7 +1149,7 @@ export async function writeManifest(path: string, manifest: Manifest): Promise<v
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test test/lib/manifest.test.ts`
-Expected: PASS, huit tests.
+Expected: PASS, douze tests.
 
 - [ ] **Step 5: Commit**
 
