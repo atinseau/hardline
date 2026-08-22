@@ -69,7 +69,10 @@ export async function serveBootstrap(
   });
 
   // Un serveur TCP (par opposition a un socket unix) a toujours un port assigne.
-  const port = server.port as number;
+  const { port } = server;
+  if (port === undefined) {
+    throw new Error("Le serveur d'amorçage n'a pas de port TCP.");
+  }
 
   return {
     url: `http://localhost:${port}`,

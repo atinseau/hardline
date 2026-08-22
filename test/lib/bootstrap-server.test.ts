@@ -64,7 +64,9 @@ describe("serveBootstrap", () => {
   test("repond 404 sur toute autre route", async () => {
     const server = await serveBootstrap({ port: 0, template: TEMPLATE, ...VARS });
     try {
-      expect((await fetch(`${server.url}/autre`)).status).toBe(404);
+      const response = await fetch(`${server.url}/autre`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe("Not found");
     } finally {
       server.stop();
     }
