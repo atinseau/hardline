@@ -346,8 +346,21 @@ function cuttingTail(
       `if ((Get-Service -Name sshd -ErrorAction SilentlyContinue).StartType -eq 'Automatic') { Set-Service -Name sshd -StartupType ${startupType} -ErrorAction SilentlyContinue }`,
     );
   }
+  // Meme traitement pour l'etat du service : on relit avant d'ecrire. Un arret
+  // inconditionnel etait la derniere instruction du lot a modifier sans
+  // regarder, et c'est la plus lourde — elle ferme definitivement la porte.
+  //
+  // La garde ne distingue pas tout, et il faut le dire plutot que le taire :
+  // `Status -eq 'Running'` est vrai aussi bien parce que l'amorcage a demarre
+  // sshd que parce que l'utilisateur l'a demarre lui-meme apres un amorcage
+  // avorte. Rien, vu d'ici, ne separe les deux : le releve dit ce que
+  // l'amorcage COMPTAIT faire, pas ce qu'il a fait. La garde ferme le seul cas
+  // observable — un sshd deja arrete, qu'on n'a pas a rearreter — et le cas
+  // indiscernable reste ce qu'il est, nomme ici faute de pouvoir etre resolu.
   if (capture.sshd.statusChanged) {
-    tail.push("Stop-Service -Name sshd -Force -ErrorAction SilentlyContinue");
+    tail.push(
+      "if ((Get-Service -Name sshd -ErrorAction SilentlyContinue).Status -eq 'Running') { Stop-Service -Name sshd -Force -ErrorAction SilentlyContinue }",
+    );
   }
 
   return tail;

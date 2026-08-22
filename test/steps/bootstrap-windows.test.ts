@@ -495,6 +495,40 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     expect(dejaLance).not.toContain("Stop-Service");
   });
 
+  test("relit l'etat de sshd avant de l'arreter", async () => {
+    // `statusChanged` dit ce que l'amorcage COMPTAIT faire, pas ce qu'il a
+    // fait : un amorcage mort avant Start-Service laisse le drapeau leve et un
+    // service qui n'a jamais tourne. Comme pour le profil et le type de
+    // demarrage, on regarde avant d'ecrire.
+    const line = detachedLine(await restoreWith({}));
+    const garde = line.indexOf(
+      "(Get-Service -Name sshd -ErrorAction SilentlyContinue).Status -eq 'Running'",
+    );
+    expect(garde).toBeGreaterThan(0);
+    expect(garde).toBeLessThan(line.indexOf("Stop-Service"));
+  });
+
+  test("aucune ecriture sur sshd n'est emise sans relecture", async () => {
+    // La generalisation du test precedent : les deux instructions du lot qui
+    // touchent au service sont precedees, chacune, de sa propre relecture.
+    const line = detachedLine(
+      await restoreWith({
+        sshd: {
+          present: true,
+          startupType: "Manual",
+          status: "Stopped",
+          startupChanged: true,
+          statusChanged: true,
+        },
+      }),
+    );
+    for (const ecriture of ["Set-Service -Name sshd", "Stop-Service -Name sshd"]) {
+      const at = line.indexOf(ecriture);
+      expect(at).toBeGreaterThan(0);
+      expect(line.lastIndexOf("Get-Service -Name sshd", at)).toBeGreaterThan(0);
+    }
+  });
+
   test("ne desinstalle JAMAIS la capacite Windows OpenSSH", async () => {
     // Retirer une capacite est invasif, peut exiger un redemarrage, et
     // l'utilisateur peut legitimement vouloir garder un serveur SSH.
