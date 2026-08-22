@@ -1,5 +1,10 @@
 import { test, expect, describe } from "bun:test";
-import { encodePowerShell, buildSSHArgs, type SSHTarget } from "../../src/lib/ssh";
+import {
+  encodePowerShell,
+  withOutputEncoding,
+  buildSSHArgs,
+  type SSHTarget,
+} from "../../src/lib/ssh";
 
 const TARGET: SSHTarget = {
   host: "10.10.10.1",
@@ -25,6 +30,19 @@ describe("encodePowerShell", () => {
     expect(Buffer.from(encodePowerShell(script), "base64").toString("utf16le")).toBe(
       script,
     );
+  });
+});
+
+describe("withOutputEncoding", () => {
+  test("prefixe le script pour forcer une sortie UTF-8", () => {
+    const wrapped = withOutputEncoding("Write-Output 'réseau privé'");
+    expect(wrapped).toContain("OutputEncoding");
+    expect(wrapped).toContain("UTF8Encoding");
+  });
+
+  test("laisse le script d'origine intact a la fin", () => {
+    const script = "Get-NetAdapter | Select-Object Name";
+    expect(withOutputEncoding(script).endsWith(script)).toBe(true);
   });
 });
 

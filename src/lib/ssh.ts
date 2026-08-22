@@ -29,6 +29,18 @@ export function encodePowerShell(script: string): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
+const OUTPUT_UTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()";
+
+/**
+ * -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell part
+ * dans la page de code OEM de la console — cp850 sur un Windows francais — ce qui
+ * mutile les accents au retour. Ce prefixe force une sortie UTF-8 sans marque
+ * d'ordre des octets.
+ */
+export function withOutputEncoding(script: string): string {
+  return `${OUTPUT_UTF8}\n${script}`;
+}
+
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
   return [
     "ssh",
@@ -52,7 +64,7 @@ export async function runRemote(
   script: string,
   timeoutMs = 120_000,
 ): Promise<RemoteResult> {
-  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(script)}`;
+  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(withOutputEncoding(script))}`;
 
   const proc = Bun.spawn(buildSSHArgs(target, remoteCommand), {
     stdout: "pipe",
