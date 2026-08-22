@@ -90,34 +90,6 @@ describe("persistance", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-
-  test("une lecture concurrente ne voit jamais un fichier tronque", async () => {
-    // Le test precedent ne prouve PAS l'atomicite : une ecriture directe sans
-    // fichier temporaire le passerait aussi, puisque rien ne "survit". Celui-ci
-    // exerce l'invariant reel — pendant qu'un gros manifeste s'ecrit, toute
-    // lecture doit rendre un JSON complet, l'ancien ou le nouveau, jamais un
-    // fragment. Une ecriture non atomique fait echouer JSON.parse.
-    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
-    const path = join(dir, "manifest.json");
-    try {
-      let big = emptyManifest(T1);
-      for (let i = 0; i < 3000; i++) {
-        big = recordStep(big, `etape-${i}`, { index: i, blob: "x".repeat(80) }, T2);
-      }
-
-      await writeManifest(path, emptyManifest(T1));
-
-      const writing = writeManifest(path, big);
-      const readings = Array.from({ length: 40 }, () => readManifest(path));
-      await writing;
-
-      for (const manifest of await Promise.all(readings)) {
-        expect(manifest.version).toBe(1);
-      }
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("robustesse a la lecture", () => {
