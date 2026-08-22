@@ -102,7 +102,9 @@ export async function readManifest(path: string): Promise<Manifest> {
     parsed = await file.json();
   } catch {
     throw new Error(
-      `Manifeste illisible : ${path} n'est pas un JSON valide. Ne pas le supprimer sans l'inspecter, il decrit ce que hardline a modifie sur les deux machines.`,
+      `Manifeste illisible\u00a0: ${path} n'est pas un JSON valide. Ne pas le ` +
+        `supprimer sans l'inspecter, il décrit ce que hardline a modifié sur les ` +
+        `deux machines.`,
     );
   }
 
@@ -110,7 +112,7 @@ export async function readManifest(path: string): Promise<Manifest> {
   // valeurs dont elle ignore la forme. Mieux vaut refuser franchement.
   if (!isManifest(parsed)) {
     throw new Error(
-      `Manifeste invalide : ${path} ne correspond pas au format attendu (version 1).`,
+      `Manifeste invalide\u00a0: ${path} ne correspond pas au format attendu (version 1).`,
     );
   }
 

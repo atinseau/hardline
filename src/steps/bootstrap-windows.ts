@@ -391,18 +391,18 @@ const RESTORE = (
 /** Ce que le detail doit dire quand il n'y a rien d'exploitable a rapatrier. */
 const DEFECT_DETAIL: Record<CaptureDefect, string> = {
   absent:
-    "aucun relevé d'amorçage sur le PC : ce que l'amorçage a modifié ne pourra pas être défait",
+    "aucun relevé d'amorçage sur le PC\u00a0: ce que l'amorçage a modifié ne pourra pas être défait",
   illisible:
-    "relevé d'amorçage illisible sur le PC : ce que l'amorçage a modifié ne pourra pas être défait",
+    "relevé d'amorçage illisible sur le PC\u00a0: ce que l'amorçage a modifié ne pourra pas être défait",
   version:
-    "relevé d'amorçage d'une version inconnue : ce que l'amorçage a modifié ne pourra pas être défait",
+    "relevé d'amorçage d'une version inconnue\u00a0: ce que l'amorçage a modifié ne pourra pas être défait",
 };
 
 // --- L'etape. ------------------------------------------------------------
 
 export const bootstrapWindowsStep: Step<BootstrapState> = {
   name: BOOTSTRAP_STEP_NAME,
-  label: "Amorçage du PC : OpenSSH, pare-feu, clé et adressage (PC)",
+  label: "Amorçage du PC\u00a0: OpenSSH, pare-feu, clé et adressage (PC)",
 
   async inspect(config: Config) {
     const rows = await runRemoteJson<BootstrapState>(config.ssh, INSPECT);

@@ -181,7 +181,8 @@ describe("formatDiagnostic", () => {
           steps: [
             ...HEALTHY.steps,
             {
-              label: "Amorçage du PC : OpenSSH, pare-feu, clé et adressage (PC)",
+              label:
+                "Amorçage du PC\u00a0: OpenSSH, pare-feu, clé et adressage (PC)",
               conforming: true,
               detail: "relevé d'amorçage du 2026-08-22T09:00:00 déjà enregistré",
             },

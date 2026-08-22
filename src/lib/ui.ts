@@ -58,7 +58,7 @@ export const ui = {
   },
 
   failed({ label, detail }: StepReport): void {
-    log.error(`${label} — échec : ${detail}`);
+    log.error(`${label} — échec\u00a0: ${detail}`);
   },
 
   info(message: string): void {
