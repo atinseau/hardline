@@ -94,8 +94,9 @@ bun add -d @types/bun
 
 - [ ] **Step 2: Écrire les trois fichiers de configuration**
 
-`package.json` — remplacer le contenu généré par celui-ci, en conservant les
-versions de dépendances que `bun add` vient d'écrire :
+`package.json` — fusionner ces champs dans le fichier généré. **Conserver tels quels
+les blocs `dependencies` et `devDependencies` que `bun add` vient d'écrire** : ils sont
+volontairement absents du bloc ci-dessous, les effacer casserait l'installation.
 
 ```json
 {
@@ -552,7 +553,7 @@ export async function setServiceDHCP(service: string): Promise<number> {
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test test/lib/shell.test.ts`
-Expected: PASS, onze tests.
+Expected: PASS, huit tests.
 
 - [ ] **Step 5: Vérifier les fonctions système contre la vraie machine**
 
@@ -777,7 +778,7 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test test/lib/ssh.test.ts`
-Expected: PASS, huit tests.
+Expected: PASS, sept tests.
 
 - [ ] **Step 5: Vérifier contre le vrai PC**
 
@@ -1298,7 +1299,7 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test test/steps/network-mac.test.ts`
-Expected: PASS, neuf tests.
+Expected: PASS, huit tests.
 
 - [ ] **Step 6: Lancer la suite complète pour vérifier l'absence de régression**
 
@@ -1595,7 +1596,7 @@ limite de temps.
 
 **Files:**
 - Create: `src/steps/network-profile-task.ts`
-- Modify: `src/steps/index.ts` — ajouter l'étape au registre
+- Create: `src/steps/index.ts` — registre ordonné des étapes
 - Test: `test/steps/network-profile-task.test.ts`
 
 **Interfaces:**
@@ -1793,9 +1794,9 @@ export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
 Run: `bun test test/steps/network-profile-task.test.ts`
 Expected: PASS, huit tests.
 
-- [ ] **Step 5: Ajouter l'étape au registre**
+- [ ] **Step 5: Créer le registre des étapes**
 
-Dans `src/steps/index.ts` :
+`src/steps/index.ts` — ce fichier n'existe pas encore, c'est cette tâche qui le crée :
 
 ```ts
 import { windowsProfileTaskStep } from "./network-profile-task";
@@ -2693,7 +2694,6 @@ son état d'origine. En écrivant d'abord, le pire cas devient une étape enregi
 non appliquée, que le passage suivant corrige de lui-même.
 
 **Files:**
-- Create: `src/steps/index.ts`
 - Create: `src/lib/orchestrator.ts`
 - Create: `src/commands/install.ts`
 - Create: `src/commands/uninstall.ts`
@@ -2864,9 +2864,9 @@ afterEach(async () => {
 Run: `bun test test/lib/orchestrator.test.ts`
 Expected: FAIL — le module `../../src/lib/orchestrator` n'existe pas.
 
-- [ ] **Step 3: Écrire le registre des étapes**
+- [ ] **Step 3: Vérifier le registre des étapes**
 
-`src/steps/index.ts` :
+`src/steps/index.ts` a été créé par la tâche 6b et doit déjà contenir les trois étapes dans cet ordre. Le relire et le laisser tel quel s'il est conforme :
 
 ```ts
 import { macNetworkStep } from "./network-mac";
