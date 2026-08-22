@@ -3270,15 +3270,16 @@ non appliquée, que le passage suivant corrige de lui-même.
 - Create: `src/lib/orchestrator.ts`
 - Create: `src/commands/install.ts`
 - Create: `src/commands/uninstall.ts`
-- Modify: `src/cli.ts` — brancher les deux actions
-- Test: `test/lib/orchestrator.test.ts`
+- Modify: `src/cli.ts` — brancher les deux actions et rattraper `CancelledError`
+- Modify: `src/lib/preflight.ts` — ajouter `waitForRemote`
+- Test: `test/lib/orchestrator.test.ts`, `test/lib/preflight.test.ts`
 
 **Interfaces:**
 - Consumes: `Step` (Task 5), `macNetworkStep` (Task 5), `windowsNetworkStep` (Task 6),
   `ui` (Task 7), `runPreflight` / `hasBlockingFailure` (Task 8), `readManifest` /
   `writeManifest` / `recordStep` / `forgetStep` / `stepsInReverseOrder` (Task 4).
-- Produces: `ALL_STEPS`, `applySteps`, `revertSteps`, `installCommand`,
-  `uninstallCommand`.
+- Produces: `applySteps`, `revertSteps`, `installCommand`, `uninstallCommand`,
+  `waitForRemote`. `ALL_STEPS` existe déjà (tâche 6b).
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -3287,11 +3288,12 @@ non appliquée, que le passage suivant corrige de lui-même.
 ```ts
 import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG } from "../../src/config";
 import type { Step } from "../../src/steps/types";
-import { readManifest, emptyManifest } from "../../src/lib/manifest";
+import { readManifest } from "../../src/lib/manifest";
 import { applySteps, revertSteps } from "../../src/lib/orchestrator";
 
 type Trace = string[];
@@ -3350,16 +3352,17 @@ describe("applySteps", () => {
     expect(reports).toEqual(["applied:Etape a"]);
   });
 
-  test("ecrit le manifeste AVANT d'appliquer", async () => {
+  test("ecrit l'etat anterieur AVANT d'appliquer", async () => {
     // Le test qui protege l'invariant de surete : au moment ou apply s'execute,
-    // l'etat anterieur doit deja etre sur disque.
+    // l'etat anterieur doit deja etre sur disque, contenu compris. Si l'ecriture
+    // passait apres apply, readFileSync leverait ENOENT et le test echouerait.
     const trace: Trace = [];
-    let manifestAtApplyTime: unknown;
+    let manifestAtApplyTime = "";
     const step = makeStep("a", false, trace, () => {
-      manifestAtApplyTime = Bun.file(manifestPath).size;
+      manifestAtApplyTime = readFileSync(manifestPath, "utf8");
     });
     await applySteps([step], CONFIG, manifestPath, fakeUi);
-    expect(manifestAtApplyTime).toBeGreaterThan(0);
+    expect(manifestAtApplyTime).toContain("avant-a");
   });
 
   test("conserve l'etat anterieur dans le manifeste", async () => {
@@ -3373,19 +3376,17 @@ describe("applySteps", () => {
     expect((await readManifest(manifestPath)).order).toEqual([]);
   });
 
-  test("s'arrete a la premiere etape en echec et signale laquelle", async () => {
+  test("s'arrete a la premiere etape en echec", async () => {
     const trace: Trace = [];
     const boom = makeStep("b", false, trace, () => {
       throw new Error("refus");
     });
-    const after = makeStep("c", false, trace);
-    expect(
-      applySteps([makeStep("a", false, trace), boom, after], CONFIG, manifestPath, fakeUi),
+    const steps = [makeStep("a", false, trace), boom, makeStep("c", false, trace)];
+    await expect(
+      applySteps(steps, CONFIG, manifestPath, fakeUi),
     ).rejects.toThrow("refus");
-    await applySteps([makeStep("a", false, trace)], CONFIG, manifestPath, fakeUi).catch(
-      () => {},
-    );
-    expect(trace).not.toContain("apply:c");
+    // L'etape c n'est meme pas inspectee : l'orchestrateur s'arrete net.
+    expect(trace).toEqual(["inspect:a", "apply:a", "inspect:b", "apply:b"]);
   });
 
   test("rejouer applySteps ne reapplique rien", async () => {
@@ -3439,20 +3440,17 @@ Expected: FAIL — le module `../../src/lib/orchestrator` n'existe pas.
 
 - [ ] **Step 3: Vérifier le registre des étapes**
 
-`src/steps/index.ts` a été créé par la tâche 6b et doit déjà contenir les trois étapes dans cet ordre. Le relire et le laisser tel quel s'il est conforme :
+`src/steps/index.ts` a été créé par la tâche 6b. Le relire et vérifier qu'il exporte
+bien les **trois** étapes dans cet ordre — le Mac d'abord, car c'est la machine depuis
+laquelle on parle ; le PC ensuite, une fois le chemin établi ; la tâche planifiée en
+dernier, car elle suppose le profil réseau déjà posé. Ne rien y modifier :
 
 ```ts
-import { macNetworkStep } from "./network-mac";
-import { windowsNetworkStep } from "./network-windows";
-import type { Step } from "./types";
-
-/**
- * L'ordre compte : les etapes sont appliquees dans cet ordre et restaurees
- * dans l'ordre inverse. Le Mac d'abord, car c'est la machine depuis laquelle
- * on parle ; le PC ensuite, une fois le chemin etabli.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const ALL_STEPS: Step<any>[] = [macNetworkStep, windowsNetworkStep];
+export const ALL_STEPS: Step<any>[] = [
+  macNetworkStep,
+  windowsNetworkStep,
+  windowsProfileTaskStep,
+];
 ```
 
 - [ ] **Step 4: Écrire l'orchestrateur**
@@ -3525,7 +3523,7 @@ export async function revertSteps(
     if (!step) {
       reporter.failed({
         label: record.step,
-        detail: "etape inconnue de cette version de hardline, ignoree",
+        detail: "étape inconnue de cette version de hardline, ignorée",
       });
       manifest = forgetStep(manifest, record.step);
       await writeManifest(manifestPath, manifest);
@@ -3533,7 +3531,7 @@ export async function revertSteps(
     }
 
     await step.restore(config, record.previous);
-    reporter.applied({ label: step.label, detail: "etat anterieur restaure" });
+    reporter.applied({ label: step.label, detail: "état antérieur restauré" });
 
     manifest = forgetStep(manifest, record.step);
     await writeManifest(manifestPath, manifest);
@@ -3541,78 +3539,177 @@ export async function revertSteps(
 }
 ```
 
-- [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
+- [ ] **Step 5: Lancer les tests d'orchestration et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/lib/orchestrator.test.ts`
 Expected: PASS, dix tests.
 
-- [ ] **Step 6: Écrire les deux commandes**
+- [ ] **Step 6: Attendre que le PC réponde après l'amorçage**
+
+L'amorçage du PC est le seul geste manuel du projet. Faire relancer `hardline install`
+juste après serait un second geste : l'installation attend donc d'elle-même que la
+machine réponde, puis reprend son cours.
+
+Ajouter à la fin de `src/lib/preflight.ts` :
+
+```ts
+const PROBE_INTERVAL_MS = 5_000;
+
+/**
+ * Attend que le PC reponde en SSH, au plus jusqu'a l'echeance. `sleep` est
+ * injectable pour que les tests n'attendent pas reellement.
+ */
+export async function waitForRemote(
+  config: Config,
+  deadlineMs: number,
+  sleep: (ms: number) => Promise<void> = Bun.sleep,
+): Promise<boolean> {
+  for (let waited = 0; waited <= deadlineMs; waited += PROBE_INTERVAL_MS) {
+    try {
+      await runRemoteJson(config.ssh, "[pscustomobject]@{ ok = $true }");
+      return true;
+    } catch {
+      if (waited + PROBE_INTERVAL_MS > deadlineMs) break;
+      await sleep(PROBE_INTERVAL_MS);
+    }
+  }
+  return false;
+}
+```
+
+Ajouter à `test/lib/preflight.test.ts` — l'import en tête devient
+`const { runPreflight, hasBlockingFailure, waitForRemote } = await import(...)` :
+
+```ts
+describe("waitForRemote", () => {
+  test("rend la main des que le PC repond", async () => {
+    setup();
+    remoteThrows = new Error("injoignable");
+    const slept: number[] = [];
+    const reachable = await waitForRemote(CONFIG, 60_000, async (ms) => {
+      slept.push(ms);
+      if (slept.length === 2) remoteThrows = null;
+    });
+    expect(reachable).toBe(true);
+    expect(slept).toEqual([5_000, 5_000]);
+  });
+
+  test("abandonne a l'echeance sans depasser le budget d'attente", async () => {
+    setup();
+    remoteThrows = new Error("injoignable");
+    const slept: number[] = [];
+    const reachable = await waitForRemote(CONFIG, 10_000, async (ms) => {
+      slept.push(ms);
+    });
+    expect(reachable).toBe(false);
+    expect(slept).toEqual([5_000, 5_000]);
+  });
+});
+```
+
+Run: `bun test --isolate test/lib/preflight.test.ts`
+Expected: PASS, douze tests.
+
+- [ ] **Step 7: Écrire les deux commandes**
 
 `src/commands/install.ts` :
 
 ```ts
+import { readFile } from "node:fs/promises";
 import { CONFIG } from "../config";
 import { ALL_STEPS } from "../steps";
 import { applySteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
-import { hasBlockingFailure, runPreflight } from "../lib/preflight";
-import { serveBootstrap, localBootstrapUrl } from "../lib/bootstrap-server";
+import type { CheckResult } from "../lib/preflight";
+import { hasBlockingFailure, runPreflight, waitForRemote } from "../lib/preflight";
+import { localBootstrapUrl, serveBootstrap } from "../lib/bootstrap-server";
 import { configureOutput, ui, withSpinner } from "../lib/ui";
-import { readFile } from "node:fs/promises";
+
+const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
+
+function reportChecks(checks: CheckResult[]): void {
+  for (const check of checks) {
+    if (check.ok) ui.info(`${check.name} — ${check.detail}`);
+    else if (check.blocking) ui.failed({ label: check.name, detail: check.detail });
+    else ui.warn(`${check.name} — ${check.detail}`);
+  }
+}
+
+async function readPublicKey(): Promise<string> {
+  const path = `${CONFIG.ssh.identityFile}.pub`;
+  try {
+    return (await readFile(path, "utf8")).trim();
+  } catch {
+    throw new Error(
+      `Clé publique introuvable\u00a0: ${path}. La créer avec ` +
+        `«\u00a0ssh-keygen -t ed25519 -f ${CONFIG.ssh.identityFile}\u00a0».`,
+    );
+  }
+}
+
+/**
+ * Sert le script d'amorcage et attend que le PC reponde. C'est le seul geste
+ * manuel du projet : une ligne a coller une fois par PC.
+ */
+async function bootstrapRemote(): Promise<boolean> {
+  const publicKey = await readPublicKey();
+  const server = await serveBootstrap({
+    port: CONFIG.bootstrapPort,
+    publicKey,
+    interfaceAlias: CONFIG.windows.interfaceAlias,
+    windowsIp: CONFIG.windows.ip,
+    prefixLength: CONFIG.windows.prefixLength,
+  });
+
+  ui.report("Amorçage du PC", [
+    "Le PC n'est pas encore joignable. Sur le PC, dans un",
+    "PowerShell lancé en administrateur, coller cette ligne\u00a0:",
+    "",
+    `  irm ${localBootstrapUrl(server.port)} | iex`,
+    "",
+    "L'installation reprendra d'elle-même dès que le PC répondra.",
+  ]);
+
+  try {
+    return await withSpinner("Attente du PC (10 minutes au plus)", () =>
+      waitForRemote(CONFIG, BOOTSTRAP_DEADLINE_MS),
+    );
+  } finally {
+    server.stop();
+  }
+}
 
 export async function installCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — installation");
 
-  const checks = await withSpinner("Verification des preconditions", async () =>
+  let checks = await withSpinner("Vérification des préconditions", () =>
     runPreflight(CONFIG),
   );
+  reportChecks(checks);
 
-  for (const check of checks) {
-    const report = { label: check.name, detail: check.detail };
-    if (check.ok) ui.skipped(report);
-    else if (check.blocking) ui.failed(report);
-    else ui.warn(`${check.name} — ${check.detail}`);
+  if (checks.some((c) => c.name === "ssh" && !c.ok)) {
+    if (!(await bootstrapRemote())) {
+      ui.finish(
+        "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    checks = await withSpinner("Nouvelle vérification des préconditions", () =>
+      runPreflight(CONFIG),
+    );
+    reportChecks(checks);
   }
 
   if (hasBlockingFailure(checks)) {
-    const sshFailed = checks.some((c) => c.name === "ssh" && !c.ok);
-
-    if (sshFailed) {
-      const publicKey = (
-        await readFile(`${CONFIG.ssh.identityFile}.pub`, "utf8")
-      ).trim();
-
-      const server = await serveBootstrap({
-        port: CONFIG.bootstrapPort,
-        publicKey,
-        interfaceAlias: CONFIG.windows.interfaceAlias,
-        windowsIp: CONFIG.windows.ip,
-        prefixLength: CONFIG.windows.prefixLength,
-      });
-
-      ui.report("Amorcage du PC", [
-        "Le PC n'est pas encore joignable. Sur le PC, dans un",
-        "PowerShell administrateur, coller cette ligne :",
-        "",
-        `  irm ${localBootstrapUrl(server.port)} | iex`,
-        "",
-        "Puis relancer : hardline install",
-      ]);
-
-      ui.info("Serveur d'amorcage actif pendant 10 minutes. Ctrl+C pour arreter.");
-      await Bun.sleep(10 * 60_000);
-      server.stop();
-      return;
-    }
-
-    ui.finish("Installation interrompue : precondition non satisfaite.");
+    ui.finish("Installation interrompue\u00a0: une précondition n'est pas satisfaite.");
     process.exitCode = 1;
     return;
   }
 
   await applySteps(ALL_STEPS, CONFIG, defaultManifestPath(), ui);
-  ui.finish("Liaison etablie. Verifier avec : hardline doctor");
+  ui.finish("Liaison établie. Vérifier avec «\u00a0hardline doctor\u00a0».");
 }
 ```
 
@@ -3627,29 +3724,31 @@ import { askConfirmation, configureOutput, ui } from "../lib/ui";
 
 export async function uninstallCommand(options: { yes: boolean }): Promise<void> {
   configureOutput();
-  ui.start("hardline — desinstallation");
+  ui.start("hardline — désinstallation");
 
   const confirmed = await askConfirmation(
     "Restaurer la configuration réseau antérieure des deux machines ?",
     { assumeYes: options.yes },
   );
   if (!confirmed) {
-    ui.finish("Rien n'a ete modifie.");
+    ui.finish("Rien n'a été modifié.");
     return;
   }
 
   await revertSteps(ALL_STEPS, CONFIG, defaultManifestPath(), ui);
-  ui.finish("Etat anterieur restaure.");
+  ui.finish("État antérieur restauré.");
 }
 ```
 
-- [ ] **Step 7: Brancher les commandes dans le CLI**
+- [ ] **Step 8: Brancher les commandes dans le CLI**
 
-Dans `src/cli.ts`, remplacer les deux actions correspondantes :
+Dans `src/cli.ts`, remplacer les deux actions `NOT_IMPLEMENTED` correspondantes — celles
+de `up` et `doctor` restent inchangées :
 
 ```ts
 import { installCommand } from "./commands/install";
 import { uninstallCommand } from "./commands/uninstall";
+import { CancelledError, ui } from "./lib/ui";
 
 // ...
 
@@ -3665,12 +3764,28 @@ import { uninstallCommand } from "./commands/uninstall";
     .action(uninstallCommand);
 ```
 
-- [ ] **Step 8: Lancer la suite complète**
+Et remplacer le point d'entrée, pour qu'une annulation au clavier ne remonte pas une
+trace d'exécution et qu'une erreur d'exécution soit rendue en français :
+
+```ts
+if (import.meta.main) {
+  try {
+    await buildProgram().parseAsync(Bun.argv);
+  } catch (error) {
+    if (!(error instanceof CancelledError)) {
+      ui.failed({ label: "hardline", detail: (error as Error).message });
+    }
+    process.exitCode = 1;
+  }
+}
+```
+
+- [ ] **Step 9: Lancer la suite complète**
 
 Run: `bun test --isolate`
 Expected: PASS, tous les tests des tâches 1 à 10.
 
-- [ ] **Step 9: Vérifier l'idempotence sur les vraies machines**
+- [ ] **Step 10: Vérifier l'idempotence sur les vraies machines**
 
 Run: `bun run src/cli.ts install`
 Expected: les étapes s'appliquent, la liaison est établie.
@@ -3679,10 +3794,15 @@ Run: `bun run src/cli.ts install`
 Expected: **toutes les étapes sont annoncées « déjà conforme »**, aucune n'est
 réappliquée. C'est la validation de l'idempotence.
 
-- [ ] **Step 10: Commit**
+Cette étape dépend d'un PC allumé et joignable : elle **ne bloque pas** la tâche. Si le
+PC ne répond pas, le consigner dans le rapport et poursuivre.
+
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/steps/index.ts src/lib/orchestrator.ts src/commands/ src/cli.ts test/lib/orchestrator.test.ts
+git add src/lib/orchestrator.ts src/lib/preflight.ts src/commands/install.ts \
+  src/commands/uninstall.ts src/cli.ts test/lib/orchestrator.test.ts \
+  test/lib/preflight.test.ts
 git commit -m "feat: orchestrateur idempotent, install et uninstall"
 ```
 
