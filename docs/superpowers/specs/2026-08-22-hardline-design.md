@@ -99,15 +99,19 @@ une décision ultérieure, pas une dette de conception.
 ## 7. Flux d'installation sur un PC neuf
 
 1. Brancher le câble Ethernet entre les deux machines.
-2. Sur le PC, dans un PowerShell administrateur, une seule ligne :
+2. Sur le Mac, `hardline install`. La commande constate que le PC ne répond pas,
+   affiche la ligne à coller et sert le script d'amorçage.
+3. Sur le PC, dans un PowerShell administrateur, la ligne affichée :
    `irm http://<nom-du-mac>.local:8080/bootstrap.ps1 | iex`
-   Elle installe OpenSSH, dépose la clé publique du Mac dans
-   `administrators_authorized_keys`, ouvre le port 22 et fixe l'adresse du lien direct.
+   Elle relève d'abord l'état d'origine du PC, puis installe OpenSSH, dépose la clé
+   publique du Mac dans `administrators_authorized_keys`, ouvre le port 22 et fixe
+   l'adresse du lien direct.
    Le nom mDNS du Mac est résolu nativement par Windows 11, par Wi-Fi comme par
    Ethernet : aucune adresse à retenir.
-3. Sur le Mac, `hardline install`. Tout le reste passe par SSH.
+4. `hardline install`, toujours en cours sur le Mac, détecte que le PC répond et
+   reprend son cours. Il n'y a pas de seconde commande à lancer.
 
-Le serveur HTTP de l'étape 2 est éphémère : il n'est actif que pendant la phase
+Le serveur HTTP de l'étape 3 est éphémère : il n'est actif que pendant la phase
 d'amorçage et s'arrête ensuite.
 
 ## 8. Idempotence
@@ -129,16 +133,108 @@ préexistantes.
 l'état antérieur plutôt qu'en supposant des valeurs par défaut. Un désinstalleur qui
 devine est un désinstalleur qui casse la machine.
 
+**L'amorçage est le seul geste que le manifeste ne peut pas observer**, puisqu'il
+précède la toute première session SSH : quand hardline parvient enfin à parler au PC,
+c'est justement parce que l'amorçage a déjà tout changé. Le script d'amorçage relève
+donc lui-même, sur le PC et **avant sa première modification**, ce qu'il a trouvé —
+état de la fonctionnalité OpenSSH, démarrage et état du service sshd, existence de la
+règle de pare-feu, existence du fichier de clés et de la ligne du Mac, adresses IPv4
+et leur origine, client DHCP, catégorie réseau — ainsi que, pour chacun, s'il en est
+l'auteur. Défaire ce que l'amorçage n'a pas fait serait un dégât d'un genre nouveau.
+Ce relevé n'est jamais réécrit par un second amorçage, et une étape le rapatrie dans
+le manifeste dès la première installation qui suit.
+
+Parce qu'il n'est jamais réécrit, **il borne aussi ce que l'amorçage s'autorise à
+retirer** : le ménage d'adresses du lien direct ne retire que les adresses dont le
+relevé rend compte. Un second amorçage trouve un relevé qui décrit le PC d'avant le
+premier ; une adresse posée depuis ne figure dans aucun relevé, et la retirer serait la
+détruire sans trace. Une adresse de trop est un désagrément, une adresse détruite sans
+trace est irréversible. Un relevé illisible n'autorise donc aucun retrait.
+
+**Une seule chose n'est délibérément pas défaite** : la fonctionnalité Windows
+« OpenSSH Server ». La retirer exigerait un redémarrage, et l'utilisateur peut
+légitimement vouloir garder un serveur SSH ; seul le service sshd est rendu à son
+démarrage d'origine. `uninstall` le dit avant de poser sa question, avec le fait que
+réinstaller exigera de refaire le geste manuel d'amorçage.
+
 **L'ordre d'écriture est une contrainte de sûreté, pas un détail.** L'état antérieur
 d'une étape est écrit sur disque *avant* que l'étape ne modifie quoi que ce soit,
-jamais après. La raison est concrète : la bibliothèque d'affichage intercepte Ctrl+C
-pendant un indicateur d'activité et termine le processus immédiatement et de façon
-synchrone, sans laisser s'exécuter le moindre traitement de rattrapage asynchrone. Une
-interruption au clavier au mauvais moment tuerait donc le programme entre la
-modification et son enregistrement, laissant une machine modifiée dont plus rien ne
-connaît l'état d'origine. En écrivant d'abord, le pire cas devient une étape
-enregistrée mais non appliquée — situation que `install` corrige de lui-même au
-prochain passage, puisque chaque étape constate avant d'agir.
+jamais après.
+
+Deux raisons, l'une mesurée, l'autre qui ne dépend de personne.
+
+La première tient à la bibliothèque d'affichage, et elle est vérifiable : pendant un
+indicateur d'activité, `spinner()` installe `block()`
+(`@clack/prompts/dist/index.mjs:988`), dont le gestionnaire de touches appelle
+`process.exit(0)` sur Ctrl+C (`@clack/core/dist/index.mjs:144`). Le processus meurt
+**immédiatement et de façon synchrone**, sans exécuter le moindre traitement
+asynchrone de rattrapage. Le comportement diffère pendant une *invite*, où l'annulation
+remonte comme une valeur, devient une `CancelledError` et laisse les `finally`
+s'exécuter.
+
+La convergence, elle, ne tourne sous aucun indicateur — `withSpinner` n'enveloppe que
+les vérifications et l'attente du PC. Ce n'est pas une consolation : un Ctrl+C y tombe
+sur le comportement par défaut de SIGINT, qui termine le processus tout aussi sèchement.
+Le partage entre les deux cas n'a donc aucune valeur défensive, ce qui amène à la
+seconde raison.
+
+La seconde raison est plus solide parce qu'elle ne suppose rien : **aucun traitement de
+rattrapage n'est garanti**, jamais. Une mise à mort du processus, une coupure de
+courant, un plantage du runtime n'exécutent rien du tout. Faire dépendre l'état
+récupérable de deux machines de la bonne volonté d'un gestionnaire de sortie serait une
+erreur de conception, quelle que soit la bibliothèque du moment et quelle que soit sa
+version.
+
+En écrivant d'abord, le pire cas devient une étape enregistrée mais non appliquée —
+situation que `install` corrige de lui-même au prochain passage, puisque chaque étape
+constate avant d'agir.
+
+**Le manifeste est protégé par un verrou, pris pour toute la durée d'une exécution.**
+`writeManifest` est atomique — fichier temporaire puis renommage — mais l'atomicité de
+l'écriture ne protège pas la séquence lire-modifier-écrire : deux `hardline install`
+lancés ensemble lisaient le même manifeste, chacun y ajoutait son étape, et le second
+effaçait l'enregistrement du premier. L'état antérieur d'une machine disparaissait sans
+un mot. Le verrou est un fichier voisin du manifeste, publié par un lien dur — donc déjà
+rempli quand il apparaît, jamais anonyme — et rendu à la fin de l'exécution, succès comme
+échec. La seconde exécution dit qu'une autre est en cours, nomme son processus, et ne
+modifie rien.
+
+Le verrou est rendu par le `finally` de l'exécution, et — pendant un indicateur
+d'activité — par un gestionnaire de sortie synchrone, seul filet là où `block()` fait
+mourir le processus sans dérouler un `finally`. Hors de ce cas, rien n'est garanti.
+
+**Un verrou orphelin est donc un état prévu, pas un accident à conjurer.** Une mise à mort
+du processus, une coupure de courant, un plantage laissent le verrou en place, et c'est la
+reprise qui rattrape cela.
+
+**Une seule chose autorise une reprise : le processus nommé n'existe plus.** Le temps n'y
+suffit jamais. L'instant du dernier démarrage est enregistré dans le verrou et il est
+utile — un verrou antérieur à ce démarrage ne peut appartenir à personne — mais il se
+calcule à partir de deux horloges, celle du noyau et celle du mur, et la seconde est
+corrigible à tout instant par le réseau. Un pas d'horloge pendant les dix minutes
+d'attente de l'amorçage suffirait à faire passer un verrou tenu pour un verrou mort. Or
+l'arbitrage est déséquilibré : voler un verrou tenu, c'est la double écriture silencieuse
+du manifeste ; refuser à tort, c'est un `rm` que le message épelle. Le temps est donc
+**une information portée par le message**, jamais une autorisation.
+
+**La reprise ne détruit rien qu'elle n'ait prouvé être l'orphelin.** Elle donne d'abord un
+second nom au fichier présent — un lien dur, qui ne déplace ni n'efface —, le relit sous ce
+nom, vérifie que le verrou désigne toujours ce même fichier, et alors seulement retire le
+nom d'origine. Une exécution qui s'arrête avant ce dernier geste, parce que le fichier
+n'est pas l'orphelin ou parce qu'elle meurt, n'a rien abîmé. Les deux formes essayées avant
+celle-ci laissaient au contraire deux exécutions détenir le verrou ensemble : une
+suppression inconditionnelle, que toutes réussissent, faisait effacer par la perdante le
+verrou tout neuf de la gagnante ; un déplacement atomique désignait bien un seul gagnant,
+mais déplaçait avant de lire, emportait parfois un verrou vivant et n'arrivait plus à le
+remettre. Il reste une fenêtre de deux appels système entre la vérification et le retrait,
+qu'aucune primitive disponible ne ferme — Bun n'expose pas `O_EXLOCK` — et elle est écrite
+dans le code plutôt que tue.
+
+Voler un verrou tenu serait exactement le dégât que le verrou existe pour empêcher. En
+contrepartie, un refus doit toujours laisser une porte : quand le verrou est illisible ou
+que son détenteur ne peut pas être écarté, **le message nomme le fichier à supprimer**.
+Le cas d'un verrou simplement tenu par une exécution vivante, lui, ne la nomme pas : il
+n'y a rien à supprimer, seulement à attendre.
 
 ## 10. Persistance au redémarrage
 
@@ -157,12 +253,79 @@ sur cette seule interface.
 
 ## 11. Préconditions et gestion d'erreurs
 
-Vérifiées avant toute action, chacune bloquante avec un message explicite : PC
-joignable sur le lien direct, session SSH fonctionnelle, Windows 11, GPU NVIDIA
-présent, lien Ethernet actif des deux côtés, privilèges administrateur côté Windows.
+Les préconditions se vérifient en deux phases, et cet ordre est imposé par la
+physique du lien, pas par commodité. Tant que le Mac n'a pas d'adresse sur le
+réseau `10.10.10.0/24`, aucune route ne mène au PC : une sonde SSH vers
+`10.10.10.1` partirait par la passerelle Wi-Fi et expirerait, quel que soit l'état
+réel du PC. **Aucune précondition distante n'est donc observable avant que le côté
+Mac ait convergé.**
 
-Une précondition non satisfaite arrête l'installation avant toute modification. Aucun
-état partiellement appliqué n'est laissé derrière.
+*Phase locale.* Le service réseau du Mac existe et l'adaptateur est branché.
+Bloquante. Rien n'est modifié avant qu'elle passe.
+
+*Convergence locale.* L'adresse fixe du Mac est posée, son état antérieur écrit sur
+disque d'abord. Le lien devient routable.
+
+*Phase distante.* PC joignable sur le lien direct, session SSH fonctionnelle,
+Windows 11, GPU NVIDIA présent, lien Ethernet actif côté PC, privilèges
+administrateur côté Windows. Chacune bloquante avec un message explicite. Si seule
+la précondition SSH échoue, l'amorçage manuel est proposé et la commande attend que
+le PC réponde, puis rejoue cette phase.
+
+*Rapatriement du relevé d'amorçage.* **Dès que la session SSH répond, et avant la
+porte des préconditions restantes.** L'ordre n'est pas cosmétique : quand cette
+session s'ouvre, l'amorçage a déjà modifié le PC. Attendre la convergence distante
+pour rapatrier son relevé, c'était accepter qu'un blocage sur le GPU laisse un
+manifeste vide et un PC dont l'adressage d'origine n'existait plus nulle part — le
+scénario même contre lequel le relevé existe. On enregistre ce qu'on peut perdre dès
+l'instant où on ne peut plus le perdre. Un relevé absent, abîmé ou d'une version
+inconnue n'enregistre rien et ne bloque rien : il le dit, et ne promet rien.
+
+*Convergence distante.* Les étapes côté PC, chacune précédée de l'écriture de son
+état antérieur.
+
+**Une seule queue détachée coupante par désinstallation, et elle appartient à la
+dernière restauration qui passe.** Certaines instructions côté PC coupent le canal
+SSH qui les transporte — retrait de l'adresse qui porte la session, retour du profil
+réseau qui autorise la règle de pare-feu, arrêt de sshd. Elles sont confiées à un
+processus détaché, qui rend la main *avant* d'avoir agi. Deux étapes émettant chacune
+sa charge détachée verraient leurs comptes à rebours se recouvrir : la première
+tuerait la session SSH neuve dont la seconde a besoin, et le PC resterait injoignable
+avec son adressage d'origine jamais rendu. Une étape sait donc quelles restaurations
+passent après elle, et cède la queue quand elle n'est pas la dernière.
+
+**Une queue détachée est lancée, jamais achevée — et le programme ne dit pas le
+contraire.** Elle rend la main dès que `Start-Process` est lancé ; sa charge dort deux
+secondes, puis retire l'adresse qui portait la session SSH et referme le pare-feu. À
+partir de cet instant le Mac ne peut plus rien observer de ce PC. `uninstall` rapporte donc
+ces étapes comme *lancées*, pas comme restaurées, **conserve leur enregistrement au
+manifeste** — c'est la seule description de l'état d'origine, et on ne l'échange pas contre
+l'espoir qu'une charge a abouti — et dit à l'utilisateur quoi aller constater au clavier
+du PC : son adressage et son profil réseau d'origine. Lui faire guetter le retour de la
+liaison serait lui désigner le mauvais signal, puisqu'une désinstallation réussie a
+précisément pour effet qu'elle ne revienne pas.
+
+Le code de sortie reste 0, et pas seulement parce que rien n'a été *observé* en échec :
+une queue détachée est la fin **normale** d'une désinstallation complète, donc sortir en
+1 ferait échouer toutes les réussites. Inventer une panne que le programme n'a pas vue
+serait le même mensonge dans l'autre sens. C'est le message qui porte l'incertitude.
+
+L'étape d'adressage du PC, elle, choisit sa branche *sur le PC* selon l'adresse qui porte
+la session ; son script annonce donc en sortie laquelle il a empruntée, faute de quoi une
+restauration parfaitement observée — celle qui s'exécute en ligne, dont le code de retour
+est vérifié — serait rapportée comme incertaine.
+
+Ce que l'étape apprend ne compte que **les restaurations que cette version sait
+exécuter** : une étape nommée par le manifeste mais dont le code a disparu ne
+restaurera rien, et lui céder la queue serait la céder à personne. Et une étape qui
+cède n'a rien restauré : le rapport de `uninstall` le dit comme tel, plutôt que
+d'annoncer un état rendu sans qu'une seule session ait été ouverte.
+
+Une précondition non satisfaite arrête l'installation à la phase où elle échoue.
+L'invariant qui tient de bout en bout n'est pas « rien n'a été modifié » — il ne
+peut pas l'être — mais **rien n'a été modifié dont l'état antérieur ne soit déjà sur
+disque**. Un arrêt en phase distante laisse donc le Mac converge et enregistré :
+`hardline uninstall` le rend, `hardline install` reprend là où il s'était arrêté.
 
 ## 12. Commandes
 
@@ -172,6 +335,14 @@ Une précondition non satisfaite arrête l'installation avant toute modification
 | `hardline uninstall` | Restaure l'état antérieur à partir du manifeste |
 | `hardline up` | Geste quotidien : réveille le PC si besoin, attend le lien, ouvre la session en plein écran |
 | `hardline doctor` | Diagnostic : lien, adresses, service, appairage, latence |
+
+**Le code de sortie de `doctor` est fait pour être scripté** : 0 quand la liaison
+fonctionne, 1 quand elle ne fonctionne pas, et rien d'autre. Une précondition
+d'*installation* non satisfaite — la clé publique du Mac, dont le PC détient déjà une
+copie et sans laquelle le lien tient parfaitement — est rapportée sur sa propre ligne,
+marquée « !! », et nommée dans la conclusion ; elle ne compte pas comme une anomalie
+du lien. Les confondre faisait sortir en 1 une liaison qui marche, ce qui rend le code
+de sortie inutilisable.
 
 `doctor` mesure la latence avec `ping`, toujours disponible. Le débit n'est mesuré
 que si `iperf3` est présent sur les deux machines ; son absence produit une ligne
@@ -242,7 +413,9 @@ hardline/
 │   │   └── doctor.ts
 │   ├── steps/                    # une étape convergente = un fichier
 │   │   ├── network-mac.ts
+│   │   ├── bootstrap-windows.ts  # relevé d'avant amorçage, et sa restitution
 │   │   ├── network-windows.ts
+│   │   ├── detach.ts             # l'idiome des instructions qui coupent le canal
 │   │   ├── sunshine.ts
 │   │   ├── virtual-display.ts
 │   │   ├── pairing.ts
@@ -253,6 +426,7 @@ hardline/
 │   │   ├── ssh.ts                # wrapper Bun.spawn pour PowerShell distant
 │   │   ├── bootstrap-server.ts   # Bun.serve éphémère
 │   │   ├── sunshine-api.ts       # client fetch, TLS relâché confiné
+│   │   ├── powershell.ts         # les valeurs cousues dans un script, contrôlées
 │   │   ├── manifest.ts           # état JSON, écriture atomique
 │   │   └── preflight.ts          # vérification des préconditions
 │   └── assets/
@@ -270,7 +444,7 @@ rend l'idempotence et la désinstallation vérifiables plutôt qu'espérées.
 
 ## 15. Tests
 
-`bun test`. La difficulté est que l'essentiel du code invoque des commandes système,
+`bun test --isolate`. La difficulté est que l'essentiel du code invoque des commandes système,
 qu'on ne peut ni exécuter ni mocker globalement sans fragilité. La règle du projet est
 donc que **rien dans `steps/` ou `commands/` n'appelle `Bun.$` ou `Bun.spawn`
 directement** : tout passe par les fonctions de `lib/shell.ts` et `lib/ssh.ts`, qui

@@ -44,6 +44,11 @@ Ces contraintes s'appliquent à toutes les tâches sans être répétées.
   inspecter — `ping`, `networksetup` — utilise `.nothrow()`.
 - Langue de l'interface : français, accents inclus. Les identifiants du code restent en
   anglais.
+- **Les tests se lancent avec `bun test --isolate`**, et le script `test` du
+  `package.json` porte ce drapeau. `mock.module` remplace un module pour tout le
+  processus : sans isolation, un fichier de test qui substitue `src/lib/shell.ts`
+  contamine les fichiers exécutés après lui. La clé `isolate` n'existe pas dans
+  `bunfig.toml`, le drapeau est donc obligatoire.
 
 ## Fichiers du plan 1
 
@@ -94,8 +99,9 @@ bun add -d @types/bun
 
 - [ ] **Step 2: Écrire les trois fichiers de configuration**
 
-`package.json` — remplacer le contenu généré par celui-ci, en conservant les
-versions de dépendances que `bun add` vient d'écrire :
+`package.json` — fusionner ces champs dans le fichier généré. **Conserver tels quels
+les blocs `dependencies` et `devDependencies` que `bun add` vient d'écrire** : ils sont
+volontairement absents du bloc ci-dessous, les effacer casserait l'installation.
 
 ```json
 {
@@ -105,7 +111,7 @@ versions de dépendances que `bun add` vient d'écrire :
   "private": true,
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "test": "bun test",
+    "test": "bun test --isolate",
     "build": "bun run scripts/build.ts"
   }
 }
@@ -160,7 +166,7 @@ test("le programme porte un numero de version", () => {
 
 - [ ] **Step 4: Lancer le test et vérifier qu'il échoue**
 
-Run: `bun test test/cli.test.ts`
+Run: `bun test --isolate test/cli.test.ts`
 Expected: FAIL — le module `../src/cli` n'existe pas.
 
 - [ ] **Step 5: Écrire l'implémentation minimale**
@@ -216,7 +222,7 @@ if (import.meta.main) {
 
 - [ ] **Step 6: Lancer le test et vérifier qu'il passe**
 
-Run: `bun test test/cli.test.ts`
+Run: `bun test --isolate test/cli.test.ts`
 Expected: PASS, deux tests.
 
 - [ ] **Step 7: Vérifier le CLI à la main**
@@ -398,7 +404,7 @@ describe("parseServiceInfo", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/shell.test.ts`
+Run: `bun test --isolate test/lib/shell.test.ts`
 Expected: FAIL — le module `../../src/lib/shell` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -547,12 +553,25 @@ export async function setServiceDHCP(service: string): Promise<number> {
     .nothrow();
   return exitCode;
 }
+
+/**
+ * Desactive IPv4 sur un service, ce que macOS presente comme "Configure IPv4:
+ * Off" et que `-getinfo` rapporte en "IP address: none". Distinct de DHCP :
+ * necessaire pour restaurer fidelement un service que l'utilisateur avait
+ * deliberement desactive avant l'installation.
+ */
+export async function setServiceIPv4Off(service: string): Promise<number> {
+  const { exitCode } = await $`sudo networksetup -setv4off ${service}`
+    .quiet()
+    .nothrow();
+  return exitCode;
+}
 ```
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/shell.test.ts`
-Expected: PASS, onze tests.
+Run: `bun test --isolate test/lib/shell.test.ts`
+Expected: PASS, huit tests.
 
 - [ ] **Step 5: Vérifier les fonctions système contre la vraie machine**
 
@@ -589,8 +608,9 @@ jamais en texte formaté.
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: le type `SSHTarget`, les fonctions pures `encodePowerShell` et
-  `buildSSHArgs`, et les fonctions système `runRemote` et `runRemoteJson`.
+- Produces: le type `SSHTarget`, les fonctions pures `encodePowerShell`,
+  `withOutputEncoding`, `parseRemoteJson` et `buildSSHArgs`, et les fonctions système
+  `runRemote`, `runRemoteChecked` et `runRemoteJson`.
   `src/steps/network-windows.ts`, `src/lib/preflight.ts` et `src/commands/doctor.ts`
   en dépendent.
 
@@ -600,7 +620,12 @@ jamais en texte formaté.
 
 ```ts
 import { test, expect, describe } from "bun:test";
-import { encodePowerShell, buildSSHArgs, type SSHTarget } from "../../src/lib/ssh";
+import {
+  encodePowerShell,
+  withOutputEncoding,
+  buildSSHArgs,
+  type SSHTarget,
+} from "../../src/lib/ssh";
 
 const TARGET: SSHTarget = {
   host: "10.10.10.1",
@@ -626,6 +651,19 @@ describe("encodePowerShell", () => {
     expect(Buffer.from(encodePowerShell(script), "base64").toString("utf16le")).toBe(
       script,
     );
+  });
+});
+
+describe("withOutputEncoding", () => {
+  test("prefixe le script pour forcer une sortie UTF-8", () => {
+    const wrapped = withOutputEncoding("Write-Output 'réseau privé'");
+    expect(wrapped).toContain("OutputEncoding");
+    expect(wrapped).toContain("UTF8Encoding");
+  });
+
+  test("laisse le script d'origine intact a la fin", () => {
+    const script = "Get-NetAdapter | Select-Object Name";
+    expect(withOutputEncoding(script).endsWith(script)).toBe(true);
   });
 });
 
@@ -658,7 +696,7 @@ describe("buildSSHArgs", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/ssh.test.ts`
+Run: `bun test --isolate test/lib/ssh.test.ts`
 Expected: FAIL — le module `../../src/lib/ssh` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -697,6 +735,26 @@ export function encodePowerShell(script: string): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
+const SCRIPT_PREAMBLE = [
+  // -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell
+  // part dans la page de code OEM de la console — cp850 sur un Windows
+  // francais — ce qui mutile les accents au retour.
+  "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+  // Sans cela, une commande en echec ecrit sur le flux d'erreur mais laisse
+  // PowerShell sortir avec le code 0 : l'appelant croirait la commande passee.
+  "$ErrorActionPreference = 'Stop'",
+].join("\n");
+
+/**
+ * -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell part
+ * dans la page de code OEM de la console — cp850 sur un Windows francais — ce qui
+ * mutile les accents au retour. Ce prefixe force une sortie UTF-8 sans marque
+ * d'ordre des octets.
+ */
+export function withOutputEncoding(script: string): string {
+  return `${SCRIPT_PREAMBLE}\n${script}`;
+}
+
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
   return [
     "ssh",
@@ -720,7 +778,7 @@ export async function runRemote(
   script: string,
   timeoutMs = 120_000,
 ): Promise<RemoteResult> {
-  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(script)}`;
+  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(withOutputEncoding(script))}`;
 
   const proc = Bun.spawn(buildSSHArgs(target, remoteCommand), {
     stdout: "pipe",
@@ -743,6 +801,29 @@ export async function runRemote(
  * Windows. Renvoie toujours un tableau : ConvertTo-Json emet un objet nu
  * quand il n'y a qu'un element, et rien du tout quand il n'y en a aucun.
  */
+/**
+ * Comme runRemote, mais leve si la commande distante a echoue. A utiliser pour
+ * tout ce qui MODIFIE la machine : une etape qui ignore le code de retour se
+ * declare appliquee alors qu'elle ne l'est pas, et l'orchestrateur enregistre
+ * une convergence qui n'a pas eu lieu.
+ */
+export async function runRemoteChecked(
+  target: SSHTarget,
+  script: string,
+  timeoutMs = 120_000,
+): Promise<RemoteResult> {
+  const result = await runRemote(target, script, timeoutMs);
+
+  if (result.exitCode !== 0) {
+    throw new RemoteError(
+      `Commande distante en echec (code ${result.exitCode}) : ${result.stderr || result.stdout}`,
+      result,
+    );
+  }
+
+  return result;
+}
+
 export async function runRemoteJson<T>(
   target: SSHTarget,
   script: string,
@@ -776,8 +857,8 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/ssh.test.ts`
-Expected: PASS, huit tests.
+Run: `bun test --isolate test/lib/ssh.test.ts`
+Expected: PASS, dix tests.
 
 - [ ] **Step 5: Vérifier contre le vrai PC**
 
@@ -807,6 +888,7 @@ irrécupérable par l'outil qui l'a modifiée.
 **Files:**
 - Create: `src/lib/manifest.ts`
 - Test: `test/lib/manifest.test.ts`
+- Test: `test/lib/manifest-atomicity.test.ts`
 
 **Interfaces:**
 - Consumes: rien.
@@ -912,12 +994,108 @@ describe("persistance", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+describe("robustesse a la lecture", () => {
+  test("rejette un fichier qui n'est pas du JSON", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, "{ ceci n'est pas du json");
+      expect(readManifest(path)).rejects.toThrow(/illisible/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejette un JSON valide qui n'est pas un manifeste", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, JSON.stringify({ hello: "world" }));
+      expect(readManifest(path)).rejects.toThrow(/invalide/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejette un manifeste d'une version inconnue", async () => {
+    // Une version future decrit un etat anterieur dont cette version du code
+    // ignore la forme : restaurer a l'aveugle serait pire que refuser.
+    const dir = await mkdtemp(join(tmpdir(), "hardline-"));
+    const path = join(dir, "manifest.json");
+    try {
+      await Bun.write(path, JSON.stringify({ ...emptyManifest(T1), version: 2 }));
+      expect(readManifest(path)).rejects.toThrow(/invalide/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+```
+
+- [ ] **Step 1b: Écrire le test d'atomicité, dans son propre fichier**
+
+L'atomicité ne vient pas de l'écriture mais du `rename`. Un test comportemental — des
+lectures concurrentes pendant l'écriture d'un gros manifeste — a été essayé et s'est
+révélé **non discriminant** : une implémentation en `Bun.write` direct le passait tout
+aussi bien, l'écriture étant trop rapide pour qu'une lecture attrape un état
+intermédiaire. Un test qui ne peut pas échouer est pire qu'absent.
+
+Ce test vérifie donc le mécanisme lui-même, et il est déterministe. Il vit dans un
+fichier séparé parce que son remplacement de `node:fs/promises` casserait les écritures
+réelles des autres tests.
+
+`test/lib/manifest-atomicity.test.ts` :
+
+```ts
+import { test, expect, mock } from "bun:test";
+
+const calls: string[] = [];
+
+mock.module("node:fs/promises", () => ({
+  mkdir: async () => undefined,
+  writeFile: async (path: string) => {
+    calls.push(`writeFile:${path}`);
+  },
+  rename: async (from: string, to: string) => {
+    calls.push(`rename:${from} -> ${to}`);
+  },
+}));
+
+const { writeManifest, emptyManifest } = await import("../../src/lib/manifest");
+
+const TARGET = "/tmp/hardline-atomicity/manifest.json";
+
+test("l'ecriture passe par un fichier temporaire puis un rename", async () => {
+  calls.length = 0;
+  await writeManifest(TARGET, emptyManifest("2026-08-22T10:00:00.000Z"));
+
+  expect(calls).toHaveLength(2);
+  const [written, renamed] = calls;
+
+  // Le contenu n'est jamais ecrit directement sur le chemin final : c'est ce
+  // qui garantit qu'une interruption ne laisse pas un manifeste tronque.
+  expect(written).not.toBe(`writeFile:${TARGET}`);
+  expect(written).toContain(`writeFile:${TARGET}.`);
+  expect(written).toContain(".tmp");
+
+  // Et c'est le rename, atomique sur un meme volume, qui publie le fichier.
+  expect(renamed).toContain(`-> ${TARGET}`);
+});
+
+test("le fichier temporaire est distinct du fichier final", async () => {
+  calls.length = 0;
+  await writeManifest(TARGET, emptyManifest("2026-08-22T10:00:00.000Z"));
+
+  const source = calls[1]?.split(" -> ")[0]?.replace("rename:", "");
+  expect(source).not.toBe(TARGET);
+  expect(source?.startsWith(TARGET)).toBe(true);
 });
 ```
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/manifest.test.ts`
+Run: `bun test --isolate test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
 Expected: FAIL — le module `../../src/lib/manifest` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -999,12 +1177,41 @@ export function stepsInReverseOrder(manifest: Manifest): StepRecord[] {
 
 // --- Frontière fichier. ---
 
+function isManifest(value: unknown): value is Manifest {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate["version"] === 1 &&
+    Array.isArray(candidate["order"]) &&
+    typeof candidate["steps"] === "object" &&
+    candidate["steps"] !== null
+  );
+}
+
 export async function readManifest(path: string): Promise<Manifest> {
   const file = Bun.file(path);
   if (!(await file.exists())) {
     return emptyManifest(new Date().toISOString());
   }
-  return (await file.json()) as Manifest;
+
+  let parsed: unknown;
+  try {
+    parsed = await file.json();
+  } catch {
+    throw new Error(
+      `Manifeste illisible : ${path} n'est pas un JSON valide. Ne pas le supprimer sans l'inspecter, il decrit ce que hardline a modifie sur les deux machines.`,
+    );
+  }
+
+  // Un cast sans verification laisserait la desinstallation restaurer des
+  // valeurs dont elle ignore la forme. Mieux vaut refuser franchement.
+  if (!isManifest(parsed)) {
+    throw new Error(
+      `Manifeste invalide : ${path} ne correspond pas au format attendu (version 1).`,
+    );
+  }
+
+  return parsed;
 }
 
 /**
@@ -1022,13 +1229,13 @@ export async function writeManifest(path: string, manifest: Manifest): Promise<v
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/manifest.test.ts`
-Expected: PASS, huit tests.
+Run: `bun test --isolate test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
+Expected: PASS, treize tests — onze dans le premier fichier, deux dans le second.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/manifest.ts test/lib/manifest.test.ts
+git add src/lib/manifest.ts test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts
 git commit -m "feat: manifeste d'etat avec ecriture atomique"
 ```
 
@@ -1128,11 +1335,13 @@ import { CONFIG } from "../../src/config";
 let currentInfo: ServiceIPConfig;
 const setManual = mock(async (..._args: unknown[]) => 0);
 const setDhcp = mock(async (..._args: unknown[]) => 0);
+const setOff = mock(async (..._args: unknown[]) => 0);
 
 mock.module("../../src/lib/shell", () => ({
   getServiceInfo: async () => currentInfo,
   setServiceManualIP: setManual,
   setServiceDHCP: setDhcp,
+  setServiceIPv4Off: setOff,
 }));
 
 const { macNetworkStep } = await import("../../src/steps/network-mac");
@@ -1140,6 +1349,7 @@ const { macNetworkStep } = await import("../../src/steps/network-mac");
 beforeEach(() => {
   setManual.mockClear();
   setDhcp.mockClear();
+  setOff.mockClear();
 });
 
 describe("inspect", () => {
@@ -1194,6 +1404,13 @@ describe("apply", () => {
     expect(setManual).toHaveBeenCalledTimes(1);
     expect(setManual).toHaveBeenCalledWith("AX88179A", "10.10.10.2", "255.255.255.0");
   });
+
+  test("echoue si networksetup rend un code non nul", async () => {
+    // Ignorer le code de retour ferait declarer l'etape appliquee alors que
+    // sudo a refuse : la panne serait invisible jusqu'au diagnostic.
+    setManual.mockImplementationOnce(async () => 1);
+    expect(macNetworkStep.apply(CONFIG)).rejects.toThrow(/networksetup/i);
+  });
 });
 
 describe("restore", () => {
@@ -1218,9 +1435,22 @@ describe("restore", () => {
     expect(setManual).toHaveBeenCalledWith("AX88179A", "192.168.5.5", "255.255.255.0");
   });
 
-  test("retombe sur DHCP si l'etat anterieur etait sans adresse", async () => {
+  test("redesactive IPv4 si le service etait desactive avant l'installation", async () => {
+    // Le remettre en DHCP serait deviner a la place de l'utilisateur.
     await macNetworkStep.restore(CONFIG, {
       mode: "off",
+      ip: null,
+      subnetMask: null,
+      router: null,
+    });
+    expect(setOff).toHaveBeenCalledTimes(1);
+    expect(setOff).toHaveBeenCalledWith("AX88179A");
+    expect(setDhcp).not.toHaveBeenCalled();
+  });
+
+  test("retombe sur DHCP si l'etat anterieur est manuel mais incomplet", async () => {
+    await macNetworkStep.restore(CONFIG, {
+      mode: "manual",
       ip: null,
       subnetMask: null,
       router: null,
@@ -1232,7 +1462,7 @@ describe("restore", () => {
 
 - [ ] **Step 3: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/steps/network-mac.test.ts`
+Run: `bun test --isolate test/steps/network-mac.test.ts`
 Expected: FAIL — le module `../../src/steps/network-mac` n'existe pas.
 
 - [ ] **Step 4: Écrire l'implémentation**
@@ -1243,6 +1473,7 @@ Expected: FAIL — le module `../../src/steps/network-mac` n'existe pas.
 import {
   getServiceInfo,
   setServiceDHCP,
+  setServiceIPv4Off,
   setServiceManualIP,
   type ServiceIPConfig,
 } from "../lib/shell";
@@ -1272,11 +1503,20 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
   },
 
   async apply(config: Config) {
-    await setServiceManualIP(
+    // Le code de retour de networksetup ne doit pas etre ignore : sans cette
+    // verification, l'etape se declare appliquee meme quand sudo a refuse, et
+    // l'orchestrateur enregistre une convergence qui n'a pas eu lieu.
+    const exitCode = await setServiceManualIP(
       config.mac.serviceName,
       config.mac.ip,
       config.mac.subnetMask,
     );
+
+    if (exitCode !== 0) {
+      throw new Error(
+        `networksetup a refuse de poser ${config.mac.ip} sur "${config.mac.serviceName}" (code ${exitCode}). Droits administrateur ?`,
+      );
+    }
   },
 
   async restore(config: Config, previous: ServiceIPConfig) {
@@ -1288,8 +1528,14 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
       );
       return;
     }
-    // DHCP comme dans le cas "off" : c'est l'etat par defaut d'un service macOS,
-    // et le seul qui ne laisse pas une adresse morte derriere lui.
+    if (previous.mode === "off") {
+      // Restaurer en DHCP un service que l'utilisateur avait desactive serait
+      // deviner a sa place : la spec exige de rendre l'etat anterieur, pas un
+      // etat plausible.
+      await setServiceIPv4Off(config.mac.serviceName);
+      return;
+    }
+
     await setServiceDHCP(config.mac.serviceName);
   },
 };
@@ -1297,12 +1543,12 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
 
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/steps/network-mac.test.ts`
-Expected: PASS, neuf tests.
+Run: `bun test --isolate test/steps/network-mac.test.ts`
+Expected: PASS, dix tests.
 
 - [ ] **Step 6: Lancer la suite complète pour vérifier l'absence de régression**
 
-Run: `bun test`
+Run: `bun test --isolate`
 Expected: PASS, tous les tests des tâches 1 à 5.
 
 - [ ] **Step 7: Commit**
@@ -1315,18 +1561,30 @@ git commit -m "feat: contrat des etapes et adresse fixe cote Mac"
 ---
 ### Task 6: Adresse fixe et profil réseau privé côté Windows
 
-Même contrat que la tâche précédente, appliqué de l'autre côté du tunnel SSH. Le point
-délicat est le profil réseau : Windows classe par défaut un nouveau lien en *public*, ce
+Même contrat que la tâche 5, appliqué de l'autre côté du tunnel SSH. Trois points
+délicats s'y concentrent.
+
+Le **profil réseau** d'abord : Windows classe par défaut un nouveau lien en *public*, ce
 qui referme le pare-feu et rend la machine muette sans le moindre message d'erreur.
-C'est la panne qui a été rencontrée pendant l'exploration, et elle doit être traitée
-comme un état à faire converger, pas comme un réglage posé une fois.
+C'est la panne rencontrée pendant l'exploration, et elle doit être traitée comme un état
+à faire converger, pas comme un réglage posé une fois.
+
+La **fidélité de la restauration** ensuite. `restore` ne doit pas rétablir le DHCP par
+défaut : si le PC portait une adresse statique avant l'installation, la lui rendre est
+la seule conduite acceptable. L'état capturé distingue donc les adresses posées à la
+main de celles obtenues par DHCP, et retient si le client DHCP était actif.
+
+La **détection des échecs** enfin. `apply` et `restore` modifient la machine : ils
+passent par `runRemoteChecked`, qui lève quand la commande distante échoue. Sans cela
+une étape se déclarerait appliquée alors qu'une élévation de privilèges a été refusée —
+exactement le genre de panne silencieuse que cette tâche existe pour éviter.
 
 **Files:**
 - Create: `src/steps/network-windows.ts`
 - Test: `test/steps/network-windows.test.ts`
 
 **Interfaces:**
-- Consumes: `runRemote`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
+- Consumes: `runRemoteChecked`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
   `src/steps/types.ts` (Task 5).
 - Produces: le type `WindowsNetworkState` et l'étape `windowsNetworkStep`.
 
@@ -1337,9 +1595,12 @@ comme un état à faire converger, pas comme un réglage posé une fois.
 ```ts
 import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
+// Import de type pur : efface a la compilation, donc sans effet sur l'ordre
+// du remplacement de module ci-dessous.
+import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
 let remoteState: unknown[];
-const runRemote = mock(async (..._args: unknown[]) => ({
+const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   exitCode: 0,
   stdout: "",
   stderr: "",
@@ -1347,62 +1608,73 @@ const runRemote = mock(async (..._args: unknown[]) => ({
 
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => remoteState,
-  runRemote,
+  runRemoteChecked,
 }));
 
 const { windowsNetworkStep } = await import("../../src/steps/network-windows");
 
-beforeEach(() => runRemote.mockClear());
+// Annote : sans cela `category` est infere `string` et le type-check echoue.
+const CONFORME: WindowsNetworkState = {
+  adapterPresent: true,
+  adapterStatus: "Up",
+  addresses: ["10.10.10.1/24"],
+  manualAddresses: ["10.10.10.1/24"],
+  dhcpEnabled: false,
+  category: "Private",
+};
+
+beforeEach(() => runRemoteChecked.mockClear());
+
+function scriptOf(call: number): string {
+  return String((runRemoteChecked.mock.calls[call] as unknown[])[1]);
+}
 
 describe("inspect", () => {
   test("declare conforme quand adresse et profil sont corrects", async () => {
-    remoteState = [
-      {
-        adapterPresent: true,
-        adapterStatus: "Up",
-        addresses: ["10.10.10.1/24"],
-        category: "Private",
-      },
-    ];
-    const state = await windowsNetworkStep.inspect(CONFIG);
-    expect(state.conforming).toBe(true);
+    remoteState = [CONFORME];
+    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(true);
   });
 
   test("declare non conforme quand le profil est public", async () => {
     // Cas le plus important : l'adresse est bonne mais le pare-feu est ferme.
-    remoteState = [
-      {
-        adapterPresent: true,
-        adapterStatus: "Up",
-        addresses: ["10.10.10.1/24"],
-        category: "Public",
-      },
-    ];
+    remoteState = [{ ...CONFORME, category: "Public" }];
     expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(false);
   });
 
   test("declare non conforme quand l'adresse cible est absente", async () => {
     remoteState = [
-      {
-        adapterPresent: true,
-        adapterStatus: "Up",
-        addresses: ["169.254.168.1/16"],
-        category: "Private",
-      },
+      { ...CONFORME, addresses: ["169.254.168.1/16"], manualAddresses: [] },
     ];
     expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(false);
   });
 
   test("tolere des adresses supplementaires si la cible est presente", async () => {
     remoteState = [
+      { ...CONFORME, addresses: ["169.254.168.1/16", "10.10.10.1/24"] },
+    ];
+    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(true);
+  });
+
+  test("declare non conforme quand le client DHCP est reste actif", async () => {
+    remoteState = [{ ...CONFORME, dhcpEnabled: true }];
+    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(false);
+  });
+
+  test("conserve l'etat anterieur complet pour la restauration", async () => {
+    remoteState = [
       {
         adapterPresent: true,
         adapterStatus: "Up",
-        addresses: ["169.254.168.1/16", "10.10.10.1/24"],
-        category: "Private",
+        addresses: ["192.168.1.48/24"],
+        manualAddresses: [],
+        dhcpEnabled: true,
+        category: "Public",
       },
     ];
-    expect((await windowsNetworkStep.inspect(CONFIG)).conforming).toBe(true);
+    const state = await windowsNetworkStep.inspect(CONFIG);
+    expect(state.current.dhcpEnabled).toBe(true);
+    expect(state.current.manualAddresses).toEqual([]);
+    expect(state.current.category).toBe("Public");
   });
 
   test("echoue explicitement si l'interface n'existe pas", async () => {
@@ -1411,6 +1683,8 @@ describe("inspect", () => {
         adapterPresent: false,
         adapterStatus: null,
         addresses: [],
+        manualAddresses: [],
+        dhcpEnabled: false,
         category: null,
       },
     ];
@@ -1424,46 +1698,105 @@ describe("inspect", () => {
 });
 
 describe("apply", () => {
-  test("envoie un script qui pose l'adresse et bascule le profil", async () => {
+  test("pose l'adresse cible avec le bon prefixe sur la bonne interface", async () => {
     await windowsNetworkStep.apply(CONFIG);
-    expect(runRemote).toHaveBeenCalledTimes(1);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    expect(runRemoteChecked).toHaveBeenCalledTimes(1);
+    const script = scriptOf(0);
     expect(script).toContain("New-NetIPAddress");
-    expect(script).toContain("10.10.10.1");
-    expect(script).toContain("Set-NetConnectionProfile");
-    expect(script).toContain("Private");
+    expect(script).toContain("-InterfaceAlias 'Ethernet'");
+    expect(script).toContain("-IPAddress '10.10.10.1'");
+    expect(script).toContain("-PrefixLength 24");
+  });
+
+  test("desactive le client DHCP avant de poser l'adresse", async () => {
+    // Sinon l'interface conserve une adresse APIPA a cote de la notre.
+    await windowsNetworkStep.apply(CONFIG);
+    const script = scriptOf(0);
+    expect(script).toContain("-Dhcp Disabled");
+    expect(script.indexOf("-Dhcp Disabled")).toBeLessThan(
+      script.indexOf("New-NetIPAddress"),
+    );
+  });
+
+  test("bascule le profil en prive dans le meme script", async () => {
+    const script = (await windowsNetworkStep.apply(CONFIG), scriptOf(0));
+    expect(script).toMatch(
+      /Set-NetConnectionProfile[^\n]*-InterfaceAlias 'Ethernet'[^\n]*Private/,
+    );
+  });
+
+  test("propage l'echec d'une commande distante", async () => {
+    runRemoteChecked.mockImplementationOnce(async () => {
+      throw new Error("acces refuse");
+    });
+    expect(windowsNetworkStep.apply(CONFIG)).rejects.toThrow("acces refuse");
   });
 });
 
 describe("restore", () => {
-  test("remet l'interface en DHCP et restitue la categorie d'origine", async () => {
+  test("reactive le DHCP si l'interface etait en DHCP", async () => {
     await windowsNetworkStep.restore(CONFIG, {
-      adapterPresent: true,
-      adapterStatus: "Up",
+      ...CONFORME,
       addresses: [],
+      manualAddresses: [],
+      dhcpEnabled: true,
       category: "Public",
     });
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
-    expect(script).toContain("Dhcp Enabled");
-    expect(script).toContain("Public");
+    const script = scriptOf(0);
+    expect(script).toContain("-Dhcp Enabled");
+    expect(script).not.toContain("-Dhcp Disabled");
+  });
+
+  test("rend une adresse statique preexistante au lieu de basculer en DHCP", async () => {
+    // Le PC pouvait porter une IP fixe avant hardline : la remplacer par du
+    // DHCP serait deviner, pas restaurer.
+    await windowsNetworkStep.restore(CONFIG, {
+      ...CONFORME,
+      addresses: ["192.168.50.10/24"],
+      manualAddresses: ["192.168.50.10/24"],
+      dhcpEnabled: false,
+      category: "Private",
+    });
+    const script = scriptOf(0);
+    expect(script).toContain("-IPAddress '192.168.50.10'");
+    expect(script).toContain("-PrefixLength 24");
+    expect(script).not.toContain("-Dhcp Enabled");
+  });
+
+  test("restitue la categorie reseau d'origine", async () => {
+    await windowsNetworkStep.restore(CONFIG, {
+      ...CONFORME,
+      dhcpEnabled: true,
+      category: "Public",
+    });
+    expect(scriptOf(0)).toMatch(
+      /Set-NetConnectionProfile[^\n]*-InterfaceAlias 'Ethernet'[^\n]*Public/,
+    );
   });
 
   test("ne tente pas de restituer une categorie inconnue", async () => {
     await windowsNetworkStep.restore(CONFIG, {
-      adapterPresent: true,
-      adapterStatus: "Up",
-      addresses: [],
+      ...CONFORME,
+      dhcpEnabled: true,
       category: null,
     });
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
-    expect(script).not.toContain("Set-NetConnectionProfile");
+    expect(scriptOf(0)).not.toContain("Set-NetConnectionProfile");
+  });
+
+  test("propage l'echec d'une commande distante", async () => {
+    runRemoteChecked.mockImplementationOnce(async () => {
+      throw new Error("acces refuse");
+    });
+    expect(
+      windowsNetworkStep.restore(CONFIG, { ...CONFORME, dhcpEnabled: true }),
+    ).rejects.toThrow("acces refuse");
   });
 });
 ```
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/steps/network-windows.test.ts`
+Run: `bun test --isolate test/steps/network-windows.test.ts`
 Expected: FAIL — le module `../../src/steps/network-windows` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -1471,39 +1804,70 @@ Expected: FAIL — le module `../../src/steps/network-windows` n'existe pas.
 `src/steps/network-windows.ts` :
 
 ```ts
-import { runRemote, runRemoteJson } from "../lib/ssh";
+import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
 import type { Step } from "./types";
 
 export type WindowsNetworkState = {
   adapterPresent: boolean;
   adapterStatus: string | null;
+  /** Toutes les adresses IPv4, au format "adresse/prefixe". */
   addresses: string[];
+  /** Celles que quelqu'un a posees a la main : les seules a restaurer. */
+  manualAddresses: string[];
+  dhcpEnabled: boolean;
   category: "Public" | "Private" | "DomainAuthenticated" | null;
 };
 
 const INSPECT = (alias: string) => `
 $adapter = Get-NetAdapter -Name '${alias}' -ErrorAction SilentlyContinue
 $addresses = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue
-$profile = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue
+$interface = Get-NetIPInterface -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue
+$connection = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue
 [pscustomobject]@{
-  adapterPresent = [bool]$adapter
-  adapterStatus  = if ($adapter) { [string]$adapter.Status } else { $null }
-  addresses      = @($addresses | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
-  category       = if ($profile) { [string]$profile.NetworkCategory } else { $null }
+  adapterPresent  = [bool]$adapter
+  adapterStatus   = if ($adapter) { [string]$adapter.Status } else { $null }
+  addresses       = @($addresses | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
+  manualAddresses = @($addresses | Where-Object { $_.PrefixOrigin -eq 'Manual' } | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
+  dhcpEnabled     = if ($interface) { [bool]($interface.Dhcp -eq 'Enabled') } else { $false }
+  category        = if ($connection) { [string]$connection.NetworkCategory } else { $null }
 }`;
 
+const clearAddresses = (alias: string) =>
+  `Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue`;
+
 const APPLY = (alias: string, ip: string, prefix: number) => `
-Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+${clearAddresses(alias)}
+Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Disabled -ErrorAction SilentlyContinue
 New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -PrefixLength ${prefix} | Out-Null
 Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory Private`;
 
-const RESTORE = (alias: string, category: string | null) => `
-Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled -ErrorAction SilentlyContinue
-${category ? `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${category} -ErrorAction SilentlyContinue` : ""}`;
+function restoreAddressing(alias: string, previous: WindowsNetworkState): string {
+  if (previous.dhcpEnabled) {
+    return `Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled`;
+  }
+
+  // Aucune adresse manuelle et pas de DHCP : l'interface n'avait rien, on la
+  // laisse nue plutot que de lui inventer une configuration.
+  return previous.manualAddresses
+    .map((entry) => {
+      const [address, prefix] = entry.split("/");
+      return `New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null`;
+    })
+    .join("\n");
+}
+
+const RESTORE = (alias: string, previous: WindowsNetworkState) =>
+  [
+    clearAddresses(alias),
+    restoreAddressing(alias, previous),
+    previous.category
+      ? `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${previous.category} -ErrorAction SilentlyContinue`
+      : "",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 
 export const windowsNetworkStep: Step<WindowsNetworkState> = {
   name: "network-windows",
@@ -1530,19 +1894,19 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
     const target = `${config.windows.ip}/${config.windows.prefixLength}`;
     const hasAddress = current.addresses.includes(target);
     const isPrivate = current.category === "Private";
-    const conforming = hasAddress && isPrivate;
+    const conforming = hasAddress && isPrivate && !current.dhcpEnabled;
 
     return {
       conforming,
       current,
       detail: conforming
         ? `${config.windows.interfaceAlias} deja en ${target}, profil prive`
-        : `adresse ${hasAddress ? "correcte" : "absente"}, profil ${current.category ?? "inconnu"}`,
+        : `adresse ${hasAddress ? "correcte" : "absente"}, profil ${current.category ?? "inconnu"}${current.dhcpEnabled ? ", DHCP actif" : ""}`,
     };
   },
 
   async apply(config: Config) {
-    await runRemote(
+    await runRemoteChecked(
       config.ssh,
       APPLY(
         config.windows.interfaceAlias,
@@ -1553,9 +1917,9 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
   },
 
   async restore(config: Config, previous: WindowsNetworkState) {
-    await runRemote(
+    await runRemoteChecked(
       config.ssh,
-      RESTORE(config.windows.interfaceAlias, previous.category),
+      RESTORE(config.windows.interfaceAlias, previous),
     );
   },
 };
@@ -1563,15 +1927,17 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/steps/network-windows.test.ts`
-Expected: PASS, neuf tests.
+Run: `bun test --isolate test/steps/network-windows.test.ts`
+Expected: PASS, dix-sept tests.
 
 - [ ] **Step 5: Vérifier `inspect` contre le vrai PC**
 
 `inspect` ne modifie rien, il est sans risque à exécuter.
 
 Run: `bun -e 'import {windowsNetworkStep} from "./src/steps/network-windows"; import {CONFIG} from "./src/config"; console.log(await windowsNetworkStep.inspect({...CONFIG, ssh:{...CONFIG.ssh, host:"192.168.1.48"}}))'`
-Expected: un objet décrivant l'état réel de l'interface `Ethernet` du PC.
+Expected: un objet décrivant l'état réel de l'interface `Ethernet`, avec les champs
+`manualAddresses` et `dhcpEnabled` renseignés. Reporter la sortie exacte : elle indique
+si le PC porte encore une adresse APIPA à côté de la nôtre.
 
 - [ ] **Step 6: Commit**
 
@@ -1581,6 +1947,7 @@ git commit -m "feat: adresse fixe et profil prive cote Windows"
 ```
 
 ---
+
 ### Task 6b: Persistance du profil réseau au redémarrage
 
 Sans cette tâche, tout le reste se dégrade silencieusement. Windows reclasse le lien en
@@ -1593,13 +1960,17 @@ quand la tâche s'exécute, et `Set-NetConnectionProfile` échoue tant qu'aucun 
 n'existe pour l'interface. Le script attend donc que le profil apparaisse, avec une
 limite de temps.
 
+Comme les étapes précédentes, `apply` et `restore` passent par `runRemoteChecked` et non
+par `runRemote` : enregistrer une tâche planifiée qui échoue silencieusement produirait
+exactement la panne différée que cette étape existe pour empêcher.
+
 **Files:**
 - Create: `src/steps/network-profile-task.ts`
-- Modify: `src/steps/index.ts` — ajouter l'étape au registre
+- Create: `src/steps/index.ts` — registre ordonné des étapes
 - Test: `test/steps/network-profile-task.test.ts`
 
 **Interfaces:**
-- Consumes: `runRemote`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
+- Consumes: `runRemoteChecked`, `runRemoteJson` de `src/lib/ssh.ts` (Task 3) ; `Step` de
   `src/steps/types.ts` (Task 5).
 - Produces: le type `ScheduledTaskState` et l'étape `windowsProfileTaskStep`.
 
@@ -1612,7 +1983,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
 
 let remoteState: unknown[];
-const runRemote = mock(async (..._args: unknown[]) => ({
+const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   exitCode: 0,
   stdout: "",
   stderr: "",
@@ -1620,14 +1991,14 @@ const runRemote = mock(async (..._args: unknown[]) => ({
 
 mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async () => remoteState,
-  runRemote,
+  runRemoteChecked,
 }));
 
 const { windowsProfileTaskStep, TASK_NAME } = await import(
   "../../src/steps/network-profile-task"
 );
 
-beforeEach(() => runRemote.mockClear());
+beforeEach(() => runRemoteChecked.mockClear());
 
 describe("inspect", () => {
   test("declare conforme quand la tache existe et est active", async () => {
@@ -1651,25 +2022,35 @@ describe("inspect", () => {
 describe("apply", () => {
   test("enregistre une tache au demarrage executee en SYSTEM", async () => {
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Register-ScheduledTask");
     expect(script).toContain(TASK_NAME);
     expect(script).toContain("AtStartup");
     expect(script).toContain("SYSTEM");
   });
 
-  test("le script planifie attend que le profil d'interface existe", async () => {
-    // Au demarrage, l'interface n'est pas prete immediatement :
-    // sans attente, Set-NetConnectionProfile echoue et la tache ne sert a rien.
+  test("le script planifie attend l'apparition du profil, sous une limite de temps", async () => {
+    // Au demarrage, l'interface n'est pas prete immediatement : sans attente,
+    // Set-NetConnectionProfile echoue et la tache ne sert a rien.
+    //
+    // Mais une attente NON BORNEE serait pire : la tache tournerait
+    // indefiniment sous le compte SYSTEM a chaque demarrage du PC. Ce test
+    // doit donc verifier la borne elle-meme, pas la simple presence d'une
+    // boucle — une assertion sur "while ou for ou Start-Sleep" laisserait
+    // passer `while ($true)`.
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+
     expect(script).toContain("Get-NetConnectionProfile");
-    expect(script).toMatch(/while|for|Start-Sleep/);
+    expect(script).toContain("Start-Sleep");
+    expect(script).toMatch(/\$deadline\s*=\s*\(Get-Date\)\.AddMinutes\(\d+\)/);
+    expect(script).toMatch(/while\s*\(\(Get-Date\)\s*-lt\s*\$deadline\)/);
+    expect(script).not.toMatch(/while\s*\(\s*\$true\s*\)/);
   });
 
   test("le script planifie vise la seule interface du lien direct", async () => {
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain(CONFIG.windows.interfaceAlias);
   });
 });
@@ -1677,20 +2058,20 @@ describe("apply", () => {
 describe("restore", () => {
   test("supprime la tache si hardline l'avait creee", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
-    const script = String((runRemote.mock.calls[0] as unknown[])[1]);
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Unregister-ScheduledTask");
   });
 
   test("ne supprime rien si une tache de ce nom preexistait", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" });
-    expect(runRemote).not.toHaveBeenCalled();
+    expect(runRemoteChecked).not.toHaveBeenCalled();
   });
 });
 ```
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/steps/network-profile-task.test.ts`
+Run: `bun test --isolate test/steps/network-profile-task.test.ts`
 Expected: FAIL — le module n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -1698,7 +2079,7 @@ Expected: FAIL — le module n'existe pas.
 `src/steps/network-profile-task.ts` :
 
 ```ts
-import { runRemote, runRemoteJson } from "../lib/ssh";
+import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
 import type { Step } from "./types";
 
@@ -1777,25 +2158,25 @@ export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
   },
 
   async apply(config: Config) {
-    await runRemote(config.ssh, APPLY(config.windows.interfaceAlias));
+    await runRemoteChecked(config.ssh, APPLY(config.windows.interfaceAlias));
   },
 
   async restore(config: Config, previous: ScheduledTaskState) {
     // Si une tache de ce nom existait avant hardline, on n'y touche pas.
     if (previous.present) return;
-    await runRemote(config.ssh, RESTORE);
+    await runRemoteChecked(config.ssh, RESTORE);
   },
 };
 ```
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/steps/network-profile-task.test.ts`
+Run: `bun test --isolate test/steps/network-profile-task.test.ts`
 Expected: PASS, huit tests.
 
-- [ ] **Step 5: Ajouter l'étape au registre**
+- [ ] **Step 5: Créer le registre des étapes**
 
-Dans `src/steps/index.ts` :
+`src/steps/index.ts` — ce fichier n'existe pas encore, c'est cette tâche qui le crée :
 
 ```ts
 import { windowsProfileTaskStep } from "./network-profile-task";
@@ -1855,8 +2236,9 @@ rattrapage.
 
 **Interfaces:**
 - Consumes: `@clack/prompts`.
-- Produces: `isInteractive`, `configureOutput`, l'objet `ui`, `withSpinner`, et
-  `confirmOrExit`. Les quatre commandes en dépendent.
+- Produces: `isInteractive`, `configureOutput`, l'objet `ui`, `withSpinner`,
+  `askConfirmation`, la classe `CancelledError` et le type `ConfirmOptions`. Les quatre
+  commandes en dépendent.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -1866,6 +2248,7 @@ rattrapage.
 import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
 
 const calls: string[] = [];
+let cancelNext = false;
 const spinnerStop = mock((m?: string) => calls.push(`stop:${m}`));
 const spinnerError = mock((m?: string) => calls.push(`error:${m}`));
 
@@ -1875,7 +2258,7 @@ mock.module("@clack/prompts", () => ({
   note: (m: string, t?: string) => calls.push(`note:${t}:${m}`),
   cancel: (m: string) => calls.push(`cancel:${m}`),
   isCancel: (v: unknown) => typeof v === "symbol",
-  confirm: async () => true,
+  confirm: async () => (cancelNext ? Symbol("cancel") : true),
   log: {
     step: (m: string) => calls.push(`step:${m}`),
     success: (m: string) => calls.push(`success:${m}`),
@@ -1891,7 +2274,8 @@ mock.module("@clack/prompts", () => ({
   }),
 }));
 
-const { configureOutput, ui, withSpinner } = await import("../../src/lib/ui");
+const { configureOutput, ui, withSpinner, askConfirmation, CancelledError } =
+  await import("../../src/lib/ui");
 
 const savedCI = process.env.CI;
 beforeEach(() => {
@@ -1917,20 +2301,25 @@ describe("configureOutput", () => {
 
 describe("statuts d'etape", () => {
   test("une etape deja conforme est visible, pas silencieuse", () => {
-    ui.skipped({ label: "Adresse Mac", detail: "deja en 10.10.10.2" });
+    ui.skipped({ label: "Adresse Mac", detail: "en 10.10.10.2" });
     expect(calls[0]).toContain("step:");
     expect(calls[0]).toContain("Adresse Mac");
-    expect(calls[0]).toContain("deja");
+    // Accents exiges par les contraintes du projet, et verifies ici : le
+    // detail fourni par le test n'en contient aucun, donc seule la chaine
+    // produite par le module peut satisfaire cette assertion.
+    expect(calls[0]).toContain("déjà conforme");
   });
 
   test("une etape appliquee est distinguee d'une etape sautee", () => {
     ui.applied({ label: "Adresse Mac", detail: "posee" });
     expect(calls[0]).toContain("success:");
+    expect(calls[0]).toContain("appliqué");
   });
 
   test("une etape en echec passe par le canal d'erreur", () => {
     ui.failed({ label: "Adresse Mac", detail: "sudo refuse" });
     expect(calls[0]).toContain("error:");
+    expect(calls[0]).toContain("échec");
   });
 });
 
@@ -1961,6 +2350,41 @@ describe("withSpinner", () => {
   });
 });
 
+describe("askConfirmation", () => {
+  test("ne demande rien quand --yes est passe", async () => {
+    expect(await askConfirmation("Continuer ?", { assumeYes: true })).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("ne demande rien hors terminal", async () => {
+    // Poser une question a un flux non interactif bloquerait indefiniment.
+    expect(
+      await askConfirmation("Continuer ?", { assumeYes: false, interactive: false }),
+    ).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("rend la reponse de l'utilisateur en mode interactif", async () => {
+    expect(
+      await askConfirmation("Continuer ?", { assumeYes: false, interactive: true }),
+    ).toBe(true);
+  });
+
+  test("leve CancelledError sur annulation, sans quitter le processus", async () => {
+    // process.exit ici rendrait la fonction intestable et empecherait tout
+    // nettoyage par l'appelant.
+    cancelNext = true;
+    const attempt = askConfirmation("Continuer ?", {
+      assumeYes: false,
+      interactive: true,
+    });
+    expect(attempt).rejects.toBeInstanceOf(CancelledError);
+    await attempt.catch(() => {});
+    expect(calls.some((c) => c.startsWith("cancel:"))).toBe(true);
+    cancelNext = false;
+  });
+});
+
 describe("report", () => {
   test("rend un bloc multi-lignes titre", () => {
     ui.report("Diagnostic", ["Latence : 1.04 ms", "Adresse PC : 10.10.10.1"]);
@@ -1973,7 +2397,7 @@ describe("report", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/ui.test.ts`
+Run: `bun test --isolate test/lib/ui.test.ts`
 Expected: FAIL — le module `../../src/lib/ui` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -2018,17 +2442,17 @@ export const ui = {
     outro(message);
   },
 
-  /** Etat "rien a faire". Doit rester visible : c'est une information utile. */
+  /** État "rien à faire". Doit rester visible : c'est une information utile. */
   skipped({ label, detail }: StepReport): void {
-    log.step(`${label} — deja conforme (${detail})`);
+    log.step(`${label} — déjà conforme (${detail})`);
   },
 
   applied({ label, detail }: StepReport): void {
-    log.success(`${label} — applique (${detail})`);
+    log.success(`${label} — appliqué (${detail})`);
   },
 
   failed({ label, detail }: StepReport): void {
-    log.error(`${label} — echec : ${detail}`);
+    log.error(`${label} — échec : ${detail}`);
   },
 
   info(message: string): void {
@@ -2060,21 +2484,42 @@ export async function withSpinner<T>(
     s.stop(label);
     return result;
   } catch (error) {
-    s.error(`${label} — echec`);
+    s.error(`${label} — échec`);
     throw error;
   }
 }
 
-export async function confirmOrExit(
+/** Levee quand l'utilisateur annule une invite. L'appelant decide du sort. */
+export class CancelledError extends Error {
+  constructor() {
+    super("Interrompu par l'utilisateur.");
+    this.name = "CancelledError";
+  }
+}
+
+export type ConfirmOptions = {
+  /** Passe outre l'invite : le drapeau --yes. */
+  assumeYes: boolean;
+  /** Injectable pour les tests ; par defaut, detection du terminal. */
+  interactive?: boolean;
+};
+
+/**
+ * Ne sort pas du processus elle-meme : elle leve. Un appel a process.exit
+ * ici rendrait la fonction intestable et court-circuiterait tout traitement
+ * de nettoyage de l'appelant.
+ */
+export async function askConfirmation(
   message: string,
-  assumeYes: boolean,
+  options: ConfirmOptions,
 ): Promise<boolean> {
-  if (assumeYes || !isInteractive()) return true;
+  const interactive = options.interactive ?? isInteractive();
+  if (options.assumeYes || !interactive) return true;
 
   const answer = await confirm({ message });
   if (isCancel(answer)) {
     cancel("Interrompu.");
-    process.exit(1);
+    throw new CancelledError();
   }
   return answer;
 }
@@ -2082,8 +2527,8 @@ export async function confirmOrExit(
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/ui.test.ts`
-Expected: PASS, neuf tests.
+Run: `bun test --isolate test/lib/ui.test.ts`
+Expected: PASS, treize tests.
 
 - [ ] **Step 5: Vérifier le rendu à l'œil**
 
@@ -2095,19 +2540,30 @@ s'afficher correctement.
 - [ ] **Step 6: Vérifier la dégradation hors terminal**
 
 Run: `bun -e 'import {configureOutput,ui,withSpinner} from "./src/lib/ui"; configureOutput(); ui.start("hardline"); await withSpinner("Etape", async () => {}); ui.finish("ok")' > /tmp/hardline-out.txt; cat -v /tmp/hardline-out.txt | head -20`
-Expected: du texte lisible, **sans séquences `^[[` de déplacement de curseur**. C'est la
-validation du forçage de `CI`.
+Expected: du texte lisible. Deux séquences subsistent, `ESC[?25l` et `ESC[?25h`, qui
+masquent puis réaffichent le curseur : Clack les émet quoi qu'il arrive, y compris avec
+`CI` déjà positionné dans l'environnement. Ce n'est pas un défaut de l'implémentation et
+il n'y a rien à corriger. Ce que le forçage de `CI` supprime, et qui doit effectivement
+être absent, ce sont les séquences d'effacement de ligne et de repositionnement — celles
+qui rendent un fichier journal illisible.
 
-- [ ] **Step 7: Vérifier la stabilité des invites sous Bun**
+- [ ] **Step 7: Laisser la vérification interactive à l'utilisateur**
 
-Clack a un historique de blocages de l'entrée standard sous Bun lorsque plusieurs
-invites s'enchaînent. Ce test manuel doit être fait une fois, maintenant, pas au moment
-de livrer.
+Clack a un historique de blocages de l'entrée standard sous Bun lorsque plusieurs invites
+s'enchaînent. Cette vérification demande une saisie au clavier : elle ne peut pas être
+faite par un agent, et elle ne doit pas être simulée en redirigeant l'entrée, ce qui
+testerait précisément le chemin non interactif au lieu du chemin interactif.
 
-Run: `bun -e 'import {confirm,text,isCancel} from "@clack/prompts"; const a = await confirm({message:"Premiere question ?"}); const b = await text({message:"Deuxieme question"}); console.log({a,b,cancelled:isCancel(a)||isCancel(b)})'`
-Expected: les deux invites répondent l'une après l'autre sans blocage. Si la seconde ne
-rend pas la main, signaler le problème avant d'aller plus loin : tout le reste du plan
-suppose que les invites fonctionnent.
+Ne l'exécute pas. Signale simplement dans ton rapport qu'elle reste à faire, en
+reproduisant la commande ci-dessous, pour qu'un humain la lance :
+
+```
+bun -e 'import {confirm,text,isCancel} from "@clack/prompts"; const a = await confirm({message:"Premiere question ?"}); const b = await text({message:"Deuxieme question"}); console.log({a,b,cancelled:isCancel(a)||isCancel(b)})'
+```
+
+Attendu : les deux invites répondent l'une après l'autre sans blocage. Si la seconde ne
+rend pas la main, tout ce qui dépend des invites — la confirmation de `hardline
+uninstall` — est compromis.
 
 - [ ] **Step 8: Commit**
 
@@ -2126,12 +2582,73 @@ appliqué.
 
 **Files:**
 - Create: `src/lib/preflight.ts`
-- Test: `test/lib/preflight.test.ts`
+- Modify: `src/lib/shell.ts` (type `NetworkService` et `parseNetworkServices`)
+- Test: `test/lib/preflight.test.ts`, `test/lib/shell.test.ts`
 
 **Interfaces:**
 - Consumes: `listNetworkServices` de `src/lib/shell.ts` (Task 2) ; `runRemoteJson` de
   `src/lib/ssh.ts` (Task 3) ; `Config` de `src/config.ts` (Task 5).
-- Produces: le type `CheckResult` et les fonctions `runPreflight` et `hasBlockingFailure`.
+- Produces: le type `CheckResult` et les fonctions `runPreflight` et `hasBlockingFailure` ;
+  `NetworkService` gagne un champ `enabled: boolean`.
+
+- [ ] **Step 0: Distinguer un service macOS désactivé d'un service absent**
+
+`networksetup -listnetworkserviceorder` préfixe d'un astérisque le nom des services
+désactivés. Le parseur écrit à la tâche 2 conserve cet astérisque dans `name`, si bien
+qu'un service `AX88179A` désactivé serait rapporté « absent ». Le preflight est le
+premier consommateur : la correction se fait ici.
+
+Dans `src/lib/shell.ts`, ajouter le champ au type et le traitement au parseur :
+
+```ts
+export type NetworkService = {
+  order: number;
+  name: string;
+  hardwarePort: string;
+  device: string;
+  /** `networksetup` préfixe d'un astérisque les services désactivés. */
+  enabled: boolean;
+};
+```
+
+```ts
+    const rawName = header[2]!;
+    const enabled = !rawName.startsWith("*");
+
+    services.push({
+      order: Number(header[1]),
+      name: enabled ? rawName : rawName.slice(1),
+      hardwarePort: device[1]!,
+      device: device[2]!,
+      enabled,
+    });
+```
+
+Dans `test/lib/shell.test.ts`, ajouter la fixture et les deux tests, et compléter
+l'objet attendu du test existant `« apparie chaque service avec son peripherique »`
+avec `enabled: true` :
+
+```ts
+const SERVICES_DISABLED = `An asterisk (*) denotes that a network service is disabled.
+(1) *AX88179A
+(Hardware Port: AX88179A, Device: en14)
+`;
+```
+
+```ts
+  test("retire l'asterisque et marque le service desactive", () => {
+    const [service] = parseNetworkServices(SERVICES_DISABLED);
+    expect(service?.name).toBe("AX88179A");
+    expect(service?.enabled).toBe(false);
+  });
+
+  test("marque actifs les services sans asterisque", () => {
+    expect(parseNetworkServices(SERVICES).every((s) => s.enabled)).toBe(true);
+  });
+```
+
+Run: `bun test --isolate test/lib/shell.test.ts`
+Expected: PASS, tous les tests du fichier, dont les deux nouveaux.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -2169,8 +2686,8 @@ const HEALTHY_REMOTE = {
 };
 
 const HEALTHY_SERVICES = [
-  { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14" },
-  { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0" },
+  { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14", enabled: true },
+  { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
 ];
 
 function setup(remote: Partial<typeof HEALTHY_REMOTE> = {}, svc = HEALTHY_SERVICES) {
@@ -2188,12 +2705,25 @@ describe("runPreflight", () => {
   });
 
   test("bloque si le service reseau du Mac est absent", async () => {
-    setup({}, [{ order: 1, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0" }]);
+    setup({}, [
+      { order: 1, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
+    ]);
     const results = await runPreflight(CONFIG);
     const check = results.find((r) => r.name === "service-mac");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
     expect(check?.detail).toContain("AX88179A");
+  });
+
+  test("distingue un service desactive d'un service absent", async () => {
+    setup({}, [
+      { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14", enabled: false },
+      { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
+    ]);
+    const check = (await runPreflight(CONFIG)).find((r) => r.name === "service-mac");
+    expect(check?.ok).toBe(false);
+    expect(check?.blocking).toBe(true);
+    expect(check?.detail).toContain("désactivé");
   });
 
   test("bloque si le PC ne repond pas en SSH", async () => {
@@ -2238,7 +2768,7 @@ describe("runPreflight", () => {
     const check = (await runPreflight(CONFIG)).find((r) => r.name === "lien-windows");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
-    expect(check?.detail).toContain("cable");
+    expect(check?.detail).toContain("câble");
   });
 });
 
@@ -2256,7 +2786,7 @@ describe("hasBlockingFailure", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/preflight.test.ts`
+Run: `bun test --isolate test/lib/preflight.test.ts`
 Expected: FAIL — le module `../../src/lib/preflight` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -2271,7 +2801,7 @@ import type { Config } from "../config";
 export type CheckResult = {
   name: string;
   ok: boolean;
-  /** Un echec bloquant arrete l'installation avant toute modification. */
+  /** Un échec bloquant arrête l'installation avant toute modification. */
   blocking: boolean;
   detail: string;
 };
@@ -2304,11 +2834,13 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
   const macService = services.find((s) => s.name === config.mac.serviceName);
   results.push({
     name: "service-mac",
-    ok: Boolean(macService),
+    ok: Boolean(macService?.enabled),
     blocking: true,
-    detail: macService
-      ? `service "${config.mac.serviceName}" sur ${macService.device}`
-      : `aucun service reseau nomme "${config.mac.serviceName}". Adaptateur USB debranche ?`,
+    detail: !macService
+      ? `aucun service réseau nommé «\u00a0${config.mac.serviceName}\u00a0». Adaptateur USB débranché\u00a0?`
+      : macService.enabled
+        ? `service «\u00a0${config.mac.serviceName}\u00a0» sur ${macService.device}`
+        : `service «\u00a0${config.mac.serviceName}\u00a0» désactivé dans les Réglages Réseau`,
   });
 
   let facts: RemoteFacts | undefined;
@@ -2322,19 +2854,19 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
       name: "ssh",
       ok: Boolean(facts),
       blocking: true,
-      detail: facts ? `PC joignable sur ${config.ssh.host}` : "reponse vide du PC",
+      detail: facts ? `PC joignable sur ${config.ssh.host}` : "réponse vide du PC",
     });
   } catch (error) {
     results.push({
       name: "ssh",
       ok: false,
       blocking: true,
-      detail: `PC injoignable sur ${config.ssh.host} : ${(error as Error).message}`,
+      detail: `PC injoignable sur ${config.ssh.host}\u00a0: ${(error as Error).message}`,
     });
   }
 
-  // Sans SSH, toute verification distante echouerait pour la meme raison.
-  // On s'arrete la plutot que d'aligner des echecs redondants.
+  // Sans SSH, toute vérification distante échouerait pour la même raison.
+  // On s'arrête là plutôt que d'aligner des échecs redondants.
   if (!facts) return results;
 
   results.push({
@@ -2342,7 +2874,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: facts.build === EXPECTED_BUILD,
     blocking: false,
     detail: `${facts.caption} build ${facts.build}${
-      facts.build === EXPECTED_BUILD ? "" : ` (reference : ${EXPECTED_BUILD})`
+      facts.build === EXPECTED_BUILD ? "" : ` (référence\u00a0: ${EXPECTED_BUILD})`
     }`,
   });
 
@@ -2351,7 +2883,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     name: "gpu",
     ok: Boolean(nvidia),
     blocking: true,
-    detail: nvidia ?? `aucun GPU NVIDIA parmi : ${facts.gpus.join(", ")}`,
+    detail: nvidia ?? `aucun GPU NVIDIA parmi\u00a0: ${facts.gpus.join(", ")}`,
   });
 
   const linkUp = facts.adapterPresent && facts.adapterStatus === "Up";
@@ -2360,8 +2892,8 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: linkUp,
     blocking: true,
     detail: linkUp
-      ? `interface "${config.windows.interfaceAlias}" active`
-      : `interface "${config.windows.interfaceAlias}" en etat ${facts.adapterStatus ?? "absent"}. Verifier le cable.`,
+      ? `interface «\u00a0${config.windows.interfaceAlias}\u00a0» active`
+      : `interface «\u00a0${config.windows.interfaceAlias}\u00a0» en état ${facts.adapterStatus ?? "absent"}. Vérifier le câble.`,
   });
 
   return results;
@@ -2374,13 +2906,13 @@ export function hasBlockingFailure(results: CheckResult[]): boolean {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/preflight.test.ts`
+Run: `bun test --isolate test/lib/preflight.test.ts`
 Expected: PASS, neuf tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/preflight.ts test/lib/preflight.test.ts
+git add src/lib/preflight.ts test/lib/preflight.test.ts src/lib/shell.ts test/lib/shell.test.ts
 git commit -m "feat: verification des preconditions avant toute modification"
 ```
 
@@ -2390,6 +2922,11 @@ git commit -m "feat: verification des preconditions avant toute modification"
 C'est la seule partie du projet qu'un humain exécute à la main, une fois par PC. Elle
 doit donc être irréprochable : idempotente, lisible, et sans aucun piège de
 localisation.
+
+`bootstrap.ps1` est volontairement écrit sans accents : il s'affiche dans une console
+Windows en page de code OEM (cp850 en français), où les accents seraient mutilés. C'est
+la seule exception à la règle des accents du projet, et elle est délibérée — les chaînes
+françaises côté TypeScript, elles, les portent toutes.
 
 Trois écueils y sont traités, tous rencontrés pendant l'exploration. `icacls` refuse
 `"Administrators:F"` sur un Windows français, où le groupe s'appelle « Administrateurs »
@@ -2402,6 +2939,7 @@ n'utilise pas `~/.ssh/authorized_keys` mais un fichier commun.
 **Files:**
 - Create: `src/assets/bootstrap.ps1`
 - Create: `src/lib/bootstrap-server.ts`
+- Create: `src/types/assets.d.ts`
 - Test: `test/lib/bootstrap-server.test.ts`
 
 **Interfaces:**
@@ -2498,6 +3036,7 @@ Write-Host ''
 ```ts
 import { test, expect, describe } from "bun:test";
 import {
+  localBootstrapUrl,
   renderBootstrapScript,
   serveBootstrap,
 } from "../../src/lib/bootstrap-server";
@@ -2538,6 +3077,14 @@ describe("renderBootstrapScript", () => {
   });
 });
 
+describe("localBootstrapUrl", () => {
+  test("compose une adresse mDNS complete", () => {
+    expect(localBootstrapUrl(8080)).toMatch(
+      /^http:\/\/[^/:]+:8080\/bootstrap\.ps1$/,
+    );
+  });
+});
+
 describe("serveBootstrap", () => {
   test("sert le script rendu puis s'arrete", async () => {
     const server = await serveBootstrap({ port: 0, template: TEMPLATE, ...VARS });
@@ -2563,14 +3110,24 @@ describe("serveBootstrap", () => {
     const server = await serveBootstrap({ port: 0, template: TEMPLATE, ...VARS });
     const url = server.url;
     server.stop();
-    expect(fetch(`${url}/bootstrap.ps1`)).rejects.toThrow();
+    await expect(fetch(`${url}/bootstrap.ps1`)).rejects.toThrow();
   });
 });
 ```
 
+`src/types/assets.d.ts` — sans cette déclaration, `tsc` ne sait pas typer l'import de
+fichier de Bun et échoue sur « Cannot find module » :
+
+```ts
+declare module "*.ps1" {
+  const path: string;
+  export default path;
+}
+```
+
 - [ ] **Step 3: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/bootstrap-server.test.ts`
+Run: `bun test --isolate test/lib/bootstrap-server.test.ts`
 Expected: FAIL — le module n'existe pas.
 
 - [ ] **Step 4: Écrire l'implémentation**
@@ -2599,11 +3156,14 @@ export function renderBootstrapScript(
   template: string,
   vars: BootstrapVars,
 ): string {
-  for (const value of Object.values(vars)) {
+  // On n'inspecte que les valeurs reellement substituees : l'appelant passe un objet
+  // plus large (port, gabarit), et le gabarit contient lui-meme des apostrophes.
+  for (const key of Object.values(MARKERS)) {
+    const value = vars[key];
     if (typeof value === "string" && value.includes("'")) {
       // Les marqueurs sont places entre apostrophes cote PowerShell.
       throw new Error(
-        `Valeur invalide : une apostrophe casserait le script PowerShell (${value})`,
+        `Valeur invalide\u00a0: une apostrophe casserait le script PowerShell (${value})`,
       );
     }
   }
@@ -2615,7 +3175,9 @@ export function renderBootstrapScript(
 
   const leftover = script.match(/@@[A-Z_]+@@/);
   if (leftover) {
-    throw new Error(`Marqueur non substitue dans le script d'amorcage : ${leftover[0]}`);
+    throw new Error(
+      `Marqueur non substitué dans le script d'amorçage\u00a0: ${leftover[0]}`,
+    );
   }
 
   return script;
@@ -2658,8 +3220,8 @@ export function localBootstrapUrl(port: number): string {
 
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/bootstrap-server.test.ts`
-Expected: PASS, six tests.
+Run: `bun test --isolate test/lib/bootstrap-server.test.ts`
+Expected: PASS, sept tests.
 
 - [ ] **Step 6: Vérifier que le PC atteint réellement le serveur**
 
@@ -2668,16 +3230,28 @@ la fois la résolution mDNS et l'absence de blocage par le pare-feu du Mac.
 
 Run: `bun -e 'import {serveBootstrap, localBootstrapUrl} from "./src/lib/bootstrap-server"; const s = await serveBootstrap({port:8080, publicKey:"ssh-ed25519 TEST", interfaceAlias:"Ethernet", windowsIp:"10.10.10.1", prefixLength:24}); console.log(localBootstrapUrl(8080)); await Bun.sleep(60000); s.stop()'`
 
-Puis, dans un autre terminal :
-`ssh -i ~/.ssh/id_ed25519_winpc arthur@192.168.1.48 'powershell -NoProfile -Command "(irm http://'$(hostname)'/bootstrap.ps1 -TimeoutSec 5).Length"'`
+Puis, dans un autre terminal, en visant d'abord le lien direct puis, s'il n'est pas
+encore posé, l'adresse Wi-Fi du PC :
+
+```bash
+HOST=$(hostname)
+for PC in 10.10.10.1 192.168.1.48; do
+  ssh -o ConnectTimeout=5 -i ~/.ssh/id_ed25519_winpc "arthur@$PC" \
+    "powershell -NoProfile -Command \"(irm http://$HOST:8080/bootstrap.ps1 -TimeoutSec 5).Length\"" && break
+done
+```
 
 Expected: un nombre de caractères non nul, prouvant que le PC a bien téléchargé le
 script depuis le Mac par son nom mDNS.
 
+Cette étape dépend d'un PC allumé et joignable : elle **ne bloque pas** la tâche. Si le
+PC ne répond sur aucune des deux adresses, consigner le fait dans le rapport et
+poursuivre — les six autres étapes se vérifient entièrement en local.
+
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/assets/bootstrap.ps1 src/lib/bootstrap-server.ts test/lib/bootstrap-server.test.ts
+git add src/assets/bootstrap.ps1 src/lib/bootstrap-server.ts src/types/assets.d.ts test/lib/bootstrap-server.test.ts
 git commit -m "feat: script d'amorcage idempotent et serveur ephemere"
 ```
 
@@ -2693,19 +3267,19 @@ son état d'origine. En écrivant d'abord, le pire cas devient une étape enregi
 non appliquée, que le passage suivant corrige de lui-même.
 
 **Files:**
-- Create: `src/steps/index.ts`
 - Create: `src/lib/orchestrator.ts`
 - Create: `src/commands/install.ts`
 - Create: `src/commands/uninstall.ts`
-- Modify: `src/cli.ts` — brancher les deux actions
-- Test: `test/lib/orchestrator.test.ts`
+- Modify: `src/cli.ts` — brancher les deux actions et rattraper `CancelledError`
+- Modify: `src/lib/preflight.ts` — ajouter `waitForRemote`
+- Test: `test/lib/orchestrator.test.ts`, `test/lib/preflight.test.ts`
 
 **Interfaces:**
 - Consumes: `Step` (Task 5), `macNetworkStep` (Task 5), `windowsNetworkStep` (Task 6),
   `ui` (Task 7), `runPreflight` / `hasBlockingFailure` (Task 8), `readManifest` /
   `writeManifest` / `recordStep` / `forgetStep` / `stepsInReverseOrder` (Task 4).
-- Produces: `ALL_STEPS`, `applySteps`, `revertSteps`, `installCommand`,
-  `uninstallCommand`.
+- Produces: `applySteps`, `revertSteps`, `installCommand`, `uninstallCommand`,
+  `waitForRemote`. `ALL_STEPS` existe déjà (tâche 6b).
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -2714,11 +3288,12 @@ non appliquée, que le passage suivant corrige de lui-même.
 ```ts
 import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG } from "../../src/config";
 import type { Step } from "../../src/steps/types";
-import { readManifest, emptyManifest } from "../../src/lib/manifest";
+import { readManifest } from "../../src/lib/manifest";
 import { applySteps, revertSteps } from "../../src/lib/orchestrator";
 
 type Trace = string[];
@@ -2777,16 +3352,17 @@ describe("applySteps", () => {
     expect(reports).toEqual(["applied:Etape a"]);
   });
 
-  test("ecrit le manifeste AVANT d'appliquer", async () => {
+  test("ecrit l'etat anterieur AVANT d'appliquer", async () => {
     // Le test qui protege l'invariant de surete : au moment ou apply s'execute,
-    // l'etat anterieur doit deja etre sur disque.
+    // l'etat anterieur doit deja etre sur disque, contenu compris. Si l'ecriture
+    // passait apres apply, readFileSync leverait ENOENT et le test echouerait.
     const trace: Trace = [];
-    let manifestAtApplyTime: unknown;
+    let manifestAtApplyTime = "";
     const step = makeStep("a", false, trace, () => {
-      manifestAtApplyTime = Bun.file(manifestPath).size;
+      manifestAtApplyTime = readFileSync(manifestPath, "utf8");
     });
     await applySteps([step], CONFIG, manifestPath, fakeUi);
-    expect(manifestAtApplyTime).toBeGreaterThan(0);
+    expect(manifestAtApplyTime).toContain("avant-a");
   });
 
   test("conserve l'etat anterieur dans le manifeste", async () => {
@@ -2800,19 +3376,17 @@ describe("applySteps", () => {
     expect((await readManifest(manifestPath)).order).toEqual([]);
   });
 
-  test("s'arrete a la premiere etape en echec et signale laquelle", async () => {
+  test("s'arrete a la premiere etape en echec", async () => {
     const trace: Trace = [];
     const boom = makeStep("b", false, trace, () => {
       throw new Error("refus");
     });
-    const after = makeStep("c", false, trace);
-    expect(
-      applySteps([makeStep("a", false, trace), boom, after], CONFIG, manifestPath, fakeUi),
+    const steps = [makeStep("a", false, trace), boom, makeStep("c", false, trace)];
+    await expect(
+      applySteps(steps, CONFIG, manifestPath, fakeUi),
     ).rejects.toThrow("refus");
-    await applySteps([makeStep("a", false, trace)], CONFIG, manifestPath, fakeUi).catch(
-      () => {},
-    );
-    expect(trace).not.toContain("apply:c");
+    // L'etape c n'est meme pas inspectee : l'orchestrateur s'arrete net.
+    expect(trace).toEqual(["inspect:a", "apply:a", "inspect:b", "apply:b"]);
   });
 
   test("rejouer applySteps ne reapplique rien", async () => {
@@ -2861,25 +3435,22 @@ afterEach(async () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/orchestrator.test.ts`
+Run: `bun test --isolate test/lib/orchestrator.test.ts`
 Expected: FAIL — le module `../../src/lib/orchestrator` n'existe pas.
 
-- [ ] **Step 3: Écrire le registre des étapes**
+- [ ] **Step 3: Vérifier le registre des étapes**
 
-`src/steps/index.ts` :
+`src/steps/index.ts` a été créé par la tâche 6b. Le relire et vérifier qu'il exporte
+bien les **trois** étapes dans cet ordre — le Mac d'abord, car c'est la machine depuis
+laquelle on parle ; le PC ensuite, une fois le chemin établi ; la tâche planifiée en
+dernier, car elle suppose le profil réseau déjà posé. Ne rien y modifier :
 
 ```ts
-import { macNetworkStep } from "./network-mac";
-import { windowsNetworkStep } from "./network-windows";
-import type { Step } from "./types";
-
-/**
- * L'ordre compte : les etapes sont appliquees dans cet ordre et restaurees
- * dans l'ordre inverse. Le Mac d'abord, car c'est la machine depuis laquelle
- * on parle ; le PC ensuite, une fois le chemin etabli.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const ALL_STEPS: Step<any>[] = [macNetworkStep, windowsNetworkStep];
+export const ALL_STEPS: Step<any>[] = [
+  macNetworkStep,
+  windowsNetworkStep,
+  windowsProfileTaskStep,
+];
 ```
 
 - [ ] **Step 4: Écrire l'orchestrateur**
@@ -2952,7 +3523,7 @@ export async function revertSteps(
     if (!step) {
       reporter.failed({
         label: record.step,
-        detail: "etape inconnue de cette version de hardline, ignoree",
+        detail: "étape inconnue de cette version de hardline, ignorée",
       });
       manifest = forgetStep(manifest, record.step);
       await writeManifest(manifestPath, manifest);
@@ -2960,7 +3531,7 @@ export async function revertSteps(
     }
 
     await step.restore(config, record.previous);
-    reporter.applied({ label: step.label, detail: "etat anterieur restaure" });
+    reporter.applied({ label: step.label, detail: "état antérieur restauré" });
 
     manifest = forgetStep(manifest, record.step);
     await writeManifest(manifestPath, manifest);
@@ -2968,78 +3539,177 @@ export async function revertSteps(
 }
 ```
 
-- [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
+- [ ] **Step 5: Lancer les tests d'orchestration et vérifier qu'ils passent**
 
-Run: `bun test test/lib/orchestrator.test.ts`
+Run: `bun test --isolate test/lib/orchestrator.test.ts`
 Expected: PASS, dix tests.
 
-- [ ] **Step 6: Écrire les deux commandes**
+- [ ] **Step 6: Attendre que le PC réponde après l'amorçage**
+
+L'amorçage du PC est le seul geste manuel du projet. Faire relancer `hardline install`
+juste après serait un second geste : l'installation attend donc d'elle-même que la
+machine réponde, puis reprend son cours.
+
+Ajouter à la fin de `src/lib/preflight.ts` :
+
+```ts
+const PROBE_INTERVAL_MS = 5_000;
+
+/**
+ * Attend que le PC reponde en SSH, au plus jusqu'a l'echeance. `sleep` est
+ * injectable pour que les tests n'attendent pas reellement.
+ */
+export async function waitForRemote(
+  config: Config,
+  deadlineMs: number,
+  sleep: (ms: number) => Promise<void> = Bun.sleep,
+): Promise<boolean> {
+  for (let waited = 0; waited <= deadlineMs; waited += PROBE_INTERVAL_MS) {
+    try {
+      await runRemoteJson(config.ssh, "[pscustomobject]@{ ok = $true }");
+      return true;
+    } catch {
+      if (waited + PROBE_INTERVAL_MS > deadlineMs) break;
+      await sleep(PROBE_INTERVAL_MS);
+    }
+  }
+  return false;
+}
+```
+
+Ajouter à `test/lib/preflight.test.ts` — l'import en tête devient
+`const { runPreflight, hasBlockingFailure, waitForRemote } = await import(...)` :
+
+```ts
+describe("waitForRemote", () => {
+  test("rend la main des que le PC repond", async () => {
+    setup();
+    remoteThrows = new Error("injoignable");
+    const slept: number[] = [];
+    const reachable = await waitForRemote(CONFIG, 60_000, async (ms) => {
+      slept.push(ms);
+      if (slept.length === 2) remoteThrows = null;
+    });
+    expect(reachable).toBe(true);
+    expect(slept).toEqual([5_000, 5_000]);
+  });
+
+  test("abandonne a l'echeance sans depasser le budget d'attente", async () => {
+    setup();
+    remoteThrows = new Error("injoignable");
+    const slept: number[] = [];
+    const reachable = await waitForRemote(CONFIG, 10_000, async (ms) => {
+      slept.push(ms);
+    });
+    expect(reachable).toBe(false);
+    expect(slept).toEqual([5_000, 5_000]);
+  });
+});
+```
+
+Run: `bun test --isolate test/lib/preflight.test.ts`
+Expected: PASS, douze tests.
+
+- [ ] **Step 7: Écrire les deux commandes**
 
 `src/commands/install.ts` :
 
 ```ts
+import { readFile } from "node:fs/promises";
 import { CONFIG } from "../config";
 import { ALL_STEPS } from "../steps";
 import { applySteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
-import { hasBlockingFailure, runPreflight } from "../lib/preflight";
-import { serveBootstrap, localBootstrapUrl } from "../lib/bootstrap-server";
+import type { CheckResult } from "../lib/preflight";
+import { hasBlockingFailure, runPreflight, waitForRemote } from "../lib/preflight";
+import { localBootstrapUrl, serveBootstrap } from "../lib/bootstrap-server";
 import { configureOutput, ui, withSpinner } from "../lib/ui";
-import { readFile } from "node:fs/promises";
+
+const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
+
+function reportChecks(checks: CheckResult[]): void {
+  for (const check of checks) {
+    if (check.ok) ui.info(`${check.name} — ${check.detail}`);
+    else if (check.blocking) ui.failed({ label: check.name, detail: check.detail });
+    else ui.warn(`${check.name} — ${check.detail}`);
+  }
+}
+
+async function readPublicKey(): Promise<string> {
+  const path = `${CONFIG.ssh.identityFile}.pub`;
+  try {
+    return (await readFile(path, "utf8")).trim();
+  } catch {
+    throw new Error(
+      `Clé publique introuvable\u00a0: ${path}. La créer avec ` +
+        `«\u00a0ssh-keygen -t ed25519 -f ${CONFIG.ssh.identityFile}\u00a0».`,
+    );
+  }
+}
+
+/**
+ * Sert le script d'amorcage et attend que le PC reponde. C'est le seul geste
+ * manuel du projet : une ligne a coller une fois par PC.
+ */
+async function bootstrapRemote(): Promise<boolean> {
+  const publicKey = await readPublicKey();
+  const server = await serveBootstrap({
+    port: CONFIG.bootstrapPort,
+    publicKey,
+    interfaceAlias: CONFIG.windows.interfaceAlias,
+    windowsIp: CONFIG.windows.ip,
+    prefixLength: CONFIG.windows.prefixLength,
+  });
+
+  ui.report("Amorçage du PC", [
+    "Le PC n'est pas encore joignable. Sur le PC, dans un",
+    "PowerShell lancé en administrateur, coller cette ligne\u00a0:",
+    "",
+    `  irm ${localBootstrapUrl(server.port)} | iex`,
+    "",
+    "L'installation reprendra d'elle-même dès que le PC répondra.",
+  ]);
+
+  try {
+    return await withSpinner("Attente du PC (10 minutes au plus)", () =>
+      waitForRemote(CONFIG, BOOTSTRAP_DEADLINE_MS),
+    );
+  } finally {
+    server.stop();
+  }
+}
 
 export async function installCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — installation");
 
-  const checks = await withSpinner("Verification des preconditions", async () =>
+  let checks = await withSpinner("Vérification des préconditions", () =>
     runPreflight(CONFIG),
   );
+  reportChecks(checks);
 
-  for (const check of checks) {
-    const report = { label: check.name, detail: check.detail };
-    if (check.ok) ui.skipped(report);
-    else if (check.blocking) ui.failed(report);
-    else ui.warn(`${check.name} — ${check.detail}`);
+  if (checks.some((c) => c.name === "ssh" && !c.ok)) {
+    if (!(await bootstrapRemote())) {
+      ui.finish(
+        "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    checks = await withSpinner("Nouvelle vérification des préconditions", () =>
+      runPreflight(CONFIG),
+    );
+    reportChecks(checks);
   }
 
   if (hasBlockingFailure(checks)) {
-    const sshFailed = checks.some((c) => c.name === "ssh" && !c.ok);
-
-    if (sshFailed) {
-      const publicKey = (
-        await readFile(`${CONFIG.ssh.identityFile}.pub`, "utf8")
-      ).trim();
-
-      const server = await serveBootstrap({
-        port: CONFIG.bootstrapPort,
-        publicKey,
-        interfaceAlias: CONFIG.windows.interfaceAlias,
-        windowsIp: CONFIG.windows.ip,
-        prefixLength: CONFIG.windows.prefixLength,
-      });
-
-      ui.report("Amorcage du PC", [
-        "Le PC n'est pas encore joignable. Sur le PC, dans un",
-        "PowerShell administrateur, coller cette ligne :",
-        "",
-        `  irm ${localBootstrapUrl(server.port)} | iex`,
-        "",
-        "Puis relancer : hardline install",
-      ]);
-
-      ui.info("Serveur d'amorcage actif pendant 10 minutes. Ctrl+C pour arreter.");
-      await Bun.sleep(10 * 60_000);
-      server.stop();
-      return;
-    }
-
-    ui.finish("Installation interrompue : precondition non satisfaite.");
+    ui.finish("Installation interrompue\u00a0: une précondition n'est pas satisfaite.");
     process.exitCode = 1;
     return;
   }
 
   await applySteps(ALL_STEPS, CONFIG, defaultManifestPath(), ui);
-  ui.finish("Liaison etablie. Verifier avec : hardline doctor");
+  ui.finish("Liaison établie. Vérifier avec «\u00a0hardline doctor\u00a0».");
 }
 ```
 
@@ -3050,33 +3720,35 @@ import { CONFIG } from "../config";
 import { ALL_STEPS } from "../steps";
 import { revertSteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
-import { configureOutput, confirmOrExit, ui } from "../lib/ui";
+import { askConfirmation, configureOutput, ui } from "../lib/ui";
 
 export async function uninstallCommand(options: { yes: boolean }): Promise<void> {
   configureOutput();
-  ui.start("hardline — desinstallation");
+  ui.start("hardline — désinstallation");
 
-  const confirmed = await confirmOrExit(
-    "Restaurer la configuration reseau anterieure des deux machines ?",
-    options.yes,
+  const confirmed = await askConfirmation(
+    "Restaurer la configuration réseau antérieure des deux machines ?",
+    { assumeYes: options.yes },
   );
   if (!confirmed) {
-    ui.finish("Rien n'a ete modifie.");
+    ui.finish("Rien n'a été modifié.");
     return;
   }
 
   await revertSteps(ALL_STEPS, CONFIG, defaultManifestPath(), ui);
-  ui.finish("Etat anterieur restaure.");
+  ui.finish("État antérieur restauré.");
 }
 ```
 
-- [ ] **Step 7: Brancher les commandes dans le CLI**
+- [ ] **Step 8: Brancher les commandes dans le CLI**
 
-Dans `src/cli.ts`, remplacer les deux actions correspondantes :
+Dans `src/cli.ts`, remplacer les deux actions `NOT_IMPLEMENTED` correspondantes — celles
+de `up` et `doctor` restent inchangées :
 
 ```ts
 import { installCommand } from "./commands/install";
 import { uninstallCommand } from "./commands/uninstall";
+import { CancelledError, ui } from "./lib/ui";
 
 // ...
 
@@ -3092,12 +3764,28 @@ import { uninstallCommand } from "./commands/uninstall";
     .action(uninstallCommand);
 ```
 
-- [ ] **Step 8: Lancer la suite complète**
+Et remplacer le point d'entrée, pour qu'une annulation au clavier ne remonte pas une
+trace d'exécution et qu'une erreur d'exécution soit rendue en français :
 
-Run: `bun test`
+```ts
+if (import.meta.main) {
+  try {
+    await buildProgram().parseAsync(Bun.argv);
+  } catch (error) {
+    if (!(error instanceof CancelledError)) {
+      ui.failed({ label: "hardline", detail: (error as Error).message });
+    }
+    process.exitCode = 1;
+  }
+}
+```
+
+- [ ] **Step 9: Lancer la suite complète**
+
+Run: `bun test --isolate`
 Expected: PASS, tous les tests des tâches 1 à 10.
 
-- [ ] **Step 9: Vérifier l'idempotence sur les vraies machines**
+- [ ] **Step 10: Vérifier l'idempotence sur les vraies machines**
 
 Run: `bun run src/cli.ts install`
 Expected: les étapes s'appliquent, la liaison est établie.
@@ -3106,10 +3794,15 @@ Run: `bun run src/cli.ts install`
 Expected: **toutes les étapes sont annoncées « déjà conforme »**, aucune n'est
 réappliquée. C'est la validation de l'idempotence.
 
-- [ ] **Step 10: Commit**
+Cette étape dépend d'un PC allumé et joignable : elle **ne bloque pas** la tâche. Si le
+PC ne répond pas, le consigner dans le rapport et poursuivre.
+
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/steps/index.ts src/lib/orchestrator.ts src/commands/ src/cli.ts test/lib/orchestrator.test.ts
+git add src/lib/orchestrator.ts src/lib/preflight.ts src/commands/install.ts \
+  src/commands/uninstall.ts src/cli.ts test/lib/orchestrator.test.ts \
+  test/lib/preflight.test.ts
 git commit -m "feat: orchestrateur idempotent, install et uninstall"
 ```
 
@@ -3130,7 +3823,7 @@ session de travail, ce qui suppose Moonlight, donc le plan 2.
 - Test: `test/commands/doctor.test.ts`
 
 **Interfaces:**
-- Consumes: `runPreflight` (Task 8), `ALL_STEPS` (Task 10), `pingFrom` (Task 2),
+- Consumes: `runPreflight` (Task 8), `ALL_STEPS` (Task 6b), `pingFrom` (Task 2),
   `ui` (Task 7).
 - Produces: `doctorCommand` et la fonction pure `formatDiagnostic`.
 
@@ -3173,8 +3866,9 @@ describe("formatDiagnostic", () => {
       ...HEALTHY,
       ping: { ...HEALTHY.ping, received: 18, lossPercent: 10 },
     });
-    expect(lines.join("\n")).toContain("10");
-    expect(lines.join("\n")).toMatch(/perte/i);
+    // Assertion sur la ligne entiere : un simple toContain("10") serait
+    // satisfait par l'adresse 10.10.10.1 presente ailleurs dans le rapport.
+    expect(lines.join("\n")).toMatch(/^KO\s+Perte de paquets\s*:\s*10 %/m);
   });
 
   test("indique clairement qu'un hote est injoignable", () => {
@@ -3198,23 +3892,28 @@ describe("formatDiagnostic", () => {
     const lines = formatDiagnostic({
       ...HEALTHY,
       steps: [
+        { label: "Adresse fixe (Mac)", conforming: true, detail: "deja en 10.10.10.2" },
         { label: "Adresse fixe (PC)", conforming: false, detail: "profil Public" },
       ],
     });
     const text = lines.join("\n");
-    expect(text).toContain("Adresse fixe (PC)");
-    expect(text).toContain("profil Public");
+    expect(text).toMatch(/^OK\s+Adresse fixe \(Mac\)\s*:\s*deja en 10\.10\.10\.2/m);
+    expect(text).toMatch(/^KO\s+Adresse fixe \(PC\)\s*:\s*profil Public/m);
   });
 
-  test("ne mentionne pas le debit quand il n'a pas ete mesure", () => {
-    expect(formatDiagnostic(HEALTHY).join("\n")).not.toMatch(/Mbit/);
+  test("marque KO une verification en echec", () => {
+    const lines = formatDiagnostic({
+      ...HEALTHY,
+      checks: [{ name: "ssh", ok: false, blocking: true, detail: "PC injoignable" }],
+    });
+    expect(lines.join("\n")).toMatch(/^KO\s+ssh\s*:\s*PC injoignable/m);
   });
 });
 ```
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/commands/doctor.test.ts`
+Run: `bun test --isolate test/commands/doctor.test.ts`
 Expected: FAIL — le module `../../src/commands/doctor` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -3263,7 +3962,9 @@ export function formatDiagnostic(diagnostic: Diagnostic): string[] {
 
   const { ping } = diagnostic;
   if (ping.received === 0) {
-    lines.push(`KO  ${pad("Liaison")}injoignable (${ping.transmitted} paquets envoyes)`);
+    lines.push(
+      `KO  ${pad("Liaison")}injoignable (${ping.transmitted} paquets envoyés)`,
+    );
     return lines;
   }
 
@@ -3280,7 +3981,7 @@ export async function doctorCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — diagnostic");
 
-  const checks = await withSpinner("Verification des machines", async () =>
+  const checks = await withSpinner("Vérification des machines", async () =>
     runPreflight(CONFIG),
   );
 
@@ -3314,9 +4015,9 @@ export async function doctorCommand(): Promise<void> {
     ping.received > 0;
 
   if (healthy) {
-    ui.finish("Liaison operationnelle.");
+    ui.finish("Liaison opérationnelle.");
   } else {
-    ui.finish("Anomalies detectees. Relancer : hardline install");
+    ui.finish("Anomalies détectées. Relancer «\u00a0hardline install\u00a0».");
     process.exitCode = 1;
   }
 }
@@ -3324,12 +4025,12 @@ export async function doctorCommand(): Promise<void> {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/commands/doctor.test.ts`
+Run: `bun test --isolate test/commands/doctor.test.ts`
 Expected: PASS, cinq tests.
 
 - [ ] **Step 5: Brancher la commande**
 
-Dans `src/cli.ts` :
+Dans `src/cli.ts`, remplacer l'action `NOT_IMPLEMENTED("doctor")` :
 
 ```ts
 import { doctorCommand } from "./commands/doctor";
@@ -3347,9 +4048,14 @@ Expected: un rapport encadré où chaque ligne commence par `OK`, avec une laten
 proche de 1 ms et 0 % de perte. Le code de sortie doit être 0 — le vérifier avec
 `echo $?`.
 
+Cette étape dépend d'un PC allumé et joignable : elle **ne bloque pas** la tâche. Si le
+PC ne répond pas, le consigner dans le rapport et poursuivre.
+
 - [ ] **Step 7: Vérifier que le diagnostic détecte une vraie panne**
 
-Débrancher le câble Ethernet, puis relancer.
+Cette étape demande de débrancher physiquement le câble Ethernet : elle est **réservée
+à l'utilisateur** et ne doit pas être tentée par l'implémenteur. La consigner telle
+quelle dans le rapport, comme vérification manuelle en attente.
 
 Run: `bun run src/cli.ts doctor; echo "code: $?"`
 Expected: des lignes `KO`, la mention « injoignable », et un code de sortie 1.
@@ -3366,10 +4072,17 @@ git commit -m "feat: commande doctor"
 
 ### Task 12: Binaire autonome
 
+La contrainte « pas de `Bun.spawn` hors de `src/lib/shell.ts` et `src/lib/ssh.ts` »
+délimite les frontières système du programme livré, dans `src/`. Elle ne s'applique pas
+à `scripts/`, qui n'est pas embarqué dans le binaire : y appeler `bun build` est la voie
+documentée et ne constitue pas une entorse.
+
 **Files:**
 - Create: `scripts/build.ts`
-- Modify: `package.json` — le script `build` existe déjà et pointe ici
 - Test: vérification manuelle du binaire produit
+
+`package.json` est déjà correct : son script `build` pointe sur `scripts/build.ts`, et
+`.gitignore` contient déjà `dist/`. Ne toucher ni l'un ni l'autre.
 
 **Interfaces:**
 - Consumes: `src/cli.ts` (Task 1) et tout ce qu'il importe.
@@ -3377,49 +4090,36 @@ git commit -m "feat: commande doctor"
 
 - [ ] **Step 1: Écrire le script de construction**
 
-`scripts/build.ts` :
+`scripts/build.ts` — on passe par la ligne de commande `bun build`, seule voie
+documentée pour `--compile` :
 
 ```ts
-const result = await Bun.build({
-  entrypoints: ["./src/cli.ts"],
-  outdir: "./dist",
-  target: "bun",
-  minify: true,
-  compile: {
-    target: "bun-darwin-arm64",
-    outfile: "./dist/hardline",
-  },
-});
+const ARGS = [
+  "bun",
+  "build",
+  "./src/cli.ts",
+  "--compile",
+  "--minify",
+  "--bytecode",
+  "--target=bun-darwin-arm64",
+  "--outfile",
+  "./dist/hardline",
+];
 
-if (!result.success) {
-  for (const log of result.logs) console.error(log);
-  process.exit(1);
+const proc = Bun.spawn(ARGS, { stdout: "inherit", stderr: "inherit" });
+const code = await proc.exited;
+
+if (code !== 0) {
+  console.error("Échec de la construction du binaire.");
+  process.exit(code);
 }
 
 console.log("Binaire produit : ./dist/hardline");
 ```
 
-Si l'API programmatique `Bun.build` ne prend pas l'option `compile` dans la version
-installée, remplacer le contenu du script par un appel direct à la ligne de commande,
-qui est la voie documentée :
-
-```ts
-const proc = Bun.spawn(
-  [
-    "bun",
-    "build",
-    "./src/cli.ts",
-    "--compile",
-    "--minify",
-    "--bytecode",
-    "--target=bun-darwin-arm64",
-    "--outfile",
-    "./dist/hardline",
-  ],
-  { stdout: "inherit", stderr: "inherit" },
-);
-process.exit(await proc.exited);
-```
+`--target=bun-darwin-arm64` est l'architecture du Mac de référence, vérifiée par
+`uname -m`. Si `--bytecode` fait échouer la construction, le retirer et le consigner
+dans le rapport : c'est une optimisation du temps de démarrage, pas une exigence.
 
 - [ ] **Step 2: Construire**
 
@@ -3439,11 +4139,15 @@ Run: `cd /tmp && ~/Documents/Dev/projects/thunderbolt-control/dist/hardline doct
 Expected: le diagnostic s'exécute normalement, prouvant que rien ne dépend du
 répertoire de travail.
 
-- [ ] **Step 4: Ajouter dist au .gitignore et committer**
+Cette seconde vérification dépend d'un PC allumé : elle **ne bloque pas** la tâche. La
+première, `--help` depuis `/tmp`, se suffit à elle-même et doit passer.
+
+- [ ] **Step 4: Committer**
+
+`dist/` est déjà ignoré : ne rien ajouter à `.gitignore`.
 
 ```bash
-echo "dist/" >> .gitignore
-git add scripts/build.ts .gitignore
+git add scripts/build.ts
 git commit -m "feat: production d'un binaire autonome"
 ```
 
@@ -3454,7 +4158,7 @@ git commit -m "feat: production d'un binaire autonome"
 À l'issue des douze tâches, ces trois affirmations doivent être vraies et vérifiées,
 pas supposées.
 
-1. `bun test` passe intégralement.
+1. `bun test --isolate` passe intégralement.
 2. `hardline install` lancé deux fois de suite n'applique rien la seconde fois, et
    l'annonce explicitement pour chaque étape.
 3. `hardline uninstall` puis `hardline doctor` montre une liaison revenue à son état
