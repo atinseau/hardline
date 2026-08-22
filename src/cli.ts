@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
+import { installCommand } from "./commands/install";
+import { uninstallCommand } from "./commands/uninstall";
+import { CancelledError, ui } from "./lib/ui";
 
 export const VERSION = "0.1.0";
 
@@ -19,12 +22,13 @@ export function buildProgram(): Command {
   program
     .command("install")
     .description("Converge les deux machines vers l'état cible")
-    .action(NOT_IMPLEMENTED("install"));
+    .action(installCommand);
 
   program
     .command("uninstall")
     .description("Restaure l'état antérieur à partir du manifeste")
-    .action(NOT_IMPLEMENTED("uninstall"));
+    .option("-y, --yes", "ne pas demander de confirmation", false)
+    .action(uninstallCommand);
 
   program
     .command("up")
@@ -40,5 +44,12 @@ export function buildProgram(): Command {
 }
 
 if (import.meta.main) {
-  await buildProgram().parseAsync(Bun.argv);
+  try {
+    await buildProgram().parseAsync(Bun.argv);
+  } catch (error) {
+    if (!(error instanceof CancelledError)) {
+      ui.failed({ label: "hardline", detail: (error as Error).message });
+    }
+    process.exitCode = 1;
+  }
 }

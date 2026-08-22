@@ -16,7 +16,7 @@ mock.module("../../src/lib/ssh", () => ({
   },
 }));
 
-const { runPreflight, hasBlockingFailure } = await import(
+const { runPreflight, hasBlockingFailure, waitForRemote } = await import(
   "../../src/lib/preflight"
 );
 
@@ -123,5 +123,30 @@ describe("hasBlockingFailure", () => {
         { name: "b", ok: true, blocking: true, detail: "" },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("waitForRemote", () => {
+  test("rend la main des que le PC repond", async () => {
+    setup();
+    remoteThrows = new Error("injoignable");
+    const slept: number[] = [];
+    const reachable = await waitForRemote(CONFIG, 60_000, async (ms) => {
+      slept.push(ms);
+      if (slept.length === 2) remoteThrows = null;
+    });
+    expect(reachable).toBe(true);
+    expect(slept).toEqual([5_000, 5_000]);
+  });
+
+  test("abandonne a l'echeance sans depasser le budget d'attente", async () => {
+    setup();
+    remoteThrows = new Error("injoignable");
+    const slept: number[] = [];
+    const reachable = await waitForRemote(CONFIG, 10_000, async (ms) => {
+      slept.push(ms);
+    });
+    expect(reachable).toBe(false);
+    expect(slept).toEqual([5_000, 5_000]);
   });
 });

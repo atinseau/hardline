@@ -106,3 +106,26 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
 export function hasBlockingFailure(results: CheckResult[]): boolean {
   return results.some((r) => !r.ok && r.blocking);
 }
+
+const PROBE_INTERVAL_MS = 5_000;
+
+/**
+ * Attend que le PC reponde en SSH, au plus jusqu'a l'echeance. `sleep` est
+ * injectable pour que les tests n'attendent pas reellement.
+ */
+export async function waitForRemote(
+  config: Config,
+  deadlineMs: number,
+  sleep: (ms: number) => Promise<void> = Bun.sleep,
+): Promise<boolean> {
+  for (let waited = 0; waited <= deadlineMs; waited += PROBE_INTERVAL_MS) {
+    try {
+      await runRemoteJson(config.ssh, "[pscustomobject]@{ ok = $true }");
+      return true;
+    } catch {
+      if (waited + PROBE_INTERVAL_MS > deadlineMs) break;
+      await sleep(PROBE_INTERVAL_MS);
+    }
+  }
+  return false;
+}
