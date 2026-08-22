@@ -1,7 +1,8 @@
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
+import { BOOTSTRAP_STEP_NAME } from "./bootstrap-name";
 import { SSH_LOCAL_ADDRESS, detachTail } from "./detach";
-import type { Step } from "./types";
+import type { RestoreContext, Step } from "./types";
 
 export type WindowsNetworkState = {
   adapterPresent: boolean;
@@ -215,7 +216,33 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
     );
   },
 
-  async restore(config: Config, previous: WindowsNetworkState) {
+  /**
+   * Une seule queue detachee coupante par desinstallation, et elle appartient a
+   * la DERNIERE restauration qui passe.
+   *
+   * `revertSteps` enchaine les restaurations sans attendre : celle-ci rend la
+   * main des que Start-Process est lance, sa charge dort deux secondes, puis
+   * retire l'adresse et repose le profil. Or l'etape d'amorcage, restauree
+   * apres, doit d'abord OUVRIR une session SSH neuve — connexion plus demarrage
+   * de powershell, souvent plus de deux secondes a froid. Les deux comptes a
+   * rebours se recouvraient : la charge d'ici tuait la session de la-bas au
+   * milieu de son travail, et le PC restait injoignable avec son adressage
+   * d'origine jamais repose. C'est exactement le degat que la vague 3 existe
+   * pour supprimer, deplace de l'installation vers la desinstallation.
+   *
+   * Quand l'amorcage suit, cette etape n'a de toute facon rien d'utile a
+   * rendre : son « etat anterieur » est l'etat d'APRES amorcage, tandis que le
+   * releve d'amorcage decrit le PC d'avant hardline. Elle s'efface entierement,
+   * plutot que de n'omettre que sa queue — la moitie non coupante ne ferait que
+   * reposer des adresses que l'amorcage s'apprete a defaire.
+   */
+  async restore(
+    config: Config,
+    previous: WindowsNetworkState,
+    context: RestoreContext,
+  ) {
+    if (context.pending.includes(BOOTSTRAP_STEP_NAME)) return;
+
     await runRemoteChecked(
       config.ssh,
       RESTORE(config.windows.interfaceAlias, config.windows.ip, previous),

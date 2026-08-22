@@ -1,4 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
+
+/** Aucune etape ne suit : cette restauration est la derniere a passer. */
+const NO_PENDING = { pending: [] as string[] };
 import { CONFIG } from "../../src/config";
 import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
@@ -203,7 +206,7 @@ describe("restore", () => {
       manualAddresses: [],
       dhcpEnabled: true,
       category: "Public",
-    });
+    }, NO_PENDING);
     const script = scriptOf(0);
     expect(script).toContain("-Dhcp Enabled");
     expect(script).not.toContain("-Dhcp Disabled");
@@ -218,7 +221,7 @@ describe("restore", () => {
       manualAddresses: ["192.168.50.10/24"],
       dhcpEnabled: false,
       category: "Private",
-    });
+    }, NO_PENDING);
     const script = scriptOf(0);
     expect(script).toContain("-IPAddress '192.168.50.10'");
     expect(script).toContain("-PrefixLength 24");
@@ -230,7 +233,7 @@ describe("restore", () => {
       ...CONFORME,
       dhcpEnabled: true,
       category: "Public",
-    });
+    }, NO_PENDING);
     expect(scriptOf(0)).toMatch(
       /Set-NetConnectionProfile[^\n]*-InterfaceAlias 'Ethernet'[^\n]*Public/,
     );
@@ -241,7 +244,7 @@ describe("restore", () => {
       ...CONFORME,
       dhcpEnabled: true,
       category: null,
-    });
+    }, NO_PENDING);
     expect(scriptOf(0)).not.toContain("Set-NetConnectionProfile");
   });
 
@@ -250,7 +253,7 @@ describe("restore", () => {
       throw new Error("acces refuse");
     });
     await expect(
-      windowsNetworkStep.restore(CONFIG, { ...CONFORME, dhcpEnabled: true }),
+      windowsNetworkStep.restore(CONFIG, { ...CONFORME, dhcpEnabled: true }, NO_PENDING),
     ).rejects.toThrow("acces refuse");
   });
 
@@ -267,7 +270,7 @@ describe("restore", () => {
         addresses: [],
         manualAddresses: [],
         dhcpEnabled: true,
-      }),
+      }, NO_PENDING),
     ).rejects.toThrow(/code 1/);
   });
 
@@ -280,7 +283,7 @@ describe("restore", () => {
       manualAddresses: ["192.168.1.48/24"],
       dhcpEnabled: true,
       category: "Public",
-    });
+    }, NO_PENDING);
     const script = scriptOf(0);
     expect(script).toContain("-Dhcp Enabled");
     expect(script).toContain("-IPAddress '192.168.1.48'");
@@ -302,7 +305,7 @@ describe("restore, ordre des operations", () => {
   };
 
   test("retablit l'etat anterieur avant tout ce qui peut couper le canal", async () => {
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const script = scriptOf(0);
 
     const cut = script.indexOf("$sshLocal");
@@ -316,7 +319,7 @@ describe("restore, ordre des operations", () => {
   test("repose les adresses enregistrees avant de rallumer le DHCP", async () => {
     // Sinon l'invariant repose sur une affirmation non verifiee : que
     // -Dhcp Enabled laisse les adresses Manual en place.
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const script = scriptOf(0);
     expect(script.indexOf("-IPAddress '192.168.1.48'")).toBeLessThan(
       script.indexOf("-Dhcp Enabled"),
@@ -326,7 +329,7 @@ describe("restore, ordre des operations", () => {
   test("corrige le prefixe d'une adresse anterieure encore presente", async () => {
     // Meme traitement que dans apply : on corrige sur place, on ne retire pas
     // pour reposer.
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const script = scriptOf(0);
     expect(script).toMatch(
       /if \(\$prev\.PrefixLength -ne 24\)[\s\S]{0,140}Set-NetIPAddress[^\n]*-IPAddress '192\.168\.1\.48'[^\n]*-PrefixLength 24/,
@@ -338,7 +341,7 @@ describe("restore, ordre des operations", () => {
     // Private, et la tache de maintien vient d'etre supprimee : passer le
     // profil en Public tue la session a cette instruction meme. Tout ce qui
     // suivrait — le retrait de 10.10.10.1 — ne serait jamais execute.
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const script = scriptOf(0);
     expect(script.indexOf("-NetworkCategory Public")).toBeGreaterThan(
       script.indexOf("Remove-NetIPAddress"),
@@ -346,7 +349,7 @@ describe("restore, ordre des operations", () => {
   });
 
   test("retrait et profil partent ensemble dans la queue detachee", async () => {
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const line = detachedLine(scriptOf(0));
 
     expect(line).toContain("Start-Sleep -Seconds 2");
@@ -360,7 +363,7 @@ describe("restore, ordre des operations", () => {
     // Executee en ligne, elle tuerait la commande SSH : runRemoteChecked
     // remonterait un echec pour une restauration pourtant reussie, et
     // l'orchestrateur garderait l'entree de manifeste.
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const script = scriptOf(0);
 
     expect(script).toContain("Get-NetTCPConnection -LocalPort 22");
@@ -371,7 +374,7 @@ describe("restore, ordre des operations", () => {
   test("echappe les $ confies au processus detache", async () => {
     // Sans le backtick, le shell appelant developpe $false en chaine vide et
     // Remove-NetIPAddress reclame une confirmation que personne ne donnera.
-    const line = detachedLine((await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE), scriptOf(0)));
+    const line = detachedLine((await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING), scriptOf(0)));
 
     expect(line).toContain("-Confirm:`$false");
     expect(line).not.toContain("-Confirm:$false");
@@ -380,7 +383,7 @@ describe("restore, ordre des operations", () => {
   test("n'echappe pas les $ de la branche executee en ligne", async () => {
     // Contre-epreuve de l'assertion precedente : le backtick est une exigence
     // du seul chemin detache, pas une decoration a semer partout.
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const inline = scriptOf(0)
       .split("} else {")
       .pop() as string;
@@ -389,7 +392,7 @@ describe("restore, ordre des operations", () => {
   });
 
   test("execute la queue en ligne quand la session n'utilise pas l'adresse", async () => {
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const inline = scriptOf(0)
       .split("} else {")
       .pop() as string;
@@ -408,7 +411,7 @@ describe("restore, ordre des operations", () => {
     await windowsNetworkStep.restore(CONFIG, {
       ...SANS_NOTRE_ADRESSE,
       category: "DomainAuthenticated",
-    });
+    }, NO_PENDING);
     const script = scriptOf(0);
     expect(script).not.toContain("Set-NetConnectionProfile");
     expect(script).not.toContain("DomainAuthenticated");
@@ -424,14 +427,14 @@ describe("restore, ordre des operations", () => {
       manualAddresses: ["10.10.10.1/24"],
       dhcpEnabled: false,
       category: "Private",
-    });
+    }, NO_PENDING);
     expect(scriptOf(0)).not.toContain("Remove-NetIPAddress");
   });
 
   test("ne supprime jamais en bloc les adresses de l'interface", async () => {
     // La forme fautive : un Get-NetIPAddress sans filtre pipe dans
     // Remove-NetIPAddress, qui emporte l'adresse de la session SSH.
-    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE);
+    await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     expect(scriptOf(0)).not.toMatch(
       /Get-NetIPAddress[^|]*\|\s*\n?\s*Remove-NetIPAddress/,
     );

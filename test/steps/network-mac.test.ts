@@ -1,4 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
+
+/** Aucune etape ne suit : cette restauration est la derniere a passer. */
+const NO_PENDING = { pending: [] as string[] };
 import type { ServiceIPConfig } from "../../src/lib/shell";
 import { CONFIG } from "../../src/config";
 
@@ -90,7 +93,7 @@ describe("restore", () => {
       ip: null,
       subnetMask: null,
       router: null,
-    });
+    }, NO_PENDING);
     expect(setDhcp).toHaveBeenCalledTimes(1);
     expect(setManual).not.toHaveBeenCalled();
   });
@@ -101,7 +104,7 @@ describe("restore", () => {
       ip: "192.168.5.5",
       subnetMask: "255.255.255.0",
       router: null,
-    });
+    }, NO_PENDING);
     expect(setManual).toHaveBeenCalledWith("AX88179A", "192.168.5.5", "255.255.255.0");
   });
 
@@ -112,7 +115,7 @@ describe("restore", () => {
       ip: null,
       subnetMask: null,
       router: null,
-    });
+    }, NO_PENDING);
     expect(setOff).toHaveBeenCalledTimes(1);
     expect(setOff).toHaveBeenCalledWith("AX88179A");
     expect(setDhcp).not.toHaveBeenCalled();
@@ -124,7 +127,7 @@ describe("restore", () => {
       ip: null,
       subnetMask: null,
       router: null,
-    });
+    }, NO_PENDING);
     expect(setDhcp).toHaveBeenCalledTimes(1);
   });
 });
@@ -149,13 +152,13 @@ describe("restore, echec de networksetup", () => {
   test("rejette quand -setmanual est refuse", async () => {
     setManual.mockImplementationOnce(async () => 1);
     await expect(
-      macNetworkStep.restore(CONFIG, PREVIOUS.manual),
+      macNetworkStep.restore(CONFIG, PREVIOUS.manual, NO_PENDING),
     ).rejects.toThrow(/networksetup a refusé/);
   });
 
   test("rejette quand -setv4off est refuse", async () => {
     setOff.mockImplementationOnce(async () => 1);
-    await expect(macNetworkStep.restore(CONFIG, PREVIOUS.off)).rejects.toThrow(
+    await expect(macNetworkStep.restore(CONFIG, PREVIOUS.off, NO_PENDING)).rejects.toThrow(
       /networksetup a refusé/,
     );
   });
@@ -164,7 +167,7 @@ describe("restore, echec de networksetup", () => {
     // Le scenario exact observe en revue : cache sudo expire pendant
     // l'uninstall, -setdhcp sort en 1, et hardline annoncait la restauration.
     setDhcp.mockImplementationOnce(async () => 1);
-    await expect(macNetworkStep.restore(CONFIG, PREVIOUS.dhcp)).rejects.toThrow(
+    await expect(macNetworkStep.restore(CONFIG, PREVIOUS.dhcp, NO_PENDING)).rejects.toThrow(
       /networksetup a refusé/,
     );
   });
@@ -177,7 +180,7 @@ describe("restore, echec de networksetup", () => {
         ip: null,
         subnetMask: null,
         router: null,
-      }),
+      }, NO_PENDING),
     ).rejects.toThrow(/networksetup a refusé/);
   });
 
@@ -186,7 +189,7 @@ describe("restore, echec de networksetup", () => {
     // chaine, seulement le code 77.
     setDhcp.mockImplementationOnce(async () => 77);
     const error = await macNetworkStep
-      .restore(CONFIG, PREVIOUS.dhcp)
+      .restore(CONFIG, PREVIOUS.dhcp, NO_PENDING)
       .then(() => null)
       .catch((err: unknown) => err as Error);
 
@@ -199,7 +202,7 @@ describe("restore, echec de networksetup", () => {
   test("laisse passer une restauration acceptee", async () => {
     // Contre-epreuve : sans elle, un restore qui rejette toujours passerait
     // les tests ci-dessus.
-    await macNetworkStep.restore(CONFIG, PREVIOUS.dhcp);
+    await macNetworkStep.restore(CONFIG, PREVIOUS.dhcp, NO_PENDING);
     expect(setDhcp).toHaveBeenCalledTimes(1);
   });
 });

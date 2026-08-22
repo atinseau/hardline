@@ -1,4 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
+
+/** Aucune etape ne suit : cette restauration est la derniere a passer. */
+const NO_PENDING = { pending: [] as string[] };
 import { CONFIG } from "../../src/config";
 
 let remoteState: unknown[];
@@ -125,20 +128,20 @@ describe("apply, le script planifie verifie ce qu'il ecrit", () => {
 
 describe("restore", () => {
   test("supprime la tache si hardline l'avait creee", async () => {
-    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
+    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null }, NO_PENDING);
     const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Unregister-ScheduledTask");
   });
 
   test("ne supprime rien si une tache de ce nom preexistait", async () => {
-    await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" });
+    await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" }, NO_PENDING);
     expect(runRemoteChecked).not.toHaveBeenCalled();
   });
 
   test("emporte le journal laisse par la tache", async () => {
     // Le seul residu que la tache puisse ecrire ; le laisser derriere elle
     // ferait de l'uninstall une restauration approximative.
-    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
+    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null }, NO_PENDING);
     const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Remove-Item");
     expect(script).toContain("network-profile.log");
@@ -149,7 +152,7 @@ describe("restore", () => {
     // vit dans le meme repertoire et n'est utilise qu'a la toute fin. Un
     // Remove-Item -Recurse detruirait la seule description du PC d'avant
     // hardline avant que l'etape d'amorcage n'ait pu s'en servir.
-    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
+    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null }, NO_PENDING);
     const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
 
     expect(script).not.toContain("-Recurse");
@@ -166,7 +169,7 @@ describe("restore", () => {
       throw new Error("Commande distante en echec (code 1) : Access is denied");
     });
     await expect(
-      windowsProfileTaskStep.restore(CONFIG, { present: false, state: null }),
+      windowsProfileTaskStep.restore(CONFIG, { present: false, state: null }, NO_PENDING),
     ).rejects.toThrow(/code 1/);
   });
 });

@@ -67,8 +67,15 @@ export async function revertSteps(
   const byName = new Map(steps.map((s) => [s.name, s]));
   const unrestored: string[] = [];
 
-  for (const record of stepsInReverseOrder(manifest)) {
+  // L'ordre est fige avant la boucle : le manifeste est reecrit a chaque
+  // restauration reussie, et chaque etape doit savoir qui passe APRES elle.
+  const records = stepsInReverseOrder(manifest);
+
+  for (const [index, record] of records.entries()) {
     const step = byName.get(record.step);
+    const context = {
+      pending: records.slice(index + 1).map((r) => r.step),
+    };
 
     if (!step) {
       reporter.failed({
@@ -81,7 +88,7 @@ export async function revertSteps(
     }
 
     try {
-      await step.restore(config, record.previous);
+      await step.restore(config, record.previous, context);
     } catch (error) {
       // Une machine qui refuse de revenir en arriere ne doit pas empecher
       // l'autre d'etre restauree : on signale, on garde, on continue.
