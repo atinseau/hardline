@@ -44,6 +44,10 @@ export const ui = {
     log.success(`${label} — appliqué (${detail})`);
   },
 
+  restored({ label, detail }: StepReport): void {
+    log.success(`${label} — restauré (${detail})`);
+  },
+
   failed({ label, detail }: StepReport): void {
     log.error(`${label} — échec : ${detail}`);
   },

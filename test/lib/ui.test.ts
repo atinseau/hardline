@@ -69,6 +69,15 @@ describe("statuts d'etape", () => {
     expect(calls[0]).toContain("appliqué");
   });
 
+  test("une etape restauree est distinguee d'une etape appliquee", () => {
+    // Meme regle de discrimination que plus haut : le detail fourni ici ne
+    // contient pas "restauré", seule la chaine du module peut le produire.
+    ui.restored({ label: "Adresse Mac", detail: "ancienne adresse remise" });
+    expect(calls[0]).toContain("success:");
+    expect(calls[0]).toContain("restauré");
+    expect(calls[0]).not.toContain("appliqué");
+  });
+
   test("une etape en echec passe par le canal d'erreur", () => {
     ui.failed({ label: "Adresse Mac", detail: "sudo refuse" });
     expect(calls[0]).toContain("error:");
