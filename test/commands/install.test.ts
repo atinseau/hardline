@@ -132,6 +132,7 @@ const ok = (name: string): CheckResult => ({
   name,
   ok: true,
   blocking: true,
+  installOnly: false,
   detail: `${name} conforme`,
 });
 
@@ -139,6 +140,7 @@ const ko = (name: string, blocking = true): CheckResult => ({
   name,
   ok: false,
   blocking,
+  installOnly: false,
   detail: `${name} en echec`,
 });
 

@@ -9,6 +9,16 @@ export type CheckResult = {
   ok: boolean;
   /** Un échec bloquant arrête l'installation avant toute modification. */
   blocking: boolean;
+  /**
+   * Vrai quand la verification est une precondition de l'INSTALLATION et ne dit
+   * rien de la sante de la liaison. `doctor` la montre sans la compter : son
+   * code de sortie est fait pour etre scripte, et une liaison qui fonctionne ne
+   * doit pas sortir en 1 parce qu'une reinstallation demanderait un fichier de
+   * plus. Le champ vit ici, sur la verification elle-meme, parce que c'est une
+   * propriete de ce qu'elle observe et non de qui la lit : une liste tenue a
+   * part devrait etre resynchronisee par chaque appelant qui ajoute un controle.
+   */
+  installOnly: boolean;
   detail: string;
 };
 
@@ -69,6 +79,9 @@ export async function runLocalPreflight(config: Config): Promise<CheckResult[]> 
     name: "service-mac",
     ok: Boolean(macService?.enabled),
     blocking: true,
+    // Sans ce service, le Mac n'a pas d'interface sur le lien direct : c'est
+    // bien la sante de la liaison qui est en cause.
+    installOnly: false,
     detail: !macService
       ? `aucun service réseau nommé «\u00a0${config.mac.serviceName}\u00a0». Adaptateur USB débranché\u00a0?`
       : macService.enabled
@@ -90,6 +103,10 @@ export async function runLocalPreflight(config: Config): Promise<CheckResult[]> 
     name: PUBLIC_KEY_CHECK,
     ok: key.length > 0,
     blocking: true,
+    // La cle publique sert a AMORCER le PC. Une fois deposee la-bas, la liaison
+    // tient sans elle : la supprimer sur le Mac empeche une reinstallation, pas
+    // le lien. Elle bloque install et ne compte pas dans le diagnostic.
+    installOnly: true,
     detail:
       key.length > 0
         ? `clé publique ${publicKeyPath(config)}`
@@ -119,6 +136,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
       name: SSH_CHECK,
       ok: Boolean(facts),
       blocking: true,
+      installOnly: false,
       detail: facts ? `PC joignable sur ${config.ssh.host}` : "réponse vide du PC",
     });
   } catch (error) {
@@ -126,6 +144,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
       name: SSH_CHECK,
       ok: false,
       blocking: true,
+      installOnly: false,
       detail: `PC injoignable sur ${config.ssh.host}\u00a0: ${errorMessage(error)}`,
     });
   }
@@ -138,6 +157,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     name: "windows-version",
     ok: facts.build === EXPECTED_BUILD,
     blocking: false,
+    installOnly: false,
     detail: `${facts.caption} build ${facts.build}${
       facts.build === EXPECTED_BUILD ? "" : ` (référence\u00a0: ${EXPECTED_BUILD})`
     }`,
@@ -148,6 +168,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     name: "gpu",
     ok: Boolean(nvidia),
     blocking: true,
+    installOnly: false,
     detail: nvidia ?? `aucun GPU NVIDIA parmi\u00a0: ${facts.gpus.join(", ")}`,
   });
 
@@ -156,6 +177,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     name: "lien-windows",
     ok: linkUp,
     blocking: true,
+    installOnly: false,
     detail: linkUp
       ? `interface «\u00a0${config.windows.interfaceAlias}\u00a0» active`
       : `interface «\u00a0${config.windows.interfaceAlias}\u00a0» en état ${facts.adapterStatus ?? "absent"}. Vérifier le câble.`,

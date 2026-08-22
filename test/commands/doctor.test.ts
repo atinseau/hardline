@@ -1,13 +1,33 @@
 import { test, expect, describe } from "bun:test";
-import { formatDiagnostic } from "../../src/commands/doctor";
+import { formatDiagnostic, type Diagnostic } from "../../src/commands/doctor";
 
-const HEALTHY = {
+/**
+ * Les libelles et les details ci-dessous sont ceux que les modules produisent
+ * REELLEMENT aujourd'hui, accents compris : `macNetworkStep.label` et le
+ * `detail` conforme de son `inspect`, ceux de l'etape reseau du PC, et le
+ * message de `runLocalPreflight` pour la cle publique. Une fixture qui decrit
+ * une sortie disparue est verte et fausse : elle protege un rendu que plus
+ * personne ne produit.
+ */
+const MAC = "Adresse fixe sur le lien direct (Mac)";
+const PC = "Adresse fixe et profil privé sur le lien direct (PC)";
+const MAC_DETAIL = "AX88179A déjà en 10.10.10.2";
+const PC_DETAIL = "Ethernet déjà en 10.10.10.1/24, profil privé";
+const SSH_DETAIL = "PC joignable sur 10.10.10.1";
+
+const HEALTHY: Diagnostic = {
   checks: [
-    { name: "ssh", ok: true, blocking: true, detail: "PC joignable sur 10.10.10.1" },
+    {
+      name: "ssh",
+      ok: true,
+      blocking: true,
+      installOnly: false,
+      detail: SSH_DETAIL,
+    },
   ],
   steps: [
-    { label: "Adresse fixe (Mac)", conforming: true, detail: "deja en 10.10.10.2" },
-    { label: "Adresse fixe (PC)", conforming: true, detail: "deja en 10.10.10.1" },
+    { label: MAC, conforming: true, detail: MAC_DETAIL },
+    { label: PC, conforming: true, detail: PC_DETAIL },
   ],
   ping: {
     transmitted: 20,
@@ -19,6 +39,22 @@ const HEALTHY = {
     stddevMs: 0.209,
   },
 };
+
+/**
+ * La ligne rendue pour un nom, marqueur compris. Le `slice(4)` saute le
+ * marqueur : c'est lui qu'on veut pouvoir affirmer separement du reste.
+ */
+function lineFor(lines: string[], name: string): string {
+  const found = lines.find((l) => l.slice(4).startsWith(`${name} :`));
+  expect(found).toBeDefined();
+  return found as string;
+}
+
+const markerOf = (line: string): string => line.slice(0, 4);
+
+/** La colonne ou commence le detail. Sortie du module, jamais de la fixture. */
+const columnOf = (line: string, detail: string): number =>
+  line.length - detail.length;
 
 describe("formatDiagnostic", () => {
   test("rend la latence et la gigue avec deux decimales", () => {
@@ -74,23 +110,87 @@ describe("formatDiagnostic", () => {
   });
 
   test("distingue une etape conforme d'une etape derivee", () => {
+    // Les deux etapes portent la MEME fixture a une chose pres : `conforming`.
+    // Le marqueur ne peut donc venir que du module.
     const lines = formatDiagnostic({
       ...HEALTHY,
       steps: [
-        { label: "Adresse fixe (Mac)", conforming: true, detail: "deja en 10.10.10.2" },
-        { label: "Adresse fixe (PC)", conforming: false, detail: "profil Public" },
+        { label: MAC, conforming: true, detail: MAC_DETAIL },
+        { label: PC, conforming: false, detail: "adresse absente, profil Public" },
       ],
     });
-    const text = lines.join("\n");
-    expect(text).toMatch(/^OK\s+Adresse fixe \(Mac\)\s*:\s*deja en 10\.10\.10\.2/m);
-    expect(text).toMatch(/^KO\s+Adresse fixe \(PC\)\s*:\s*profil Public/m);
+    expect(markerOf(lineFor(lines, MAC))).toBe("OK  ");
+    expect(markerOf(lineFor(lines, PC))).toBe("KO  ");
+    expect(lineFor(lines, MAC).endsWith(MAC_DETAIL)).toBe(true);
   });
 
   test("marque KO une verification en echec", () => {
     const lines = formatDiagnostic({
       ...HEALTHY,
-      checks: [{ name: "ssh", ok: false, blocking: true, detail: "PC injoignable" }],
+      checks: [
+        {
+          name: "ssh",
+          ok: false,
+          blocking: true,
+          installOnly: false,
+          detail: "PC injoignable sur 10.10.10.1",
+        },
+      ],
     });
-    expect(lines.join("\n")).toMatch(/^KO\s+ssh\s*:\s*PC injoignable/m);
+    expect(markerOf(lineFor(lines, "ssh"))).toBe("KO  ");
+  });
+
+  test("montre une precondition d'installation sans la marquer KO", () => {
+    // Elle doit se voir — la taire cacherait pourquoi la prochaine
+    // installation echouera — sans etre confondue avec une liaison malade.
+    const lines = formatDiagnostic({
+      ...HEALTHY,
+      checks: [
+        ...HEALTHY.checks,
+        {
+          name: "cle-publique",
+          ok: false,
+          blocking: true,
+          installOnly: true,
+          detail: "Clé publique introuvable ou vide",
+        },
+      ],
+    });
+    expect(markerOf(lineFor(lines, "cle-publique"))).toBe("!!  ");
+    expect(markerOf(lineFor(lines, "ssh"))).toBe("OK  ");
+    expect(lineFor(lines, "cle-publique")).toContain("Clé publique introuvable");
+  });
+
+  test("aligne tous les details sur une seule colonne", () => {
+    // Sortie propre au module : aucune valeur de fixture ne peut la produire.
+    const lines = formatDiagnostic(HEALTHY);
+    const colonnes = new Set([
+      columnOf(lineFor(lines, "ssh"), SSH_DETAIL),
+      columnOf(lineFor(lines, MAC), MAC_DETAIL),
+      columnOf(lineFor(lines, PC), PC_DETAIL),
+    ]);
+    expect(colonnes.size).toBe(1);
+  });
+
+  test("la colonne s'elargit pour le plus long libelle", () => {
+    const etroit = columnOf(lineFor(formatDiagnostic(HEALTHY), "ssh"), SSH_DETAIL);
+    const large = columnOf(
+      lineFor(
+        formatDiagnostic({
+          ...HEALTHY,
+          steps: [
+            ...HEALTHY.steps,
+            {
+              label: "Amorçage du PC : OpenSSH, pare-feu, clé et adressage (PC)",
+              conforming: true,
+              detail: "relevé d'amorçage du 2026-08-22T09:00:00 déjà enregistré",
+            },
+          ],
+        }),
+        "ssh",
+      ),
+      SSH_DETAIL,
+    );
+    expect(large).toBeGreaterThan(etroit);
   });
 });

@@ -247,6 +247,14 @@ disque**. Un arrêt en phase distante laisse donc le Mac converge et enregistré
 | `hardline up` | Geste quotidien : réveille le PC si besoin, attend le lien, ouvre la session en plein écran |
 | `hardline doctor` | Diagnostic : lien, adresses, service, appairage, latence |
 
+**Le code de sortie de `doctor` est fait pour être scripté** : 0 quand la liaison
+fonctionne, 1 quand elle ne fonctionne pas, et rien d'autre. Une précondition
+d'*installation* non satisfaite — la clé publique du Mac, dont le PC détient déjà une
+copie et sans laquelle le lien tient parfaitement — est rapportée sur sa propre ligne,
+marquée « !! », et nommée dans la conclusion ; elle ne compte pas comme une anomalie
+du lien. Les confondre faisait sortir en 1 une liaison qui marche, ce qui rend le code
+de sortie inutilisable.
+
 `doctor` mesure la latence avec `ping`, toujours disponible. Le débit n'est mesuré
 que si `iperf3` est présent sur les deux machines ; son absence produit une ligne
 « non mesuré » et non un échec. `iperf3` n'est pas une dépendance du projet.

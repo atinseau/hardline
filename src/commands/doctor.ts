@@ -36,6 +36,17 @@ function pad(label: string, width: number): string {
   return `${label} :`.padEnd(width);
 }
 
+/**
+ * Trois etats, pas deux. "!!" est un echec qui ne dit rien de la sante de la
+ * liaison : une precondition d'installation. Il doit se voir (le taire serait
+ * cacher a l'utilisateur pourquoi sa prochaine installation echouera) sans
+ * pour autant compter comme une anomalie du lien.
+ */
+function marker(check: CheckResult): string {
+  if (check.ok) return "OK  ";
+  return check.installOnly ? "!!  " : "KO  ";
+}
+
 export function formatDiagnostic(diagnostic: Diagnostic): string[] {
   const lines: string[] = [];
   const width = columnWidth([
@@ -45,9 +56,7 @@ export function formatDiagnostic(diagnostic: Diagnostic): string[] {
   ]);
 
   for (const check of diagnostic.checks) {
-    lines.push(
-      `${check.ok ? "OK  " : "KO  "}${pad(check.name, width)}${check.detail}`,
-    );
+    lines.push(`${marker(check)}${pad(check.name, width)}${check.detail}`);
   }
 
   lines.push("");
@@ -120,15 +129,29 @@ export async function doctorCommand(): Promise<void> {
 
   ui.report("Diagnostic", formatDiagnostic({ checks, steps, ping }));
 
+  // Le code de sortie de doctor est fait pour etre scripte : il doit dire
+  // "la liaison va bien" ou "elle ne va pas", et rien d'autre. Une
+  // precondition d'installation non satisfaite ne rend pas le lien malade,
+  // elle rend la prochaine installation impossible. Elle se rapporte, elle ne
+  // se compte pas.
+  const preconditions = checks.filter((c) => !c.ok && c.installOnly);
   const healthy =
-    checks.every((c) => c.ok || !c.blocking) &&
+    checks.every((c) => c.ok || !c.blocking || c.installOnly) &&
     steps.every((s) => s.conforming) &&
     ping.received > 0 &&
     ping.avgMs !== null &&
     ping.stddevMs !== null;
 
   if (healthy) {
-    ui.finish("Liaison opérationnelle.");
+    ui.finish(
+      preconditions.length === 0
+        ? "Liaison opérationnelle."
+        : `Liaison opérationnelle. ${
+            preconditions.length > 1
+              ? "Préconditions d'installation non satisfaites"
+              : "Précondition d'installation non satisfaite"
+          }\u00a0: ${preconditions.map((c) => c.name).join(", ")}.`,
+    );
   } else {
     ui.finish("Anomalies détectées. Relancer «\u00a0hardline install\u00a0».");
     process.exitCode = 1;

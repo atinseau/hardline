@@ -119,6 +119,23 @@ describe("runLocalPreflight", () => {
     expect(check?.ok).toBe(false);
   });
 
+  test("la cle publique est la SEULE precondition d'installation pure", async () => {
+    // Elle bloque install et ne dit rien de la sante de la liaison : une fois
+    // deposee sur le PC, le lien tient sans elle. Toutes les autres decrivent
+    // bien l'etat du lien, et doctor doit les compter.
+    setup();
+    const locales = await runLocalPreflight(CONFIG);
+    const distantes = await runRemotePreflight(CONFIG);
+
+    const marquees = [...locales, ...distantes]
+      .filter((r) => r.installOnly)
+      .map((r) => r.name);
+    expect(marquees).toEqual(["cle-publique"]);
+    // Et elle reste bloquante : install s'arrete dessus avant toute
+    // modification, c'est toute sa raison d'etre en phase locale.
+    expect(locales.find((r) => r.name === "cle-publique")?.blocking).toBe(true);
+  });
+
   test("bloque si le service reseau du Mac est absent", async () => {
     setup({}, [
       { order: 1, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
@@ -208,8 +225,8 @@ describe("hasBlockingFailure", () => {
   test("un echec non bloquant ne suffit pas a arreter l'installation", () => {
     expect(
       hasBlockingFailure([
-        { name: "a", ok: false, blocking: false, detail: "" },
-        { name: "b", ok: true, blocking: true, detail: "" },
+        { name: "a", ok: false, blocking: false, installOnly: false, detail: "" },
+        { name: "b", ok: true, blocking: true, installOnly: false, detail: "" },
       ]),
     ).toBe(false);
   });

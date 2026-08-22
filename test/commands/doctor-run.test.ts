@@ -8,6 +8,8 @@ const trace: string[] = [];
 let localChecks: CheckResult[] = [];
 let remoteChecks: CheckResult[] = [];
 let reachable = true;
+/** Le profil du lien cote PC : c'est lui qui decide de la conformite de l'etape. */
+let profilPrive = true;
 
 const reports: string[][] = [];
 const finishes: string[] = [];
@@ -53,10 +55,28 @@ mock.module("../../src/lib/shell", () => ({
         },
 }));
 
+// Le PC repond quand la liaison est saine : sans cela, les etapes distantes
+// echouent toutes et le diagnostic ne peut JAMAIS conclure a une liaison
+// operationnelle — le seul cas ou le code de sortie est en jeu.
 mock.module("../../src/lib/ssh", () => ({
   ...realSsh,
-  runRemoteJson: async () => {
-    throw new Error("PC injoignable");
+  runRemoteJson: async (_target: unknown, script: string) => {
+    if (!reachable) throw new Error("PC injoignable");
+    if (script.includes("Get-ScheduledTask")) return [{ present: true, state: "Ready" }];
+    if (script.includes("bootstrap-state.json")) {
+      // Aucun releve : l'etape se declare conforme et ne promet rien.
+      return [{ capture: null, acknowledged: false, unreadable: false }];
+    }
+    return [
+      {
+        adapterPresent: true,
+        adapterStatus: "Up",
+        addresses: ["10.10.10.1/24"],
+        manualAddresses: ["10.10.10.1/24"],
+        dhcpEnabled: false,
+        category: profilPrive ? "Private" : "Public",
+      },
+    ];
   },
   runRemoteChecked: async () => {
     throw new Error("PC injoignable");
@@ -72,6 +92,7 @@ mock.module("../../src/lib/ui", () => ({
     skipped: () => {},
     applied: () => {},
     restored: () => {},
+    yielded: () => {},
     failed: () => {},
     info: () => {},
     warn: () => {},
@@ -81,12 +102,27 @@ mock.module("../../src/lib/ui", () => ({
 
 const { doctorCommand } = await import("../../src/commands/doctor");
 
-const ok = (name: string): CheckResult => ({ name, ok: true, blocking: true, detail: "ok" });
+const ok = (name: string): CheckResult => ({
+  name,
+  ok: true,
+  blocking: true,
+  installOnly: false,
+  detail: "ok",
+});
 const ko = (name: string): CheckResult => ({
   name,
   ok: false,
   blocking: true,
+  installOnly: false,
   detail: "PC injoignable",
+});
+/** Un echec qui bloque l'installation sans rien dire de la sante du lien. */
+const koPrecondition = (name: string): CheckResult => ({
+  name,
+  ok: false,
+  blocking: true,
+  installOnly: true,
+  detail: "Clé publique introuvable ou vide",
 });
 
 beforeEach(() => {
@@ -96,6 +132,7 @@ beforeEach(() => {
   localChecks = [ok("service-mac")];
   remoteChecks = [ok("ssh"), ok("gpu")];
   reachable = true;
+  profilPrive = true;
   process.exitCode = 0;
 });
 
@@ -123,10 +160,44 @@ describe("doctorCommand", () => {
     expect(process.exitCode).toBe(1);
   });
 
-  test("conclut en anomalie tant qu'une etape ne converge pas", async () => {
-    // Les etapes distantes restent en echec ici (SSH simule injoignable), donc
-    // le diagnostic doit rester en anomalie : c'est ce qui prouve que la
-    // conclusion depend de l'etat observe et non d'un chemin toujours vrai.
+  test("conclut a une liaison operationnelle sur un lien sain", async () => {
+    // Le controle de tous les tests qui suivent : sans lui, une conclusion
+    // toujours en anomalie les satisferait aussi.
+    await doctorCommand();
+    expect(finishes.join("\n")).toBe("Liaison opérationnelle.");
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("conclut en anomalie des qu'une etape ne converge pas", async () => {
+    // Le PC repond, mais son lien est repasse en profil public : le pare-feu
+    // est ferme et l'etape n'est plus conforme.
+    profilPrive = false;
+    await doctorCommand();
+    expect(finishes.join("\n")).toContain("Anomalies détectées");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("une cle publique absente ne rend pas la liaison malade", async () => {
+    // Elle est une precondition d'INSTALLATION : la deposer sur le PC est deja
+    // fait, et le lien tient sans elle. Sortir en 1 sur un lien qui fonctionne
+    // rendrait le code de sortie de doctor inutilisable dans un script.
+    localChecks = [ok("service-mac"), koPrecondition("cle-publique")];
+    await doctorCommand();
+
+    expect(process.exitCode).toBe(0);
+    const message = finishes.join("\n");
+    expect(message).toContain("Liaison opérationnelle");
+    expect(message).not.toContain("Anomalies détectées");
+    // Et elle est bien RAPPORTEE : la taire cacherait pourquoi la prochaine
+    // installation echouera.
+    expect(message).toContain("cle-publique");
+    expect((reports[0] ?? []).join("\n")).toMatch(/^!!\s+cle-publique\s*:/m);
+  });
+
+  test("un echec bloquant qui n'est pas une precondition sort en 1", async () => {
+    // Le controle du test precedent : c'est `installOnly` qui fait la
+    // difference, pas le simple fait d'echouer en phase locale.
+    localChecks = [ko("service-mac")];
     await doctorCommand();
     expect(finishes.join("\n")).toContain("Anomalies détectées");
     expect(process.exitCode).toBe(1);
