@@ -858,7 +858,7 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/lib/ssh.test.ts`
-Expected: PASS, neuf tests.
+Expected: PASS, dix tests.
 
 - [ ] **Step 5: Vérifier contre le vrai PC**
 
@@ -2582,12 +2582,73 @@ appliqué.
 
 **Files:**
 - Create: `src/lib/preflight.ts`
-- Test: `test/lib/preflight.test.ts`
+- Modify: `src/lib/shell.ts` (type `NetworkService` et `parseNetworkServices`)
+- Test: `test/lib/preflight.test.ts`, `test/lib/shell.test.ts`
 
 **Interfaces:**
 - Consumes: `listNetworkServices` de `src/lib/shell.ts` (Task 2) ; `runRemoteJson` de
   `src/lib/ssh.ts` (Task 3) ; `Config` de `src/config.ts` (Task 5).
-- Produces: le type `CheckResult` et les fonctions `runPreflight` et `hasBlockingFailure`.
+- Produces: le type `CheckResult` et les fonctions `runPreflight` et `hasBlockingFailure` ;
+  `NetworkService` gagne un champ `enabled: boolean`.
+
+- [ ] **Step 0: Distinguer un service macOS désactivé d'un service absent**
+
+`networksetup -listnetworkserviceorder` préfixe d'un astérisque le nom des services
+désactivés. Le parseur écrit à la tâche 2 conserve cet astérisque dans `name`, si bien
+qu'un service `AX88179A` désactivé serait rapporté « absent ». Le preflight est le
+premier consommateur : la correction se fait ici.
+
+Dans `src/lib/shell.ts`, ajouter le champ au type et le traitement au parseur :
+
+```ts
+export type NetworkService = {
+  order: number;
+  name: string;
+  hardwarePort: string;
+  device: string;
+  /** `networksetup` préfixe d'un astérisque les services désactivés. */
+  enabled: boolean;
+};
+```
+
+```ts
+    const rawName = header[2]!;
+    const enabled = !rawName.startsWith("*");
+
+    services.push({
+      order: Number(header[1]),
+      name: enabled ? rawName : rawName.slice(1),
+      hardwarePort: device[1]!,
+      device: device[2]!,
+      enabled,
+    });
+```
+
+Dans `test/lib/shell.test.ts`, ajouter la fixture et les deux tests, et compléter
+l'objet attendu du test existant `« apparie chaque service avec son peripherique »`
+avec `enabled: true` :
+
+```ts
+const SERVICES_DISABLED = `An asterisk (*) denotes that a network service is disabled.
+(1) *AX88179A
+(Hardware Port: AX88179A, Device: en14)
+`;
+```
+
+```ts
+  test("retire l'asterisque et marque le service desactive", () => {
+    const [service] = parseNetworkServices(SERVICES_DISABLED);
+    expect(service?.name).toBe("AX88179A");
+    expect(service?.enabled).toBe(false);
+  });
+
+  test("marque actifs les services sans asterisque", () => {
+    expect(parseNetworkServices(SERVICES).every((s) => s.enabled)).toBe(true);
+  });
+```
+
+Run: `bun test --isolate test/lib/shell.test.ts`
+Expected: PASS, tous les tests du fichier, dont les deux nouveaux.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -2625,8 +2686,8 @@ const HEALTHY_REMOTE = {
 };
 
 const HEALTHY_SERVICES = [
-  { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14" },
-  { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0" },
+  { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14", enabled: true },
+  { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
 ];
 
 function setup(remote: Partial<typeof HEALTHY_REMOTE> = {}, svc = HEALTHY_SERVICES) {
@@ -2644,12 +2705,25 @@ describe("runPreflight", () => {
   });
 
   test("bloque si le service reseau du Mac est absent", async () => {
-    setup({}, [{ order: 1, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0" }]);
+    setup({}, [
+      { order: 1, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
+    ]);
     const results = await runPreflight(CONFIG);
     const check = results.find((r) => r.name === "service-mac");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
     expect(check?.detail).toContain("AX88179A");
+  });
+
+  test("distingue un service desactive d'un service absent", async () => {
+    setup({}, [
+      { order: 1, name: "AX88179A", hardwarePort: "AX88179A", device: "en14", enabled: false },
+      { order: 2, name: "Wi-Fi", hardwarePort: "Wi-Fi", device: "en0", enabled: true },
+    ]);
+    const check = (await runPreflight(CONFIG)).find((r) => r.name === "service-mac");
+    expect(check?.ok).toBe(false);
+    expect(check?.blocking).toBe(true);
+    expect(check?.detail).toContain("désactivé");
   });
 
   test("bloque si le PC ne repond pas en SSH", async () => {
@@ -2694,7 +2768,7 @@ describe("runPreflight", () => {
     const check = (await runPreflight(CONFIG)).find((r) => r.name === "lien-windows");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
-    expect(check?.detail).toContain("cable");
+    expect(check?.detail).toContain("câble");
   });
 });
 
@@ -2727,7 +2801,7 @@ import type { Config } from "../config";
 export type CheckResult = {
   name: string;
   ok: boolean;
-  /** Un echec bloquant arrete l'installation avant toute modification. */
+  /** Un échec bloquant arrête l'installation avant toute modification. */
   blocking: boolean;
   detail: string;
 };
@@ -2760,11 +2834,13 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
   const macService = services.find((s) => s.name === config.mac.serviceName);
   results.push({
     name: "service-mac",
-    ok: Boolean(macService),
+    ok: Boolean(macService?.enabled),
     blocking: true,
-    detail: macService
-      ? `service "${config.mac.serviceName}" sur ${macService.device}`
-      : `aucun service reseau nomme "${config.mac.serviceName}". Adaptateur USB debranche ?`,
+    detail: !macService
+      ? `aucun service réseau nommé «\u00a0${config.mac.serviceName}\u00a0». Adaptateur USB débranché\u00a0?`
+      : macService.enabled
+        ? `service «\u00a0${config.mac.serviceName}\u00a0» sur ${macService.device}`
+        : `service «\u00a0${config.mac.serviceName}\u00a0» désactivé dans les Réglages Réseau`,
   });
 
   let facts: RemoteFacts | undefined;
@@ -2778,19 +2854,19 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
       name: "ssh",
       ok: Boolean(facts),
       blocking: true,
-      detail: facts ? `PC joignable sur ${config.ssh.host}` : "reponse vide du PC",
+      detail: facts ? `PC joignable sur ${config.ssh.host}` : "réponse vide du PC",
     });
   } catch (error) {
     results.push({
       name: "ssh",
       ok: false,
       blocking: true,
-      detail: `PC injoignable sur ${config.ssh.host} : ${(error as Error).message}`,
+      detail: `PC injoignable sur ${config.ssh.host}\u00a0: ${(error as Error).message}`,
     });
   }
 
-  // Sans SSH, toute verification distante echouerait pour la meme raison.
-  // On s'arrete la plutot que d'aligner des echecs redondants.
+  // Sans SSH, toute vérification distante échouerait pour la même raison.
+  // On s'arrête là plutôt que d'aligner des échecs redondants.
   if (!facts) return results;
 
   results.push({
@@ -2798,7 +2874,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: facts.build === EXPECTED_BUILD,
     blocking: false,
     detail: `${facts.caption} build ${facts.build}${
-      facts.build === EXPECTED_BUILD ? "" : ` (reference : ${EXPECTED_BUILD})`
+      facts.build === EXPECTED_BUILD ? "" : ` (référence\u00a0: ${EXPECTED_BUILD})`
     }`,
   });
 
@@ -2807,7 +2883,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     name: "gpu",
     ok: Boolean(nvidia),
     blocking: true,
-    detail: nvidia ?? `aucun GPU NVIDIA parmi : ${facts.gpus.join(", ")}`,
+    detail: nvidia ?? `aucun GPU NVIDIA parmi\u00a0: ${facts.gpus.join(", ")}`,
   });
 
   const linkUp = facts.adapterPresent && facts.adapterStatus === "Up";
@@ -2816,8 +2892,8 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: linkUp,
     blocking: true,
     detail: linkUp
-      ? `interface "${config.windows.interfaceAlias}" active`
-      : `interface "${config.windows.interfaceAlias}" en etat ${facts.adapterStatus ?? "absent"}. Verifier le cable.`,
+      ? `interface «\u00a0${config.windows.interfaceAlias}\u00a0» active`
+      : `interface «\u00a0${config.windows.interfaceAlias}\u00a0» en état ${facts.adapterStatus ?? "absent"}. Vérifier le câble.`,
   });
 
   return results;
@@ -2836,7 +2912,7 @@ Expected: PASS, neuf tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/preflight.ts test/lib/preflight.test.ts
+git add src/lib/preflight.ts test/lib/preflight.test.ts src/lib/shell.ts test/lib/shell.test.ts
 git commit -m "feat: verification des preconditions avant toute modification"
 ```
 
