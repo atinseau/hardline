@@ -83,6 +83,24 @@ export async function runRemote(
 }
 
 /**
+ * Parse une sortie JSON de PowerShell. Gère les trois cas de ConvertTo-Json :
+ * - $null ou vide -> '[]'
+ * - un objet seul -> JSON objet nu (enveloppé dans un tableau par @($result))
+ * - plusieurs objets -> JSON tableau
+ */
+export function parseRemoteJson<T>(stdout: string): T[] {
+  if (stdout === "") return [];
+
+  try {
+    return JSON.parse(stdout) as T[];
+  } catch {
+    throw new Error(
+      `Sortie distante illisible, JSON attendu : ${stdout.slice(0, 200)}`,
+    );
+  }
+}
+
+/**
  * Execute un script dont la derniere expression est convertie en JSON cote
  * Windows. Renvoie toujours un tableau : ConvertTo-Json emet un objet nu
  * quand il n'y a qu'un element, et rien du tout quand il n'y en a aucun.
@@ -105,13 +123,11 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
     );
   }
 
-  if (result.stdout === "") return [];
-
   try {
-    return JSON.parse(result.stdout) as T[];
-  } catch {
+    return parseRemoteJson(result.stdout);
+  } catch (err) {
     throw new RemoteError(
-      `Sortie distante illisible, JSON attendu : ${result.stdout.slice(0, 200)}`,
+      err instanceof Error ? err.message : "Erreur de parsing inconnue",
       result,
     );
   }
