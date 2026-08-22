@@ -154,6 +154,30 @@ describe("contenu du releve", () => {
   });
 });
 
+describe("adressage du lien direct", () => {
+  test("pose l'adresse cible AVANT de retirer quoi que ce soit", () => {
+    // L'ordre inverse laissait l'interface sans AUCUNE adresse IPv4 des lors
+    // que New-NetIPAddress echouait, $ErrorActionPreference valant 'Stop'.
+    // C'est la discipline etablie par network-windows.ts, ici enfin appliquee.
+    const pose = SCRIPT.indexOf("New-NetIPAddress -InterfaceAlias $alias -IPAddress $target");
+    const menage = SCRIPT.indexOf("Remove-NetIPAddress -Confirm:$false");
+    expect(pose).toBeGreaterThan(0);
+    expect(menage).toBeGreaterThan(pose);
+  });
+
+  test("le menage epargne l'adresse qu'on vient de poser", () => {
+    expect(SCRIPT).toContain("Where-Object { $_.IPAddress -ne $target }");
+  });
+
+  test("ne supprime jamais en bloc les adresses de l'interface", () => {
+    // La forme fautive : un Get-NetIPAddress sans filtre pipe dans
+    // Remove-NetIPAddress.
+    expect(SCRIPT).not.toMatch(
+      /Get-NetIPAddress[^|]*\|\s*\n?\s*Remove-NetIPAddress/,
+    );
+  });
+});
+
 describe("contraintes du terrain", () => {
   test("le script reste sans accents", () => {
     // Il s'affiche dans une console Windows en page de code OEM, ou les

@@ -155,14 +155,19 @@ if (-not (Select-String -Path $keyFile -SimpleMatch $publicKey -Quiet -ErrorActi
 icacls $keyFile /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
 
 # --- 5. Adresse du lien direct -------------------------------------------
-if (-not (Get-NetIPAddress -InterfaceAlias $alias -IPAddress $target -ErrorAction SilentlyContinue)) {
-    Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+# L'adresse cible d'abord, le menage ensuite, comme dans network-windows.ts.
+# L'ordre inverse laissait l'interface SANS AUCUNE adresse IPv4 des lors que
+# New-NetIPAddress echouait, $ErrorActionPreference valant 'Stop'.
+if (Get-NetIPAddress -InterfaceAlias $alias -IPAddress $target -ErrorAction SilentlyContinue) {
+    Write-Host "  adresse $target deja posee"
+} else {
     New-NetIPAddress -InterfaceAlias $alias -IPAddress $target -PrefixLength $prefix | Out-Null
     Write-Host "  adresse $target posee sur $alias"
-} else {
-    Write-Host "  adresse $target deja posee"
 }
+
+Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -ne $target } |
+    Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
 
 Set-NetConnectionProfile -InterfaceAlias $alias -NetworkCategory Private -ErrorAction SilentlyContinue
 Write-Host '  profil reseau prive'
