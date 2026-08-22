@@ -1,5 +1,6 @@
 import { CONFIG } from "../config";
 import { ALL_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
+import { bootstrapWindowsStep } from "../steps/bootstrap-windows";
 import { revertSteps } from "../lib/orchestrator";
 import { defaultManifestPath, readManifest } from "../lib/manifest";
 import { askConfirmation, configureOutput, ui } from "../lib/ui";
@@ -30,6 +31,29 @@ export function recordedLabels(recorded: string[]): string[] {
   );
 }
 
+/**
+ * Ce que la restauration ne rendra pas, et ce qu'elle coutera. Une restauration
+ * qui tait ses propres limites est exactement la malhonnetete que le manifeste
+ * existe pour eviter — et cela se dit AVANT la question, pas apres la reponse.
+ *
+ * Rend null quand l'amorcage n'est pas enregistre : il n'y a alors ni capacite
+ * Windows ni acces SSH pose par hardline, donc rien a nuancer.
+ */
+export function bootstrapCaveats(recorded: string[]): string[] | null {
+  if (!recorded.includes(bootstrapWindowsStep.name)) return null;
+
+  return [
+    "La fonctionnalité Windows « OpenSSH Server » reste installée : la retirer",
+    "exigerait un redémarrage, et un serveur SSH peut vous servir par ailleurs.",
+    "Seul le service sshd est rendu à son démarrage d'origine — désactivé et",
+    "arrêté s'il n'existait pas avant hardline.",
+    "",
+    "Tout le reste part : clé publique du Mac, règle de pare-feu, adressage et",
+    "profil réseau du lien direct. Le PC ne sera donc plus joignable en SSH, et",
+    "une nouvelle installation redemandera le geste manuel d'amorçage sur le PC.",
+  ];
+}
+
 export async function uninstallCommand(options: { yes: boolean }): Promise<void> {
   configureOutput();
   ui.start("hardline — désinstallation");
@@ -44,6 +68,9 @@ export async function uninstallCommand(options: { yes: boolean }): Promise<void>
   }
 
   ui.report("État antérieur enregistré", recordedLabels(recorded));
+
+  const caveats = bootstrapCaveats(recorded);
+  if (caveats) ui.report("Ce qui ne sera pas défait", caveats);
 
   const confirmed = await askConfirmation(
     `Restaurer la configuration réseau antérieure ${scopeLabel(recorded)}\u00a0?`,

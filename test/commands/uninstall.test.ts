@@ -9,6 +9,8 @@ const prompts: string[] = [];
 const reports: { title: string; lines: string[] }[] = [];
 const finishes: string[] = [];
 const trace: string[] = [];
+/** L'ordre reel entre les encarts affiches et la question posee. */
+const sequence: string[] = [];
 
 function manifestOf(names: string[]): Manifest {
   const now = "2026-08-22T10:00:00.000Z";
@@ -40,6 +42,7 @@ mock.module("../../src/lib/ui", () => ({
   configureOutput: () => {},
   askConfirmation: async (message: string) => {
     prompts.push(message);
+    sequence.push("question");
     return true;
   },
   ui: {
@@ -51,19 +54,30 @@ mock.module("../../src/lib/ui", () => ({
     failed: () => {},
     info: () => {},
     warn: () => {},
-    report: (title: string, lines: string[]) => reports.push({ title, lines }),
+    report: (title: string, lines: string[]) => {
+      reports.push({ title, lines });
+      sequence.push(`encart:${title}`);
+    },
   },
 }));
 
-const { uninstallCommand, scopeLabel } = await import("../../src/commands/uninstall");
+const { uninstallCommand, scopeLabel, bootstrapCaveats } = await import(
+  "../../src/commands/uninstall"
+);
 
 beforeEach(() => {
-  order = ["network-mac", "network-windows", "network-profile-task"];
+  order = [
+    "network-mac",
+    "bootstrap-windows",
+    "network-windows",
+    "network-profile-task",
+  ];
   unrestored = [];
   prompts.length = 0;
   reports.length = 0;
   finishes.length = 0;
   trace.length = 0;
+  sequence.length = 0;
   process.exitCode = 0;
 });
 
@@ -91,6 +105,24 @@ describe("scopeLabel", () => {
   });
 });
 
+describe("bootstrapCaveats", () => {
+  test("ne nuance rien quand l'amorcage n'est pas enregistre", () => {
+    expect(bootstrapCaveats(["network-mac", "network-windows"])).toBeNull();
+  });
+
+  test("dit que la capacite OpenSSH reste installee", () => {
+    const lines = (bootstrapCaveats(["bootstrap-windows"]) ?? []).join("\n");
+    expect(lines).toContain("OpenSSH Server");
+    expect(lines).toContain("reste installée");
+  });
+
+  test("dit que le geste manuel d'amorcage sera a refaire", () => {
+    const lines = (bootstrapCaveats(["bootstrap-windows"]) ?? []).join("\n");
+    expect(lines).toContain("amorçage");
+    expect(lines).toContain("plus joignable en SSH");
+  });
+});
+
 describe("uninstallCommand", () => {
   test("ne demande que le Mac quand le manifeste ne contient que lui", async () => {
     // C'est l'etat laisse par un arret en phase 3 : promettre la restauration
@@ -112,6 +144,23 @@ describe("uninstallCommand", () => {
     await uninstallCommand({ yes: false });
     expect(reports).toHaveLength(1);
     expect(reports[0]?.lines).toEqual(["Adresse fixe sur le lien direct (Mac)"]);
+  });
+
+  test("dit ce qui ne sera pas defait AVANT de poser la question", async () => {
+    // Une restauration qui tait ses limites apres coup n'a plus rien a
+    // proposer : l'utilisateur a deja repondu.
+    await uninstallCommand({ yes: false });
+    expect(sequence).toEqual([
+      "encart:État antérieur enregistré",
+      "encart:Ce qui ne sera pas défait",
+      "question",
+    ]);
+  });
+
+  test("n'affiche aucune nuance quand l'amorcage n'est pas enregistre", async () => {
+    order = ["network-mac"];
+    await uninstallCommand({ yes: false });
+    expect(sequence).toEqual(["encart:État antérieur enregistré", "question"]);
   });
 
   test("ne demande rien et ne restaure rien sur un manifeste vide", async () => {
