@@ -154,6 +154,68 @@ describe("contenu du releve", () => {
   });
 });
 
+/**
+ * Un second amorcage d'un PC deja amorce ne reecrit pas le releve : il decrit
+ * donc le PC d'AVANT le premier amorcage. Un menage inconditionnel emporterait
+ * toute adresse posee depuis, sans qu'elle figure dans aucun releve. Le menage
+ * ne s'autorise donc que ce dont le releve rend compte.
+ */
+describe("le menage n'emporte que ce dont le releve rend compte", () => {
+  /** La section 5 seule : du filtre sur l'adresse cible au profil reseau. */
+  function menage(script: string): string {
+    const from = script.indexOf("Where-Object { $_.IPAddress -ne $target }");
+    const to = script.indexOf("Set-NetConnectionProfile");
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    return script.slice(from, to);
+  }
+
+  test("aucun retrait n'est emis hors de la garde sur le releve", () => {
+    const bloc = menage(SCRIPT);
+    expect(bloc).toContain("if ($known -contains $_.IPAddress) {");
+    expect(bloc.indexOf("$known -contains")).toBeLessThan(
+      bloc.indexOf("Remove-NetIPAddress"),
+    );
+    // Un seul retrait dans toute la section, et il est dans la garde.
+    expect(bloc.split("Remove-NetIPAddress")).toHaveLength(2);
+  });
+
+  test("une adresse absente du releve est conservee et annoncee", () => {
+    // Se taire serait retirer en silence sous un autre nom.
+    expect(menage(SCRIPT)).toContain("absente du releve d'origine");
+  });
+
+  test("la liste des adresses retirables est relue sur le disque", () => {
+    // Et non deduite des variables de la capture : celles-ci n'existent pas
+    // quand le releve preexiste, c'est-a-dire dans le cas meme qui detruisait.
+    expect(SCRIPT).toContain("$recorded = Get-Content -Path $statePath -Raw");
+    expect(SCRIPT.indexOf("$recorded = Get-Content")).toBeLessThan(
+      SCRIPT.indexOf("Where-Object { $_.IPAddress -ne $target }"),
+    );
+  });
+
+  test("la relecture a lieu quel que soit l'etat du releve", () => {
+    // Le point structurel : placee dans la branche « else », elle ne
+    // s'executerait qu'au PREMIER amorcage, donc jamais quand elle sert.
+    // La colonne zero est ce qui prouve qu'elle est hors du bloc de capture.
+    const ligne = SCRIPT.split("\n").find((l) => l.includes("$known = @()"));
+    expect(ligne).toBe("$known = @()");
+    expect(SCRIPT.indexOf("$known = @()")).toBeGreaterThan(
+      SCRIPT.indexOf(CAPTURE_WRITE),
+    );
+  });
+
+  test("un releve illisible n'autorise aucun retrait", () => {
+    // La liste part vide et le catch ne la remplit pas : rien n'est retire.
+    const debut = SCRIPT.indexOf("$known = @()");
+    const attrape = SCRIPT.indexOf("} catch {", debut);
+    expect(attrape).toBeGreaterThan(debut);
+    const rattrapage = SCRIPT.slice(attrape, SCRIPT.indexOf("\n}", attrape));
+    expect(rattrapage).not.toContain("$known =");
+    expect(rattrapage).toContain("aucune adresse ne sera retiree");
+  });
+});
+
 describe("adressage du lien direct", () => {
   test("pose l'adresse cible AVANT de retirer quoi que ce soit", () => {
     // L'ordre inverse laissait l'interface sans AUCUNE adresse IPv4 des lors

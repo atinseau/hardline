@@ -119,6 +119,30 @@ if (Test-Path $statePath) {
     Write-Host '  etat d''origine releve'
 }
 
+# --- 1bis. Ce que l'amorcage s'autorise a retirer ------------------------
+# Le menage d'adresses de la section 5 ne s'autorise QUE les adresses que le
+# releve d'origine connait deja.
+#
+# Le releve n'est jamais reecrit, par conception. Un second amorcage d'un PC
+# deja amorce trouve donc un releve qui decrit le PC d'AVANT le premier, et un
+# menage inconditionnel emporterait toute adresse posee depuis : une adresse
+# qui ne figure alors dans aucun releve, et dont plus rien ne sait qu'elle a
+# existe. C'est une perte de donnees silencieuse, pas une imperfection.
+#
+# On choisit donc de refuser de retirer ce dont on ne peut pas rendre compte :
+# une adresse de trop sur l'interface est un desagrement, une adresse detruite
+# sans trace est irreversible. Un releve illisible ou d'une forme inconnue
+# donne une liste vide, donc aucun retrait : le meme choix, pousse a son terme.
+$known = @()
+try {
+    $recorded = Get-Content -Path $statePath -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ($recorded.network.addresses) {
+        $known = @($recorded.network.addresses | ForEach-Object { ($_ -split '/')[0] })
+    }
+} catch {
+    Write-Host '  releve illisible : aucune adresse ne sera retiree'
+}
+
 # --- 2. OpenSSH Server ---------------------------------------------------
 $capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
 if ($capability.State -ne 'Installed') {
@@ -167,7 +191,13 @@ if (Get-NetIPAddress -InterfaceAlias $alias -IPAddress $target -ErrorAction Sile
 
 Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -ne $target } |
-    Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+    ForEach-Object {
+        if ($known -contains $_.IPAddress) {
+            $_ | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "  adresse $($_.IPAddress) conservee : absente du releve d'origine"
+        }
+    }
 
 Set-NetConnectionProfile -InterfaceAlias $alias -NetworkCategory Private -ErrorAction SilentlyContinue
 Write-Host '  profil reseau prive'

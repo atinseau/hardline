@@ -144,6 +144,13 @@ l'auteur. Défaire ce que l'amorçage n'a pas fait serait un dégât d'un genre 
 Ce relevé n'est jamais réécrit par un second amorçage, et une étape le rapatrie dans
 le manifeste dès la première installation qui suit.
 
+Parce qu'il n'est jamais réécrit, **il borne aussi ce que l'amorçage s'autorise à
+retirer** : le ménage d'adresses du lien direct ne retire que les adresses dont le
+relevé rend compte. Un second amorçage trouve un relevé qui décrit le PC d'avant le
+premier ; une adresse posée depuis ne figure dans aucun relevé, et la retirer serait la
+détruire sans trace. Une adresse de trop est un désagrément, une adresse détruite sans
+trace est irréversible. Un relevé illisible n'autorise donc aucun retrait.
+
 **Une seule chose n'est délibérément pas défaite** : la fonctionnalité Windows
 « OpenSSH Server ». La retirer exigerait un redémarrage, et l'utilisateur peut
 légitimement vouloir garder un serveur SSH ; seul le service sshd est rendu à son
@@ -218,6 +225,12 @@ sa charge détachée verraient leurs comptes à rebours se recouvrir : la premi�
 tuerait la session SSH neuve dont la seconde a besoin, et le PC resterait injoignable
 avec son adressage d'origine jamais rendu. Une étape sait donc quelles restaurations
 passent après elle, et cède la queue quand elle n'est pas la dernière.
+
+Ce que l'étape apprend ne compte que **les restaurations que cette version sait
+exécuter** : une étape nommée par le manifeste mais dont le code a disparu ne
+restaurera rien, et lui céder la queue serait la céder à personne. Et une étape qui
+cède n'a rien restauré : le rapport de `uninstall` le dit comme tel, plutôt que
+d'annoncer un état rendu sans qu'une seule session ait été ouverte.
 
 Une précondition non satisfaite arrête l'installation à la phase où elle échoue.
 L'invariant qui tient de bout en bout n'est pas « rien n'a été modifié » — il ne
