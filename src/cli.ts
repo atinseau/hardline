@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { installCommand } from "./commands/install";
 import { uninstallCommand } from "./commands/uninstall";
 import { CancelledError, ui } from "./lib/ui";
+import { errorMessage } from "./lib/errors";
 
 export const VERSION = "0.1.0";
 
@@ -48,11 +49,7 @@ if (import.meta.main) {
     await buildProgram().parseAsync(Bun.argv);
   } catch (error) {
     if (!(error instanceof CancelledError)) {
-      // Une valeur levee qui n'est pas une Error n'a pas de .message :
-      // l'afficher tel quel vaut mieux qu'annoncer « undefined ».
-      const detail =
-        error instanceof Error && error.message ? error.message : String(error);
-      ui.failed({ label: "hardline", detail });
+      ui.failed({ label: "hardline", detail: errorMessage(error) });
     }
     process.exitCode = 1;
   }

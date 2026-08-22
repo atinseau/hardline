@@ -1,5 +1,6 @@
 import { listNetworkServices } from "./shell";
 import { runRemoteJson } from "./ssh";
+import { errorMessage } from "./errors";
 import type { Config } from "../config";
 
 export type CheckResult = {
@@ -44,10 +45,10 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: Boolean(macService?.enabled),
     blocking: true,
     detail: !macService
-      ? `aucun service réseau nommé « ${config.mac.serviceName} ». Adaptateur USB débranché ?`
+      ? `aucun service réseau nommé «\u00a0${config.mac.serviceName}\u00a0». Adaptateur USB débranché\u00a0?`
       : macService.enabled
-        ? `service « ${config.mac.serviceName} » sur ${macService.device}`
-        : `service « ${config.mac.serviceName} » désactivé dans les Réglages Réseau`,
+        ? `service «\u00a0${config.mac.serviceName}\u00a0» sur ${macService.device}`
+        : `service «\u00a0${config.mac.serviceName}\u00a0» désactivé dans les Réglages Réseau`,
   });
 
   let facts: RemoteFacts | undefined;
@@ -68,7 +69,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
       name: SSH_CHECK,
       ok: false,
       blocking: true,
-      detail: `PC injoignable sur ${config.ssh.host} : ${(error as Error).message}`,
+      detail: `PC injoignable sur ${config.ssh.host}\u00a0: ${errorMessage(error)}`,
     });
   }
 
@@ -81,7 +82,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: facts.build === EXPECTED_BUILD,
     blocking: false,
     detail: `${facts.caption} build ${facts.build}${
-      facts.build === EXPECTED_BUILD ? "" : ` (référence : ${EXPECTED_BUILD})`
+      facts.build === EXPECTED_BUILD ? "" : ` (référence\u00a0: ${EXPECTED_BUILD})`
     }`,
   });
 
@@ -90,7 +91,7 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     name: "gpu",
     ok: Boolean(nvidia),
     blocking: true,
-    detail: nvidia ?? `aucun GPU NVIDIA parmi : ${facts.gpus.join(", ")}`,
+    detail: nvidia ?? `aucun GPU NVIDIA parmi\u00a0: ${facts.gpus.join(", ")}`,
   });
 
   const linkUp = facts.adapterPresent && facts.adapterStatus === "Up";
@@ -99,8 +100,8 @@ export async function runPreflight(config: Config): Promise<CheckResult[]> {
     ok: linkUp,
     blocking: true,
     detail: linkUp
-      ? `interface « ${config.windows.interfaceAlias} » active`
-      : `interface « ${config.windows.interfaceAlias} » en état ${facts.adapterStatus ?? "absent"}. Vérifier le câble.`,
+      ? `interface «\u00a0${config.windows.interfaceAlias}\u00a0» active`
+      : `interface «\u00a0${config.windows.interfaceAlias}\u00a0» en état ${facts.adapterStatus ?? "absent"}. Vérifier le câble.`,
   });
 
   return results;

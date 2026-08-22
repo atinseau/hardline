@@ -1,5 +1,6 @@
 import type { Config } from "../config";
 import type { Step } from "../steps/types";
+import { errorMessage } from "./errors";
 import {
   forgetStep,
   readManifest,
@@ -84,7 +85,7 @@ export async function revertSteps(
     } catch (error) {
       // Une machine qui refuse de revenir en arriere ne doit pas empecher
       // l'autre d'etre restauree : on signale, on garde, on continue.
-      reporter.failed({ label: step.label, detail: (error as Error).message });
+      reporter.failed({ label: step.label, detail: errorMessage(error) });
       unrestored.push(record.step);
       continue;
     }
