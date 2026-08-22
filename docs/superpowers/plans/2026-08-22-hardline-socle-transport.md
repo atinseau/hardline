@@ -3823,7 +3823,7 @@ session de travail, ce qui suppose Moonlight, donc le plan 2.
 - Test: `test/commands/doctor.test.ts`
 
 **Interfaces:**
-- Consumes: `runPreflight` (Task 8), `ALL_STEPS` (Task 10), `pingFrom` (Task 2),
+- Consumes: `runPreflight` (Task 8), `ALL_STEPS` (Task 6b), `pingFrom` (Task 2),
   `ui` (Task 7).
 - Produces: `doctorCommand` et la fonction pure `formatDiagnostic`.
 
@@ -3866,8 +3866,9 @@ describe("formatDiagnostic", () => {
       ...HEALTHY,
       ping: { ...HEALTHY.ping, received: 18, lossPercent: 10 },
     });
-    expect(lines.join("\n")).toContain("10");
-    expect(lines.join("\n")).toMatch(/perte/i);
+    // Assertion sur la ligne entiere : un simple toContain("10") serait
+    // satisfait par l'adresse 10.10.10.1 presente ailleurs dans le rapport.
+    expect(lines.join("\n")).toMatch(/^KO\s+Perte de paquets\s*:\s*10 %/m);
   });
 
   test("indique clairement qu'un hote est injoignable", () => {
@@ -3891,16 +3892,21 @@ describe("formatDiagnostic", () => {
     const lines = formatDiagnostic({
       ...HEALTHY,
       steps: [
+        { label: "Adresse fixe (Mac)", conforming: true, detail: "deja en 10.10.10.2" },
         { label: "Adresse fixe (PC)", conforming: false, detail: "profil Public" },
       ],
     });
     const text = lines.join("\n");
-    expect(text).toContain("Adresse fixe (PC)");
-    expect(text).toContain("profil Public");
+    expect(text).toMatch(/^OK\s+Adresse fixe \(Mac\)\s*:\s*deja en 10\.10\.10\.2/m);
+    expect(text).toMatch(/^KO\s+Adresse fixe \(PC\)\s*:\s*profil Public/m);
   });
 
-  test("ne mentionne pas le debit quand il n'a pas ete mesure", () => {
-    expect(formatDiagnostic(HEALTHY).join("\n")).not.toMatch(/Mbit/);
+  test("marque KO une verification en echec", () => {
+    const lines = formatDiagnostic({
+      ...HEALTHY,
+      checks: [{ name: "ssh", ok: false, blocking: true, detail: "PC injoignable" }],
+    });
+    expect(lines.join("\n")).toMatch(/^KO\s+ssh\s*:\s*PC injoignable/m);
   });
 });
 ```
@@ -3956,7 +3962,9 @@ export function formatDiagnostic(diagnostic: Diagnostic): string[] {
 
   const { ping } = diagnostic;
   if (ping.received === 0) {
-    lines.push(`KO  ${pad("Liaison")}injoignable (${ping.transmitted} paquets envoyes)`);
+    lines.push(
+      `KO  ${pad("Liaison")}injoignable (${ping.transmitted} paquets envoyés)`,
+    );
     return lines;
   }
 
@@ -3973,7 +3981,7 @@ export async function doctorCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — diagnostic");
 
-  const checks = await withSpinner("Verification des machines", async () =>
+  const checks = await withSpinner("Vérification des machines", async () =>
     runPreflight(CONFIG),
   );
 
@@ -4007,9 +4015,9 @@ export async function doctorCommand(): Promise<void> {
     ping.received > 0;
 
   if (healthy) {
-    ui.finish("Liaison operationnelle.");
+    ui.finish("Liaison opérationnelle.");
   } else {
-    ui.finish("Anomalies detectees. Relancer : hardline install");
+    ui.finish("Anomalies détectées. Relancer «\u00a0hardline install\u00a0».");
     process.exitCode = 1;
   }
 }
@@ -4022,7 +4030,7 @@ Expected: PASS, cinq tests.
 
 - [ ] **Step 5: Brancher la commande**
 
-Dans `src/cli.ts` :
+Dans `src/cli.ts`, remplacer l'action `NOT_IMPLEMENTED("doctor")` :
 
 ```ts
 import { doctorCommand } from "./commands/doctor";
@@ -4040,9 +4048,14 @@ Expected: un rapport encadré où chaque ligne commence par `OK`, avec une laten
 proche de 1 ms et 0 % de perte. Le code de sortie doit être 0 — le vérifier avec
 `echo $?`.
 
+Cette étape dépend d'un PC allumé et joignable : elle **ne bloque pas** la tâche. Si le
+PC ne répond pas, le consigner dans le rapport et poursuivre.
+
 - [ ] **Step 7: Vérifier que le diagnostic détecte une vraie panne**
 
-Débrancher le câble Ethernet, puis relancer.
+Cette étape demande de débrancher physiquement le câble Ethernet : elle est **réservée
+à l'utilisateur** et ne doit pas être tentée par l'implémenteur. La consigner telle
+quelle dans le rapport, comme vérification manuelle en attente.
 
 Run: `bun run src/cli.ts doctor; echo "code: $?"`
 Expected: des lignes `KO`, la mention « injoignable », et un code de sortie 1.
@@ -4059,10 +4072,17 @@ git commit -m "feat: commande doctor"
 
 ### Task 12: Binaire autonome
 
+La contrainte « pas de `Bun.spawn` hors de `src/lib/shell.ts` et `src/lib/ssh.ts` »
+délimite les frontières système du programme livré, dans `src/`. Elle ne s'applique pas
+à `scripts/`, qui n'est pas embarqué dans le binaire : y appeler `bun build` est la voie
+documentée et ne constitue pas une entorse.
+
 **Files:**
 - Create: `scripts/build.ts`
-- Modify: `package.json` — le script `build` existe déjà et pointe ici
 - Test: vérification manuelle du binaire produit
+
+`package.json` est déjà correct : son script `build` pointe sur `scripts/build.ts`, et
+`.gitignore` contient déjà `dist/`. Ne toucher ni l'un ni l'autre.
 
 **Interfaces:**
 - Consumes: `src/cli.ts` (Task 1) et tout ce qu'il importe.
@@ -4070,49 +4090,36 @@ git commit -m "feat: commande doctor"
 
 - [ ] **Step 1: Écrire le script de construction**
 
-`scripts/build.ts` :
+`scripts/build.ts` — on passe par la ligne de commande `bun build`, seule voie
+documentée pour `--compile` :
 
 ```ts
-const result = await Bun.build({
-  entrypoints: ["./src/cli.ts"],
-  outdir: "./dist",
-  target: "bun",
-  minify: true,
-  compile: {
-    target: "bun-darwin-arm64",
-    outfile: "./dist/hardline",
-  },
-});
+const ARGS = [
+  "bun",
+  "build",
+  "./src/cli.ts",
+  "--compile",
+  "--minify",
+  "--bytecode",
+  "--target=bun-darwin-arm64",
+  "--outfile",
+  "./dist/hardline",
+];
 
-if (!result.success) {
-  for (const log of result.logs) console.error(log);
-  process.exit(1);
+const proc = Bun.spawn(ARGS, { stdout: "inherit", stderr: "inherit" });
+const code = await proc.exited;
+
+if (code !== 0) {
+  console.error("Échec de la construction du binaire.");
+  process.exit(code);
 }
 
 console.log("Binaire produit : ./dist/hardline");
 ```
 
-Si l'API programmatique `Bun.build` ne prend pas l'option `compile` dans la version
-installée, remplacer le contenu du script par un appel direct à la ligne de commande,
-qui est la voie documentée :
-
-```ts
-const proc = Bun.spawn(
-  [
-    "bun",
-    "build",
-    "./src/cli.ts",
-    "--compile",
-    "--minify",
-    "--bytecode",
-    "--target=bun-darwin-arm64",
-    "--outfile",
-    "./dist/hardline",
-  ],
-  { stdout: "inherit", stderr: "inherit" },
-);
-process.exit(await proc.exited);
-```
+`--target=bun-darwin-arm64` est l'architecture du Mac de référence, vérifiée par
+`uname -m`. Si `--bytecode` fait échouer la construction, le retirer et le consigner
+dans le rapport : c'est une optimisation du temps de démarrage, pas une exigence.
 
 - [ ] **Step 2: Construire**
 
@@ -4132,11 +4139,15 @@ Run: `cd /tmp && ~/Documents/Dev/projects/thunderbolt-control/dist/hardline doct
 Expected: le diagnostic s'exécute normalement, prouvant que rien ne dépend du
 répertoire de travail.
 
-- [ ] **Step 4: Ajouter dist au .gitignore et committer**
+Cette seconde vérification dépend d'un PC allumé : elle **ne bloque pas** la tâche. La
+première, `--help` depuis `/tmp`, se suffit à elle-même et doit passer.
+
+- [ ] **Step 4: Committer**
+
+`dist/` est déjà ignoré : ne rien ajouter à `.gitignore`.
 
 ```bash
-echo "dist/" >> .gitignore
-git add scripts/build.ts .gitignore
+git add scripts/build.ts
 git commit -m "feat: production d'un binaire autonome"
 ```
 
