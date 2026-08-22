@@ -50,12 +50,12 @@ export function bootstrapCaveats(recorded: string[]): string[] | null {
   if (!recorded.includes(bootstrapWindowsStep.name)) return null;
 
   return [
-    "La fonctionnalité Windows « OpenSSH Server » reste installée : la retirer",
+    "La fonctionnalité Windows «\u00a0OpenSSH Server\u00a0» reste installée\u00a0: la retirer",
     "exigerait un redémarrage, et un serveur SSH peut vous servir par ailleurs.",
     "Seul le service sshd est rendu à son démarrage d'origine — désactivé et",
     "arrêté s'il n'existait pas avant hardline.",
     "",
-    "Tout le reste part : clé publique du Mac, règle de pare-feu, adressage et",
+    "Tout le reste part\u00a0: clé publique du Mac, règle de pare-feu, adressage et",
     "profil réseau du lien direct. Le PC ne sera donc plus joignable en SSH, et",
     "une nouvelle installation redemandera le geste manuel d'amorçage sur le PC.",
   ];

@@ -177,8 +177,8 @@ function restoreAddressing(alias: string, capture: BootstrapCapture): string[] {
 
   for (const entry of capture.network.manualAddresses ?? []) {
     const [address, prefix] = String(entry).split("/");
-    const quoted = psQuote(address ?? "", `adresse relevée « ${entry} »`);
-    const length = psInteger(prefix, `préfixe de « ${entry} »`, 32);
+    const quoted = psQuote(address ?? "", `adresse relevée «\u00a0${entry}\u00a0»`);
+    const length = psInteger(prefix, `préfixe de «\u00a0${entry}\u00a0»`, 32);
     lines.push(
       `$prev = Get-NetIPAddress -InterfaceAlias ${quotedAlias} -AddressFamily IPv4 -IPAddress ${quoted} -ErrorAction SilentlyContinue`,
       `if ($prev) { if ($prev.PrefixLength -ne ${length}) { Set-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${quoted} -PrefixLength ${length} | Out-Null } } else { New-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${quoted} -PrefixLength ${length} | Out-Null }`,
@@ -348,14 +348,14 @@ function cuttingTail(
   }
   // Meme traitement pour l'etat du service : on relit avant d'ecrire. Un arret
   // inconditionnel etait la derniere instruction du lot a modifier sans
-  // regarder, et c'est la plus lourde — elle ferme definitivement la porte.
+  // regarder, et c'est la plus lourde : elle ferme definitivement la porte.
   //
   // La garde ne distingue pas tout, et il faut le dire plutot que le taire :
   // `Status -eq 'Running'` est vrai aussi bien parce que l'amorcage a demarre
   // sshd que parce que l'utilisateur l'a demarre lui-meme apres un amorcage
   // avorte. Rien, vu d'ici, ne separe les deux : le releve dit ce que
   // l'amorcage COMPTAIT faire, pas ce qu'il a fait. La garde ferme le seul cas
-  // observable — un sshd deja arrete, qu'on n'a pas a rearreter — et le cas
+  // observable (un sshd deja arrete, qu'on n'a pas a rearreter) et le cas
   // indiscernable reste ce qu'il est, nomme ici faute de pouvoir etre resolu.
   if (capture.sshd.statusChanged) {
     tail.push(

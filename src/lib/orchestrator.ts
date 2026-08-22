@@ -119,7 +119,7 @@ export async function revertSteps(
     }
 
     // Une etape qui a cede n'a rien restaure. Son enregistrement part quand
-    // meme — la restauration plus profonde le supplante — mais le rapport doit
+    // meme (la restauration plus profonde le supplante) mais le rapport doit
     // dire ce qui s'est passe, pas ce qu'on esperait.
     if (outcome) reporter.yielded({ label: step.label, detail: outcome.yielded });
     else reporter.restored({ label: step.label, detail: "état antérieur restauré" });

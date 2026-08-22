@@ -17,7 +17,7 @@
 export function assertNoApostrophe(value: string, what: string): void {
   if (value.includes("'")) {
     throw new Error(
-      `Valeur invalide pour ${what} : une apostrophe casserait le script PowerShell (${value})`,
+      `Valeur invalide pour ${what}\u00a0: une apostrophe casserait le script PowerShell (${value})`,
     );
   }
 }
@@ -43,7 +43,7 @@ export function psInteger(value: unknown, what: string, max: number): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
     throw new Error(
-      `Valeur invalide pour ${what} : entier attendu entre 0 et ${max} (${String(value)})`,
+      `Valeur invalide pour ${what}\u00a0: entier attendu entre 0 et ${max} (${String(value)})`,
     );
   }
   return parsed;
@@ -60,7 +60,7 @@ export function psKeyword(
 ): string {
   if (!allowed.includes(value)) {
     throw new Error(
-      `Valeur invalide pour ${what} : attendu ${allowed.join(", ")} (${value})`,
+      `Valeur invalide pour ${what}\u00a0: attendu ${allowed.join(", ")} (${value})`,
     );
   }
   return value;

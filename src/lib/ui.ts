@@ -50,7 +50,7 @@ export const ui = {
 
   /**
    * Une etape qui a cede sa place. Ni succes ni echec : elle n'a rien fait, et
-   * c'est le bon geste. L'annoncer « restauré » ferait croire a une session
+   * c'est le bon geste. L'annoncer "restaure" ferait croire a une session
    * ouverte et a un etat rendu qui n'ont jamais eu lieu.
    */
   yielded({ label, detail }: StepReport): void {

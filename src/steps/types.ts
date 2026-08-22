@@ -29,10 +29,10 @@ export type RestoreContext = {
 /**
  * Ce qu'une restauration rend d'elle-meme.
  *
- * Ne rien rendre veut dire « j'ai fait mon travail ». Rendre `{ yielded }`
- * veut dire « je n'ai rien fait, et voici pourquoi » : l'etape a cede sa place
- * a une restauration plus profonde. Les deux cas effacent l'enregistrement du
- * manifeste — la couche profonde le supplante — mais ils ne se racontent pas
+ * Ne rien rendre veut dire "j'ai fait mon travail". Rendre `{ yielded }` veut
+ * dire "je n'ai rien fait, et voici pourquoi" : l'etape a cede sa place a une
+ * restauration plus profonde. Les deux cas effacent l'enregistrement du
+ * manifeste (la couche profonde le supplante) mais ils ne se racontent pas
  * de la meme facon, et donner une etape pour restauree quand elle n'a pas
  * ouvert une seule session est un mensonge visible a l'ecran.
  */
