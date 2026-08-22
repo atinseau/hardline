@@ -1,5 +1,6 @@
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
+import { SSH_LOCAL_ADDRESS, detachTail } from "./detach";
 import type { Step } from "./types";
 
 export type WindowsNetworkState = {
@@ -26,16 +27,6 @@ $connection = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction S
   dhcpEnabled     = if ($interface) { [bool]($interface.Dhcp -eq 'Enabled') } else { $false }
   category        = if ($connection) { [string]$connection.NetworkCategory } else { $null }
 }`;
-
-/**
- * L'adresse locale qui porte la session SSH en cours. Tout ce que hardline
- * execute sur le PC transite par elle : la supprimer coupe la connexion, tue
- * le processus enfant cote sshd, et le reste du script n'est jamais execute.
- * C'est exactement ainsi qu'on laisse un PC sans aucune adresse sur le lien
- * direct, donc sans aucun moyen d'y revenir sans acces physique.
- */
-const SSH_LOCAL_ADDRESS =
-  "$sshLocal = (Get-NetTCPConnection -LocalPort 22 -State Established -ErrorAction SilentlyContinue | Select-Object -First 1).LocalAddress";
 
 /**
  * L'adresse cible d'abord, le menage ensuite. Tant que New-NetIPAddress n'a
@@ -124,16 +115,6 @@ function setProfileStatement(
 
 const removeStatement = (alias: string, ip: string): string =>
   `Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:$false -ErrorAction SilentlyContinue`;
-
-/**
- * Un processus detache qui survit a la fermeture de la session SSH. Les `$` du
- * script confie doivent etre echappes en `` `$ `` : sans cet echappement, le
- * shell appelant developpe $false en chaine vide et Remove-NetIPAddress
- * reclame une confirmation interactive que personne ne donnera jamais.
- */
-const detachTail = (statements: string[]): string =>
-  "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command'," +
-  `"Start-Sleep -Seconds 2; ${statements.join("; ").replaceAll("$", "`$")}"`;
 
 /**
  * Tout ce qui peut couper le canal part ensemble, en dernier.
