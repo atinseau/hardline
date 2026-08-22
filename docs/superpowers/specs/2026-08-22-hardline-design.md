@@ -300,10 +300,15 @@ secondes, puis retire l'adresse qui portait la session SSH et referme le pare-fe
 partir de cet instant le Mac ne peut plus rien observer de ce PC. `uninstall` rapporte donc
 ces étapes comme *lancées*, pas comme restaurées, **conserve leur enregistrement au
 manifeste** — c'est la seule description de l'état d'origine, et on ne l'échange pas contre
-l'espoir qu'une charge a abouti — et dit à l'utilisateur d'aller vérifier au clavier du PC
-si la liaison ne revient pas. Le code de sortie reste 0 : rien n'a été *observé* en échec,
-et inventer une panne que le programme n'a pas vue serait le même mensonge dans l'autre
-sens. C'est le message qui porte l'incertitude.
+l'espoir qu'une charge a abouti — et dit à l'utilisateur quoi aller constater au clavier
+du PC : son adressage et son profil réseau d'origine. Lui faire guetter le retour de la
+liaison serait lui désigner le mauvais signal, puisqu'une désinstallation réussie a
+précisément pour effet qu'elle ne revienne pas.
+
+Le code de sortie reste 0, et pas seulement parce que rien n'a été *observé* en échec :
+une queue détachée est la fin **normale** d'une désinstallation complète, donc sortir en
+1 ferait échouer toutes les réussites. Inventer une panne que le programme n'a pas vue
+serait le même mensonge dans l'autre sens. C'est le message qui porte l'incertitude.
 
 L'étape d'adressage du PC, elle, choisit sa branche *sur le PC* selon l'adresse qui porte
 la session ; son script annonce donc en sortie laquelle il a empruntée, faute de quoi une
