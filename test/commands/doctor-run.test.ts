@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
 import type { CheckResult } from "../../src/lib/preflight";
+import type { ThroughputStats } from "../../src/lib/throughput";
 
 const realShell = await import("../../src/lib/shell");
 const realSsh = await import("../../src/lib/ssh");
@@ -83,6 +84,22 @@ mock.module("../../src/lib/ssh", () => ({
   },
 }));
 
+/**
+ * Mesure de debit reussie par defaut : sans cela, une mesure absente ou en
+ * echec rendrait le lien malade dans TOUS les tests existants, pas seulement
+ * ceux qui le testent explicitement.
+ */
+let throughputResult: ThroughputStats = {
+  mbitsPerSecond: 946.5,
+  seconds: 3,
+  error: null,
+  unavailable: false,
+};
+
+mock.module("../../src/lib/throughput", () => ({
+  measureThroughput: async () => throughputResult,
+}));
+
 mock.module("../../src/lib/ui", () => ({
   configureOutput: () => {},
   withSpinner: async <T>(_label: string, run: () => Promise<T>) => run(),
@@ -134,6 +151,7 @@ beforeEach(() => {
   remoteChecks = [ok("ssh"), ok("gpu")];
   reachable = true;
   profilPrive = true;
+  throughputResult = { mbitsPerSecond: 946.5, seconds: 3, error: null, unavailable: false };
   process.exitCode = 0;
 });
 
@@ -202,5 +220,54 @@ describe("doctorCommand", () => {
     await doctorCommand();
     expect(finishes.join("\n")).toContain("Anomalies détectées");
     expect(process.exitCode).toBe(1);
+  });
+
+  describe("mesure du debit", () => {
+    test("un debit mesure n'affecte jamais le code de sortie, quel que soit le chiffre", async () => {
+      throughputResult = { mbitsPerSecond: 1.2, seconds: 3, error: null, unavailable: false };
+      await doctorCommand();
+      expect(process.exitCode).toBe(0);
+      expect(finishes.join("\n")).toContain("Liaison opérationnelle");
+      expect((reports[0] ?? []).join("\n")).toMatch(
+        /^OK\s+Débit \(PC → Mac\)\s*:\s*1\.2 Mbit\/s/m,
+      );
+    });
+
+    // Le coeur de la correction : iperf3 absent n'est pas une anomalie du
+    // lien (la spec dit qu'il n'est pas une dependance du projet), une
+    // mesure tentee et ratee en est une. Ce test echoue si les deux sont
+    // confondus.
+    test("iperf3 absent est rapporte en '!!' et ne rend pas la liaison malade", async () => {
+      throughputResult = {
+        mbitsPerSecond: null,
+        seconds: null,
+        error: "non mesuré : iperf3 absent sur le PC",
+        unavailable: true,
+      };
+      await doctorCommand();
+      expect(process.exitCode).toBe(0);
+      expect(finishes.join("\n")).toContain("Liaison opérationnelle");
+      expect((reports[0] ?? []).join("\n")).toMatch(/^!!\s+Débit \(PC → Mac\)\s*:/m);
+    });
+
+    test("une mesure de debit en echec rend la liaison malade et sort en 1", async () => {
+      throughputResult = {
+        mbitsPerSecond: null,
+        seconds: null,
+        error: "unable to connect to server - server may have stopped running",
+        unavailable: false,
+      };
+      await doctorCommand();
+      expect(process.exitCode).toBe(1);
+      expect(finishes.join("\n")).toContain("Anomalies détectées");
+      expect((reports[0] ?? []).join("\n")).toMatch(/^KO\s+Débit \(PC → Mac\)\s*:/m);
+    });
+
+    test("aucune ligne de debit quand le PC ne repond pas au ping", async () => {
+      reachable = false;
+      remoteChecks = [ko("ssh")];
+      await doctorCommand();
+      expect((reports[0] ?? []).join("\n")).not.toContain("Débit");
+    });
   });
 });

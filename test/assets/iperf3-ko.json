@@ -1,0 +1,11 @@
+{
+	"start":	{
+		"connected":	[],
+		"version":	"iperf 3.21",
+		"system_info":	"CYGWIN_NT-10.0-26200 DESKTOP-4FKFG3L 3.6.7-1.x86_64 2026-03-02 20:13 UTC x86_64"
+	},
+	"intervals":	[],
+	"end":	{
+	},
+	"error":	"unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused"
+}

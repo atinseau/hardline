@@ -8,6 +8,7 @@ import {
 } from "../lib/preflight";
 import { configureOutput, ui, withSpinner } from "../lib/ui";
 import { errorMessage } from "../lib/errors";
+import { measureThroughput, type ThroughputStats } from "../lib/throughput";
 
 export type StepSummary = {
   label: string;
@@ -19,13 +20,21 @@ export type Diagnostic = {
   checks: CheckResult[];
   steps: StepSummary[];
   ping: PingStats;
+  throughput?: ThroughputStats;
 };
 
 // Libelles fixes utilises par les lignes de latence, quelle que soit la
 // branche empruntee : inclus dans le calcul de largeur pour que la colonne
 // reste alignee d'une execution a l'autre, meme si le rapport rendu ne
 // contient qu'une seule de ces lignes.
-const FIXED_LABELS = ["Liaison", "Latence", "Latence moyenne", "Gigue", "Perte de paquets"];
+const FIXED_LABELS = [
+  "Liaison",
+  "Latence",
+  "Latence moyenne",
+  "Gigue",
+  "Perte de paquets",
+  "Débit (PC → Mac)",
+];
 
 function columnWidth(labels: string[]): number {
   const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
@@ -90,6 +99,23 @@ export function formatDiagnostic(diagnostic: Diagnostic): string[] {
     `${ping.lossPercent === 0 ? "OK  " : "KO  "}${pad("Perte de paquets", width)}${ping.lossPercent} %`,
   );
 
+  const { throughput } = diagnostic;
+  if (throughput) {
+    // Trois etats, pas deux, comme `marker` plus haut : l'absence d'iperf3
+    // n'est pas une anomalie du lien, une mesure tentee et ratee en est une.
+    if (throughput.unavailable) {
+      lines.push(
+        `!!  ${pad("Débit (PC → Mac)", width)}${throughput.error ?? "non mesuré"}`,
+      );
+    } else if (throughput.error !== null) {
+      lines.push(`KO  ${pad("Débit (PC → Mac)", width)}${throughput.error}`);
+    } else {
+      lines.push(
+        `OK  ${pad("Débit (PC → Mac)", width)}${throughput.mbitsPerSecond} Mbit/s`,
+      );
+    }
+  }
+
   return lines;
 }
 
@@ -127,7 +153,15 @@ export async function doctorCommand(): Promise<void> {
     pingFrom(CONFIG.mac.ip, CONFIG.windows.ip, 20),
   );
 
-  ui.report("Diagnostic", formatDiagnostic({ checks, steps, ping }));
+  // Mesurer un debit sur un lien qui n'a rien recu n'a pas de sens : la ligne
+  // ne serait de toute facon jamais rendue, `formatDiagnostic` sort deja tot
+  // sur "Liaison injoignable".
+  const throughput =
+    ping.received > 0
+      ? await withSpinner("Mesure du débit", async () => measureThroughput(CONFIG))
+      : undefined;
+
+  ui.report("Diagnostic", formatDiagnostic({ checks, steps, ping, throughput }));
 
   // Le code de sortie de doctor est fait pour etre scripte : il doit dire
   // "la liaison va bien" ou "elle ne va pas", et rien d'autre. Une
@@ -135,12 +169,18 @@ export async function doctorCommand(): Promise<void> {
   // elle rend la prochaine installation impossible. Elle se rapporte, elle ne
   // se compte pas.
   const preconditions = checks.filter((c) => !c.ok && c.installOnly);
+  // Un debit mesure n'influence jamais le code de sortie, quel que soit le
+  // chiffre : un lien lent n'est pas un lien malade. Une mesure demandee
+  // explicitement et EN ECHEC (pas juste absente d'iperf3) l'est.
+  const throughputFailed =
+    throughput !== undefined && !throughput.unavailable && throughput.error !== null;
   const healthy =
     checks.every((c) => c.ok || !c.blocking || c.installOnly) &&
     steps.every((s) => s.conforming) &&
     ping.received > 0 &&
     ping.avgMs !== null &&
-    ping.stddevMs !== null;
+    ping.stddevMs !== null &&
+    !throughputFailed;
 
   if (healthy) {
     ui.finish(
