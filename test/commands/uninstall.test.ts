@@ -98,6 +98,13 @@ describe("scopeLabel", () => {
     expect(scopeLabel(["network-mac", "network-windows"])).toBe("des deux machines");
   });
 
+  test("nomme le PC quand seul le releve d'amorcage est enregistre", () => {
+    // C'est l'etat laisse par un arret sur une precondition distante apres
+    // amorcage : le releve est au manifeste, aucune etape de convergence.
+    expect(scopeLabel(["network-mac", "bootstrap-windows"])).toBe("des deux machines");
+    expect(scopeLabel(["bootstrap-windows"])).toBe("du PC");
+  });
+
   test("ne pretend rien d'une etape inconnue", () => {
     expect(scopeLabel(["etape-d-une-version-ulterieure"])).toBe(
       "des machines concernées",

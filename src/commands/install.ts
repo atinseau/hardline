@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { CONFIG } from "../config";
-import { LOCAL_STEPS, REMOTE_STEPS } from "../steps";
+import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
 import { applySteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
@@ -171,11 +171,29 @@ export async function installCommand(): Promise<void> {
     reportChecks(remote);
   }
 
+  // Phase 3bis - rapatriement du relevé d'amorçage, AVANT la porte des
+  // préconditions restantes. Quand cette session s'ouvre, l'amorçage a déjà
+  // modifié le PC ; s'arrêter ici sur un GPU absent laissait un manifeste vide
+  // et un PC dont l'adressage d'origine n'existait plus nulle part. On
+  // enregistre ce qu'on peut perdre dès l'instant où on ne peut plus le perdre.
+  const joignable = remote.some((c) => c.name === SSH_CHECK && c.ok);
+  if (
+    joignable &&
+    !(await converge(CAPTURE_STEPS, "Relevé d'amorçage du PC", manifestPath))
+  ) {
+    return;
+  }
+
   if (hasBlockingFailure(remote)) {
     ui.finish(
-      "Installation interrompue\u00a0: le PC n'est pas prêt. Le Mac est configuré et son " +
-        "état antérieur enregistré\u00a0: «\u00a0hardline install\u00a0» reprendra ici, " +
-        "«\u00a0hardline uninstall\u00a0» rend le Mac à son état d'origine.",
+      "Installation interrompue\u00a0: le PC n'est pas prêt. " +
+        (joignable
+          ? "Le Mac est configuré et le relevé d'amorçage du PC enregistré\u00a0: " +
+            "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
+            "rend les deux machines à leur état d'origine."
+          : "Le Mac est configuré et son état antérieur enregistré\u00a0: " +
+            "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
+            "rend le Mac à son état d'origine."),
     );
     process.exitCode = 1;
     return;

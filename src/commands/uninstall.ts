@@ -1,5 +1,5 @@
 import { CONFIG } from "../config";
-import { ALL_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
+import { ALL_STEPS, LOCAL_STEPS, WINDOWS_STEPS } from "../steps";
 import { bootstrapWindowsStep } from "../steps/bootstrap-windows";
 import { revertSteps } from "../lib/orchestrator";
 import { defaultManifestPath, readManifest } from "../lib/manifest";
@@ -14,7 +14,7 @@ export function scopeLabel(recorded: string[]): string {
   const touches = (steps: { name: string }[]) =>
     recorded.some((name) => steps.some((s) => s.name === name));
   const mac = touches(LOCAL_STEPS);
-  const pc = touches(REMOTE_STEPS);
+  const pc = touches(WINDOWS_STEPS);
 
   if (mac && pc) return "des deux machines";
   if (mac) return "du Mac";

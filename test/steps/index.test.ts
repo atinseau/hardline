@@ -1,5 +1,11 @@
 import { test, expect, describe } from "bun:test";
-import { ALL_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../../src/steps";
+import {
+  ALL_STEPS,
+  CAPTURE_STEPS,
+  LOCAL_STEPS,
+  REMOTE_STEPS,
+  WINDOWS_STEPS,
+} from "../../src/steps";
 
 const names = (steps: { name: string }[]) => steps.map((s) => s.name);
 
@@ -8,8 +14,24 @@ describe("decoupage des etapes", () => {
     expect(names(LOCAL_STEPS)).toEqual(["network-mac"]);
   });
 
-  test("la phase distante ne contient que le cote PC", () => {
+  test("le rapatriement du releve est une phase a lui seul", () => {
+    // Il doit pouvoir s'executer des que SSH repond, avant la porte des
+    // preconditions restantes : c'est ce decoupage qui le rend possible.
+    expect(names(CAPTURE_STEPS)).toEqual(["bootstrap-windows"]);
+  });
+
+  test("la phase de convergence distante ne contient que le cote PC", () => {
     expect(names(REMOTE_STEPS)).toEqual([
+      "network-windows",
+      "network-profile-task",
+    ]);
+  });
+
+  test("WINDOWS_STEPS reunit tout ce qui touche au PC", () => {
+    // uninstall s'en sert pour nommer les machines concernees : le releve
+    // d'amorcage seul au manifeste doit dire « du PC », pas « des machines
+    // concernees ».
+    expect(names(WINDOWS_STEPS)).toEqual([
       "bootstrap-windows",
       "network-windows",
       "network-profile-task",
@@ -26,7 +48,11 @@ describe("decoupage des etapes", () => {
       "network-windows",
       "network-profile-task",
     ]);
-    expect(names(ALL_STEPS)).toEqual([...names(LOCAL_STEPS), ...names(REMOTE_STEPS)]);
+    expect(names(ALL_STEPS)).toEqual([
+      ...names(LOCAL_STEPS),
+      ...names(CAPTURE_STEPS),
+      ...names(REMOTE_STEPS),
+    ]);
   });
 
   test("l'amorcage precede l'adressage, donc il est restaure apres lui", () => {

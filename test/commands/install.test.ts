@@ -120,7 +120,8 @@ const MAC_OK = [ok("service-mac")];
 const PC_OK = [ok("ssh"), ok("windows-version"), ok("gpu"), ok("lien-windows")];
 
 const LOCAL_GROUP = ["network-mac"];
-const REMOTE_GROUP = ["bootstrap-windows", "network-windows", "network-profile-task"];
+const CAPTURE_GROUP = ["bootstrap-windows"];
+const REMOTE_GROUP = ["network-windows", "network-profile-task"];
 
 beforeEach(() => {
   trace.length = 0;
@@ -152,16 +153,17 @@ describe("installCommand", () => {
       "preflight-local",
       "apply:network-mac",
       "preflight-remote",
-      "apply:bootstrap-windows+network-windows+network-profile-task",
+      "apply:bootstrap-windows",
+      "apply:network-windows+network-profile-task",
     ]);
     expect(process.exitCode).toBe(0);
   });
 
-  test("les deux convergences ecrivent dans le meme manifeste", async () => {
+  test("toutes les convergences ecrivent dans le meme manifeste", async () => {
     await installCommand();
-    expect(appliedGroups).toEqual([LOCAL_GROUP, REMOTE_GROUP]);
-    expect(manifestPaths).toHaveLength(2);
-    expect(manifestPaths[1]).toBe(manifestPaths[0] as string);
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
+    expect(manifestPaths).toHaveLength(3);
+    expect(new Set(manifestPaths).size).toBe(1);
     expect(manifestPaths[0]).toContain("manifest.json");
   });
 
@@ -187,7 +189,8 @@ describe("installCommand", () => {
       "wait",
       "stop",
       "preflight-remote",
-      "apply:bootstrap-windows+network-windows+network-profile-task",
+      "apply:bootstrap-windows",
+      "apply:network-windows+network-profile-task",
     ]);
     expect(finishes.join("\n")).toContain("Liaison établie");
     expect(finishes.join("\n")).not.toContain("Relancer");
@@ -200,7 +203,7 @@ describe("installCommand", () => {
     await installCommand();
     expect(remoteCalls).toBe(1);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
-    expect(trace).not.toContain("apply:bootstrap-windows+network-windows+network-profile-task");
+    expect(trace).not.toContain("apply:network-windows+network-profile-task");
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
@@ -214,12 +217,52 @@ describe("installCommand", () => {
     expect(serveCalls).toBe(0);
     expect(waitCalls).toBe(0);
     expect(remoteCalls).toBe(1);
-    expect(appliedGroups).toEqual([LOCAL_GROUP]);
     expect(process.exitCode).toBe(1);
     // La sortie doit dire dans quel etat sont les machines et comment en sortir.
     const message = finishes.join("\n");
     expect(message).toContain("hardline uninstall");
-    expect(message).toContain("Le Mac est configuré");
+  });
+
+  // Le scenario qui motive toute la vague : PC en 192.168.1.50/24 statique,
+  // sshd desactive. L'amorcage efface cet adressage, puis le second preflight
+  // bloque sur le GPU. Si le releve n'est pas rapatrie AVANT cette porte, le
+  // manifeste reste vide et l'adressage d'origine du PC n'existe plus nulle part.
+  test("rapatrie le releve d'amorcage avant de buter sur une precondition", async () => {
+    remoteRounds = [[ko("ssh")], [ok("ssh"), ko("gpu")]];
+    await installCommand();
+
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
+    expect(trace).toEqual([
+      "preflight-local",
+      "apply:network-mac",
+      "preflight-remote",
+      "serve",
+      "wait",
+      "stop",
+      "preflight-remote",
+      "apply:bootstrap-windows",
+    ]);
+    expect(process.exitCode).toBe(1);
+    expect(finishes.join("\n")).toContain("relevé d'amorçage du PC enregistré");
+  });
+
+  test("l'enregistrement du releve precede la porte des preconditions", async () => {
+    // Assertion d'ordre : une capture placee apres la porte ne s'executerait
+    // jamais dans ce cas, qui est precisement celui ou elle sert.
+    remoteRounds = [[ok("ssh"), ko("gpu")]];
+    await installCommand();
+    const capture = trace.indexOf("apply:bootstrap-windows");
+    expect(capture).toBeGreaterThan(trace.indexOf("preflight-remote"));
+    expect(finishes).toHaveLength(1);
+  });
+
+  test("ne rapatrie rien quand le PC ne repond pas en SSH", async () => {
+    // Sans session, il n'y a pas de releve a lire : tenter la lecture ferait
+    // remonter une erreur SSH nue a la place du diagnostic de preflight.
+    remoteRounds = [[ko("ssh"), ko("lien-windows")]];
+    await installCommand();
+    expect(appliedGroups).toEqual([LOCAL_GROUP]);
+    expect(finishes.join("\n")).toContain("Le Mac est configuré et son état antérieur");
   });
 
   test("SSH en echec accompagne d'un autre blocage n'ouvre pas l'amorcage", async () => {
@@ -265,7 +308,7 @@ describe("installCommand", () => {
   });
 
   test("un echec de la convergence du PC dit comment reprendre", async () => {
-    applyThrowsOn = "bootstrap-windows+network-windows+network-profile-task";
+    applyThrowsOn = "network-windows+network-profile-task";
     await installCommand();
     expect(failures.join("\n")).toContain("Convergence du PC — boum");
     const message = finishes.join("\n");
@@ -277,7 +320,7 @@ describe("installCommand", () => {
   test("un echec distant non bloquant n'arrete pas l'installation", async () => {
     remoteRounds = [[ok("ssh"), ko("windows-version", false), ok("gpu")]];
     await installCommand();
-    expect(appliedGroups).toEqual([LOCAL_GROUP, REMOTE_GROUP]);
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
     expect(process.exitCode).toBe(0);
   });
 });
