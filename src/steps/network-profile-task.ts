@@ -100,12 +100,12 @@ Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigge
  * Le journal est ecrit sous le nom de hardline, dans le repertoire de hardline,
  * quelle que soit la tache qui l'a rempli. Le lier au retrait de la tache
  * laissait un residu apres une desinstallation qui promet de ne rien laisser,
- * des lors qu'une tache du meme nom existait avant — le seul cas ou l'etape
+ * des lors qu'une tache du meme nom existait avant, le seul cas ou l'etape
  * sortait avant d'avoir nettoye.
  *
  * Un journal cote PC est legitime exactement quand quelque chose, plus tard, le
  * supprimera, et quand la panne qu'il consigne est recurrente et autrement
- * indiagnosticable. Cette etape satisfait les deux ; ce « plus tard » est ici.
+ * indiagnosticable. Cette etape satisfait les deux, et ce "plus tard" est ici.
  */
 const RESTORE = (removeTask: boolean): string =>
   [

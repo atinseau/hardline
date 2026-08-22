@@ -143,8 +143,8 @@ describe("acquireManifestLock", () => {
   });
 
   test("nomme le processus qui tient le verrou ET le fichier a supprimer", async () => {
-    // Sans le chemin, un refus que l'utilisateur ne comprend pas — un pid
-    // recycle, un cas non prevu — le laisse sans le moindre geste possible.
+    // Sans le chemin, un refus que l'utilisateur ne comprend pas (un pid
+    // recycle, un cas non prevu) le laisse sans le moindre geste possible.
     // Un outil capable de se refuser a son proprietaire doit dire comment
     // revenir, exactement comme le fait le message d'un verrou illisible.
     const lock = await acquireManifestLock(manifestPath);
@@ -160,7 +160,7 @@ describe("acquireManifestLock", () => {
   test("reprend un verrou pose avant le dernier demarrage, pid vivant ou non", async () => {
     // Le scenario qui condamnait l'outil : Ctrl+C pendant la convergence,
     // redemarrage, pid reattribue a n'importe quoi. Ici le pid est celui du
-    // processus de test, donc rigoureusement vivant — et pourtant le verrou est
+    // processus de test, donc rigoureusement vivant, et pourtant le verrou est
     // reprenable, parce qu'aucun processus ne survit a un redemarrage.
     await writeFile(
       lockPath,

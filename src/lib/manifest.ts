@@ -161,7 +161,7 @@ export function manifestLockPath(manifestPath: string): string {
  * `pid` seul ne suffit pas a identifier un detenteur : les pid sont recycles,
  * et macOS les redistribue depuis le bas apres un demarrage. Un verrou orphelin
  * laisse avant un redemarrage a donc toutes les chances de nommer, apres, un
- * processus etranger bien vivant — et l'outil se refusait alors a lui-meme,
+ * processus etranger bien vivant, et l'outil se refusait alors a lui-meme,
  * definitivement, en accusant un inconnu. `bootedAt` est ce qui manquait :
  * l'instant du demarrage de la machine ou le verrou a ete pose.
  */
@@ -361,7 +361,7 @@ async function claim(path: string): Promise<ManifestLock | null> {
  * cette fonction. Deplacer une entree de repertoire est atomique : parmi
  * plusieurs executions qui ont constate le meme orphelin, une seule emporte le
  * fichier, les autres echouent et n'ont rien supprime. `unlink` ne donnait pas
- * cette propriete — deux executions le reussissaient toutes les deux, et la
+ * cette propriete : deux executions le reussissaient toutes les deux, et la
  * seconde effacait le verrou tout neuf que la premiere venait de publier, si
  * bien que les deux tenaient le manifeste ensemble. C'est exactement le degat
  * que ce verrou existe pour empecher. Le nom de destination est unique parce
