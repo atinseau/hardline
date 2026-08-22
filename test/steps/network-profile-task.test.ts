@@ -141,7 +141,24 @@ describe("restore", () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
     const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
     expect(script).toContain("Remove-Item");
-    expect(script).toContain("hardline");
+    expect(script).toContain("network-profile.log");
+  });
+
+  test("n'emporte pas le repertoire partage avec le releve d'amorcage", async () => {
+    // Cette etape est restauree la PREMIERE ; le releve ecrit par l'amorcage
+    // vit dans le meme repertoire et n'est utilise qu'a la toute fin. Un
+    // Remove-Item -Recurse detruirait la seule description du PC d'avant
+    // hardline avant que l'etape d'amorcage n'ait pu s'en servir.
+    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+
+    expect(script).not.toContain("-Recurse");
+    expect(script).not.toContain("bootstrap-state.json");
+    // Le repertoire ne part que s'il est vide.
+    expect(script).toContain("Get-ChildItem");
+    expect(script.indexOf("Get-ChildItem")).toBeLessThan(
+      script.lastIndexOf("Remove-Item"),
+    );
   });
 
   test("n'avale pas un code de retour non nul", async () => {

@@ -4,7 +4,16 @@ import type { Step } from "./types";
 
 export const TASK_NAME = "hardline-network-profile";
 
-/** Le seul residu que la tache puisse laisser, supprime avec elle. */
+/**
+ * Le seul residu que la tache puisse laisser, supprime avec elle.
+ *
+ * Le repertoire n'appartient PAS a cette etape : il abrite aussi le releve
+ * d'etat ecrit par l'amorcage, qui est la seule description du PC d'avant
+ * hardline. Cette etape est restauree la premiere ; l'emporter en bloc
+ * detruirait ce releve avant que l'etape d'amorcage, restauree en dernier,
+ * n'ait pu s'en servir. On ne retire donc que le journal, et le repertoire
+ * seulement s'il est vide.
+ */
 const LOG_DIR = "(Join-Path $env:ProgramData 'hardline')";
 const LOG_NAME = "network-profile.log";
 
@@ -85,7 +94,11 @@ Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigge
   -Principal $principal -Settings $settings -Force | Out-Null`;
 
 const RESTORE = `Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item -Path ${LOG_DIR} -Recurse -Force -ErrorAction SilentlyContinue`;
+Remove-Item -Path (Join-Path ${LOG_DIR} '${LOG_NAME}') -Force -ErrorAction SilentlyContinue
+$dir = ${LOG_DIR}
+if ((Test-Path $dir) -and -not (Get-ChildItem -Path $dir -Force -ErrorAction SilentlyContinue)) {
+  Remove-Item -Path $dir -Force -ErrorAction SilentlyContinue
+}`;
 
 export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
   name: "network-profile-task",
