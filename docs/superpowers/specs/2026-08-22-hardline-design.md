@@ -270,7 +270,7 @@ rend l'idempotence et la désinstallation vérifiables plutôt qu'espérées.
 
 ## 15. Tests
 
-`bun test`. La difficulté est que l'essentiel du code invoque des commandes système,
+`bun test --isolate`. La difficulté est que l'essentiel du code invoque des commandes système,
 qu'on ne peut ni exécuter ni mocker globalement sans fragilité. La règle du projet est
 donc que **rien dans `steps/` ou `commands/` n'appelle `Bun.$` ou `Bun.spawn`
 directement** : tout passe par les fonctions de `lib/shell.ts` et `lib/ssh.ts`, qui

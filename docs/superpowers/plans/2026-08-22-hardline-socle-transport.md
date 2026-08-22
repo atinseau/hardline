@@ -44,6 +44,11 @@ Ces contraintes s'appliquent à toutes les tâches sans être répétées.
   inspecter — `ping`, `networksetup` — utilise `.nothrow()`.
 - Langue de l'interface : français, accents inclus. Les identifiants du code restent en
   anglais.
+- **Les tests se lancent avec `bun test --isolate`**, et le script `test` du
+  `package.json` porte ce drapeau. `mock.module` remplace un module pour tout le
+  processus : sans isolation, un fichier de test qui substitue `src/lib/shell.ts`
+  contamine les fichiers exécutés après lui. La clé `isolate` n'existe pas dans
+  `bunfig.toml`, le drapeau est donc obligatoire.
 
 ## Fichiers du plan 1
 
@@ -106,7 +111,7 @@ volontairement absents du bloc ci-dessous, les effacer casserait l'installation.
   "private": true,
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "test": "bun test",
+    "test": "bun test --isolate",
     "build": "bun run scripts/build.ts"
   }
 }
@@ -161,7 +166,7 @@ test("le programme porte un numero de version", () => {
 
 - [ ] **Step 4: Lancer le test et vérifier qu'il échoue**
 
-Run: `bun test test/cli.test.ts`
+Run: `bun test --isolate test/cli.test.ts`
 Expected: FAIL — le module `../src/cli` n'existe pas.
 
 - [ ] **Step 5: Écrire l'implémentation minimale**
@@ -217,7 +222,7 @@ if (import.meta.main) {
 
 - [ ] **Step 6: Lancer le test et vérifier qu'il passe**
 
-Run: `bun test test/cli.test.ts`
+Run: `bun test --isolate test/cli.test.ts`
 Expected: PASS, deux tests.
 
 - [ ] **Step 7: Vérifier le CLI à la main**
@@ -399,7 +404,7 @@ describe("parseServiceInfo", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/shell.test.ts`
+Run: `bun test --isolate test/lib/shell.test.ts`
 Expected: FAIL — le module `../../src/lib/shell` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -552,7 +557,7 @@ export async function setServiceDHCP(service: string): Promise<number> {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/shell.test.ts`
+Run: `bun test --isolate test/lib/shell.test.ts`
 Expected: PASS, huit tests.
 
 - [ ] **Step 5: Vérifier les fonctions système contre la vraie machine**
@@ -678,7 +683,7 @@ describe("buildSSHArgs", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/ssh.test.ts`
+Run: `bun test --isolate test/lib/ssh.test.ts`
 Expected: FAIL — le module `../../src/lib/ssh` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -808,7 +813,7 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/ssh.test.ts`
+Run: `bun test --isolate test/lib/ssh.test.ts`
 Expected: PASS, neuf tests.
 
 - [ ] **Step 5: Vérifier contre le vrai PC**
@@ -1046,7 +1051,7 @@ test("le fichier temporaire est distinct du fichier final", async () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
+Run: `bun test --isolate test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
 Expected: FAIL — le module `../../src/lib/manifest` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -1180,7 +1185,7 @@ export async function writeManifest(path: string, manifest: Manifest): Promise<v
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
+Run: `bun test --isolate test/lib/manifest.test.ts test/lib/manifest-atomicity.test.ts`
 Expected: PASS, treize tests — onze dans le premier fichier, deux dans le second.
 
 - [ ] **Step 5: Commit**
@@ -1390,7 +1395,7 @@ describe("restore", () => {
 
 - [ ] **Step 3: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/steps/network-mac.test.ts`
+Run: `bun test --isolate test/steps/network-mac.test.ts`
 Expected: FAIL — le module `../../src/steps/network-mac` n'existe pas.
 
 - [ ] **Step 4: Écrire l'implémentation**
@@ -1455,12 +1460,12 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
 
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/steps/network-mac.test.ts`
+Run: `bun test --isolate test/steps/network-mac.test.ts`
 Expected: PASS, huit tests.
 
 - [ ] **Step 6: Lancer la suite complète pour vérifier l'absence de régression**
 
-Run: `bun test`
+Run: `bun test --isolate`
 Expected: PASS, tous les tests des tâches 1 à 5.
 
 - [ ] **Step 7: Commit**
@@ -1621,7 +1626,7 @@ describe("restore", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/steps/network-windows.test.ts`
+Run: `bun test --isolate test/steps/network-windows.test.ts`
 Expected: FAIL — le module `../../src/steps/network-windows` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -1721,7 +1726,7 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/steps/network-windows.test.ts`
+Run: `bun test --isolate test/steps/network-windows.test.ts`
 Expected: PASS, neuf tests.
 
 - [ ] **Step 5: Vérifier `inspect` contre le vrai PC**
@@ -1848,7 +1853,7 @@ describe("restore", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/steps/network-profile-task.test.ts`
+Run: `bun test --isolate test/steps/network-profile-task.test.ts`
 Expected: FAIL — le module n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -1948,7 +1953,7 @@ export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/steps/network-profile-task.test.ts`
+Run: `bun test --isolate test/steps/network-profile-task.test.ts`
 Expected: PASS, huit tests.
 
 - [ ] **Step 5: Créer le registre des étapes**
@@ -2131,7 +2136,7 @@ describe("report", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/ui.test.ts`
+Run: `bun test --isolate test/lib/ui.test.ts`
 Expected: FAIL — le module `../../src/lib/ui` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -2240,7 +2245,7 @@ export async function confirmOrExit(
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/ui.test.ts`
+Run: `bun test --isolate test/lib/ui.test.ts`
 Expected: PASS, neuf tests.
 
 - [ ] **Step 5: Vérifier le rendu à l'œil**
@@ -2414,7 +2419,7 @@ describe("hasBlockingFailure", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/preflight.test.ts`
+Run: `bun test --isolate test/lib/preflight.test.ts`
 Expected: FAIL — le module `../../src/lib/preflight` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -2532,7 +2537,7 @@ export function hasBlockingFailure(results: CheckResult[]): boolean {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/preflight.test.ts`
+Run: `bun test --isolate test/lib/preflight.test.ts`
 Expected: PASS, neuf tests.
 
 - [ ] **Step 5: Commit**
@@ -2728,7 +2733,7 @@ describe("serveBootstrap", () => {
 
 - [ ] **Step 3: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/bootstrap-server.test.ts`
+Run: `bun test --isolate test/lib/bootstrap-server.test.ts`
 Expected: FAIL — le module n'existe pas.
 
 - [ ] **Step 4: Écrire l'implémentation**
@@ -2816,7 +2821,7 @@ export function localBootstrapUrl(port: number): string {
 
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/bootstrap-server.test.ts`
+Run: `bun test --isolate test/lib/bootstrap-server.test.ts`
 Expected: PASS, six tests.
 
 - [ ] **Step 6: Vérifier que le PC atteint réellement le serveur**
@@ -3018,7 +3023,7 @@ afterEach(async () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/lib/orchestrator.test.ts`
+Run: `bun test --isolate test/lib/orchestrator.test.ts`
 Expected: FAIL — le module `../../src/lib/orchestrator` n'existe pas.
 
 - [ ] **Step 3: Vérifier le registre des étapes**
@@ -3127,7 +3132,7 @@ export async function revertSteps(
 
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/lib/orchestrator.test.ts`
+Run: `bun test --isolate test/lib/orchestrator.test.ts`
 Expected: PASS, dix tests.
 
 - [ ] **Step 6: Écrire les deux commandes**
@@ -3251,7 +3256,7 @@ import { uninstallCommand } from "./commands/uninstall";
 
 - [ ] **Step 8: Lancer la suite complète**
 
-Run: `bun test`
+Run: `bun test --isolate`
 Expected: PASS, tous les tests des tâches 1 à 10.
 
 - [ ] **Step 9: Vérifier l'idempotence sur les vraies machines**
@@ -3371,7 +3376,7 @@ describe("formatDiagnostic", () => {
 
 - [ ] **Step 2: Lancer les tests et vérifier qu'ils échouent**
 
-Run: `bun test test/commands/doctor.test.ts`
+Run: `bun test --isolate test/commands/doctor.test.ts`
 Expected: FAIL — le module `../../src/commands/doctor` n'existe pas.
 
 - [ ] **Step 3: Écrire l'implémentation**
@@ -3481,7 +3486,7 @@ export async function doctorCommand(): Promise<void> {
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
 
-Run: `bun test test/commands/doctor.test.ts`
+Run: `bun test --isolate test/commands/doctor.test.ts`
 Expected: PASS, cinq tests.
 
 - [ ] **Step 5: Brancher la commande**
@@ -3611,7 +3616,7 @@ git commit -m "feat: production d'un binaire autonome"
 À l'issue des douze tâches, ces trois affirmations doivent être vraies et vérifiées,
 pas supposées.
 
-1. `bun test` passe intégralement.
+1. `bun test --isolate` passe intégralement.
 2. `hardline install` lancé deux fois de suite n'applique rien la seconde fois, et
    l'annonce explicitement pour chaque étape.
 3. `hardline uninstall` puis `hardline doctor` montre une liaison revenue à son état
