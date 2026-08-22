@@ -140,21 +140,30 @@ async function uninstall(
   // l'enregistrement qui decrit cet etat, serait exactement la malhonnetete que
   // le manifeste existe pour eviter.
   //
-  // Le code de sortie reste 0 : rien n'a ete OBSERVE en echec, et inventer une
-  // panne que le programme n'a pas vue serait le meme mensonge dans l'autre
-  // sens. C'est le message qui porte l'incertitude, et le manifeste qui garde
-  // de quoi recommencer.
+  // Le code de sortie reste 0, et la raison qui tient n'est pas seulement qu'on
+  // n'a rien vu echouer : une queue detachee est la fin NORMALE d'une
+  // desinstallation complete. Sortir en 1 ferait echouer toutes les
+  // desinstallations reussies, et un code qui vaut toujours 1 n'apprend rien et
+  // entraine l'utilisateur a l'ignorer. C'est le meme contrat que celui de
+  // doctor : le code de sortie rapporte ce qui a ete OBSERVE, jamais ce qui est
+  // suppose. Un echec observe prime donc et sort en 1 ; l'incertitude, elle,
+  // est portee par le message, et le manifeste garde de quoi recommencer.
   if (unconfirmed.length > 0) {
     ui.warn(
       "Étapes lancées sur le PC sans confirmation possible, conservées dans " +
         `le manifeste\u00a0: ${unconfirmed.join(", ")}`,
     );
+    // Le signal a nommer est celui qui DISTINGUE les deux issues. Une liaison
+    // qui ne revient pas ne distingue rien : c'est ce que l'utilisateur vient
+    // de demander, et c'est aussi a quoi ressemble un echec. Ce qui separe les
+    // deux se lit au clavier du PC, sur son adressage et son profil reseau.
     ui.finish(
       "Restauration lancée sur le PC. Sa fin ne peut pas être observée depuis le " +
         "Mac\u00a0: les dernières instructions retirent l'adresse qui porte la session " +
-        "SSH, et le PC n'y répond plus ensuite. Si la liaison ne revient pas, vérifier " +
-        "au clavier du PC. L'état antérieur du PC reste enregistré tant qu'il n'est pas " +
-        "confirmé\u00a0: rien n'a été oublié.",
+        "SSH, et le PC n'y répond plus ensuite — c'est aussi ce à quoi ressemble une " +
+        "réussite. Vérifier au clavier du PC qu'il a retrouvé son adressage et son " +
+        "profil réseau d'origine. L'état antérieur du PC reste enregistré tant qu'il " +
+        "n'est pas confirmé\u00a0: rien n'a été oublié.",
     );
     return;
   }

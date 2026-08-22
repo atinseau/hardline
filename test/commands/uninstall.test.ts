@@ -223,7 +223,11 @@ describe("uninstallCommand", () => {
     expect(message).not.toContain("État antérieur restauré");
     expect(message).toContain("Restauration lancée sur le PC");
     expect(message).toContain("ne peut pas être observée");
-    expect(message).toContain("au clavier du PC");
+    // Le signal nomme doit DISTINGUER les deux issues. Une liaison qui ne
+    // revient pas ne distingue rien : c'est ce que l'utilisateur vient de
+    // demander, et c'est aussi a quoi ressemble un echec.
+    expect(message).toContain("retrouvé son adressage et son profil réseau");
+    expect(message).not.toContain("Si la liaison ne revient pas");
     // Rien n'a ete OBSERVE en echec : inventer une panne serait le meme
     // mensonge dans l'autre sens.
     expect(process.exitCode).toBe(0);
