@@ -183,6 +183,43 @@ describe("trois pretendants sur un meme orphelin", () => {
   });
 });
 
+describe("le nom est repris entre le second lien et la preuve", () => {
+  test("la preuve d'identite le voit, et le verrou du rival est epargne", async () => {
+    // Le cas que la comparaison ino/dev existe pour attraper, et le seul ou
+    // elle decide. A pose son second nom sur l'inode de l'orphelin ; W reprend
+    // et republie sous le MEME nom ; la relecture de A, faite sur son temoin,
+    // voit encore l'orphelin et le reconnait: le lien dur maintient cet inode
+    // vivant. Le detenteur est donc le bon, et pourtant `path` ne designe plus
+    // ce fichier. Seule la comparaison des inodes les distingue.
+    //
+    // Sans elle : A supprime `path`, c'est-a-dire le verrou VIVANT de W, puis
+    // publie le sien. Deux detenteurs, et le verrou de W introuvable.
+    await poserOrphelin();
+
+    apresSaisie.armer();
+    const a = tenter();
+    await apresSaisie.atteinte();
+
+    // A tient son temoin sur l'inode de l'orphelin. W passe entierement : il
+    // reprend cet orphelin et publie son propre verrou sous le meme nom.
+    const w = await tenter();
+    expect(w.lock).not.toBeNull();
+    const verrouDeW = await readFileReel(lockPath, "utf8");
+
+    apresSaisie.liberer();
+    const resultatA = await a;
+
+    const detenteurs = [w, resultatA].filter((t) => t.lock !== null);
+    expect(detenteurs).toHaveLength(1);
+    expect(detenteurs[0]).toBe(w);
+    // Octet pour octet : ce n'est pas seulement un verrou, c'est le SIEN. Sans
+    // la preuve d'identite, A l'aurait efface et publie le sien a la place.
+    expect(await readFileReel(lockPath, "utf8")).toBe(verrouDeW);
+
+    for (const t of detenteurs) await t.lock?.release();
+  });
+});
+
 describe("la sonde d'un orphelin", () => {
   test("ne deplace ni ne supprime le verrou qu'elle examine", async () => {
     // Le geste de saisie est un lien dur : il donne un second nom au fichier
