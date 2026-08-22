@@ -197,8 +197,27 @@ administrateur côté Windows. Chacune bloquante avec un message explicite. Si s
 la précondition SSH échoue, l'amorçage manuel est proposé et la commande attend que
 le PC réponde, puis rejoue cette phase.
 
+*Rapatriement du relevé d'amorçage.* **Dès que la session SSH répond, et avant la
+porte des préconditions restantes.** L'ordre n'est pas cosmétique : quand cette
+session s'ouvre, l'amorçage a déjà modifié le PC. Attendre la convergence distante
+pour rapatrier son relevé, c'était accepter qu'un blocage sur le GPU laisse un
+manifeste vide et un PC dont l'adressage d'origine n'existait plus nulle part — le
+scénario même contre lequel le relevé existe. On enregistre ce qu'on peut perdre dès
+l'instant où on ne peut plus le perdre. Un relevé absent, abîmé ou d'une version
+inconnue n'enregistre rien et ne bloque rien : il le dit, et ne promet rien.
+
 *Convergence distante.* Les étapes côté PC, chacune précédée de l'écriture de son
 état antérieur.
+
+**Une seule queue détachée coupante par désinstallation, et elle appartient à la
+dernière restauration qui passe.** Certaines instructions côté PC coupent le canal
+SSH qui les transporte — retrait de l'adresse qui porte la session, retour du profil
+réseau qui autorise la règle de pare-feu, arrêt de sshd. Elles sont confiées à un
+processus détaché, qui rend la main *avant* d'avoir agi. Deux étapes émettant chacune
+sa charge détachée verraient leurs comptes à rebours se recouvrir : la première
+tuerait la session SSH neuve dont la seconde a besoin, et le PC resterait injoignable
+avec son adressage d'origine jamais rendu. Une étape sait donc quelles restaurations
+passent après elle, et cède la queue quand elle n'est pas la dernière.
 
 Une précondition non satisfaite arrête l'installation à la phase où elle échoue.
 L'invariant qui tient de bout en bout n'est pas « rien n'a été modifié » — il ne
@@ -297,6 +316,7 @@ hardline/
 │   │   ├── ssh.ts                # wrapper Bun.spawn pour PowerShell distant
 │   │   ├── bootstrap-server.ts   # Bun.serve éphémère
 │   │   ├── sunshine-api.ts       # client fetch, TLS relâché confiné
+│   │   ├── powershell.ts         # les valeurs cousues dans un script, contrôlées
 │   │   ├── manifest.ts           # état JSON, écriture atomique
 │   │   └── preflight.ts          # vérification des préconditions
 │   └── assets/
