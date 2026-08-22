@@ -1,16 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { CONFIG } from "../config";
-import { ALL_STEPS } from "../steps";
+import { LOCAL_STEPS, REMOTE_STEPS } from "../steps";
 import { applySteps } from "../lib/orchestrator";
 import { defaultManifestPath } from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
 import {
   SSH_CHECK,
   hasBlockingFailure,
-  runPreflight,
+  runLocalPreflight,
+  runRemotePreflight,
   waitForRemote,
 } from "../lib/preflight";
 import { localBootstrapUrl, serveBootstrap } from "../lib/bootstrap-server";
+import { errorMessage } from "../lib/errors";
+import type { Step } from "../steps/types";
 import { configureOutput, ui, withSpinner } from "../lib/ui";
 
 const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
@@ -69,40 +72,94 @@ async function bootstrapRemote(): Promise<boolean> {
   }
 }
 
+/**
+ * Applique une phase de convergence. Une etape qui echoue ne doit pas remonter
+ * nue jusqu'au CLI : l'etat anterieur de tout ce qui a ete touche est sur
+ * disque, et l'utilisateur doit savoir qu'il peut reprendre ou tout rendre.
+ * Rend false quand la phase a echoue.
+ */
+async function converge(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  steps: Step<any>[],
+  label: string,
+  manifestPath: string,
+): Promise<boolean> {
+  try {
+    await applySteps(steps, CONFIG, manifestPath, ui);
+    return true;
+  } catch (error) {
+    ui.failed({ label, detail: errorMessage(error) });
+    ui.finish(
+      "Installation interrompue\u00a0: l'état antérieur de chaque étape touchée est " +
+        "sur disque. Corriger, puis «\u00a0hardline install\u00a0» pour reprendre " +
+        "ou «\u00a0hardline uninstall\u00a0» pour tout rendre.",
+    );
+    process.exitCode = 1;
+    return false;
+  }
+}
+
 export async function installCommand(): Promise<void> {
   configureOutput();
   ui.start("hardline — installation");
 
-  let checks = await withSpinner("Vérification des préconditions", () =>
-    runPreflight(CONFIG),
+  // Phase 1 - preconditions locales. Rien n'est encore modifie.
+  const local = await withSpinner("Vérification du Mac", () =>
+    runLocalPreflight(CONFIG),
   );
-  reportChecks(checks);
+  reportChecks(local);
 
-  // Un echec bloquant cote Mac n'a rien a faire sur le PC : envoyer
-  // l'utilisateur amorcer une machine pour dix minutes ne le reglerait pas.
-  const blocking = checks.filter((c) => !c.ok && c.blocking);
+  if (hasBlockingFailure(local)) {
+    // Un blocage cote Mac n'a rien a faire sur le PC : envoyer l'utilisateur
+    // amorcer une machine pendant dix minutes ne le reglerait pas.
+    ui.finish(
+      "Installation interrompue\u00a0: le Mac n'est pas prêt. Rien n'a été modifié.",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // Phase 2 - convergence locale. C'est elle qui cree la route vers le
+  // lien direct : sans elle, aucune precondition distante n'est observable.
+  // Elle passe par applySteps, qui ecrit l'etat anterieur avant de modifier.
+  const manifestPath = defaultManifestPath();
+  if (!(await converge(LOCAL_STEPS, "Convergence du Mac", manifestPath))) return;
+
+  // Phase 3 - preconditions distantes, desormais observables.
+  let remote = await withSpinner("Vérification du PC", () =>
+    runRemotePreflight(CONFIG),
+  );
+  reportChecks(remote);
+
+  const blocking = remote.filter((c) => !c.ok && c.blocking);
   const sshSeulBloque = blocking.length === 1 && blocking[0]?.name === SSH_CHECK;
 
   if (sshSeulBloque) {
     if (!(await bootstrapRemote())) {
       ui.finish(
-        "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé.",
+        "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé\u00a0; " +
+          "le Mac reste configuré et son état antérieur est enregistré.",
       );
       process.exitCode = 1;
       return;
     }
-    checks = await withSpinner("Nouvelle vérification des préconditions", () =>
-      runPreflight(CONFIG),
+    remote = await withSpinner("Nouvelle vérification du PC", () =>
+      runRemotePreflight(CONFIG),
     );
-    reportChecks(checks);
+    reportChecks(remote);
   }
 
-  if (hasBlockingFailure(checks)) {
-    ui.finish("Installation interrompue\u00a0: une précondition n'est pas satisfaite.");
+  if (hasBlockingFailure(remote)) {
+    ui.finish(
+      "Installation interrompue\u00a0: le PC n'est pas prêt. Le Mac est configuré et son " +
+        "état antérieur enregistré\u00a0: «\u00a0hardline install\u00a0» reprendra ici, " +
+        "«\u00a0hardline uninstall\u00a0» rend le Mac à son état d'origine.",
+    );
     process.exitCode = 1;
     return;
   }
 
-  await applySteps(ALL_STEPS, CONFIG, defaultManifestPath(), ui);
+  // Phase 4 - convergence distante.
+  if (!(await converge(REMOTE_STEPS, "Convergence du PC", manifestPath))) return;
   ui.finish("Liaison établie. Vérifier avec «\u00a0hardline doctor\u00a0».");
 }
