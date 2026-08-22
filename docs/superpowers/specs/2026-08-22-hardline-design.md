@@ -161,19 +161,27 @@ réinstaller exigera de refaire le geste manuel d'amorçage.
 d'une étape est écrit sur disque *avant* que l'étape ne modifie quoi que ce soit,
 jamais après.
 
-La raison n'est pas un comportement particulier de la bibliothèque d'affichage : sur la
-version épinglée, un Ctrl+C pendant un indicateur d'activité ne tue pas le processus —
-le gestionnaire de signal nettoie l'affichage et rend la main. En revanche un Ctrl+C
-pendant une *invite* appelle bien `process.exit(0)` de façon synchrone, et rien n'oblige
-cette bibliothèque à garder ce partage d'une version à l'autre.
+Deux raisons, l'une mesurée, l'autre qui ne dépend de personne.
 
-La vraie raison est plus simple et ne dépend de personne : **aucun traitement de
-rattrapage n'est garanti.** Une mise à mort du processus, une coupure de courant, un
-plantage du runtime n'exécutent rien du tout. Faire dépendre l'état récupérable de deux
-machines de la bonne volonté d'un gestionnaire de sortie serait une erreur de
-conception, quelle que soit la bibliothèque du moment. En écrivant d'abord, le pire cas
-devient une étape enregistrée mais non appliquée — situation que `install` corrige de
-lui-même au prochain passage, puisque chaque étape constate avant d'agir.
+La première tient à la bibliothèque d'affichage, et elle est vérifiable : pendant un
+indicateur d'activité, `spinner()` installe `block()`
+(`@clack/prompts/dist/index.mjs:988`), dont le gestionnaire de touches appelle
+`process.exit(0)` sur Ctrl+C (`@clack/core/dist/index.mjs:144`). Le processus meurt
+**immédiatement et de façon synchrone**, sans exécuter le moindre traitement
+asynchrone de rattrapage. Le comportement diffère pendant une *invite*, où l'annulation
+remonte comme une valeur, devient une `CancelledError` et laisse les `finally`
+s'exécuter — mais la convergence, elle, tourne sous indicateur.
+
+La seconde raison est plus solide parce qu'elle ne suppose rien : **aucun traitement de
+rattrapage n'est garanti**, jamais. Une mise à mort du processus, une coupure de
+courant, un plantage du runtime n'exécutent rien du tout. Faire dépendre l'état
+récupérable de deux machines de la bonne volonté d'un gestionnaire de sortie serait une
+erreur de conception, quelle que soit la bibliothèque du moment et quelle que soit sa
+version.
+
+En écrivant d'abord, le pire cas devient une étape enregistrée mais non appliquée —
+situation que `install` corrige de lui-même au prochain passage, puisque chaque étape
+constate avant d'agir.
 
 **Le manifeste est protégé par un verrou, pris pour toute la durée d'une exécution.**
 `writeManifest` est atomique — fichier temporaire puis renommage — mais l'atomicité de
