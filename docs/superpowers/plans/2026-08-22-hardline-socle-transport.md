@@ -553,6 +553,19 @@ export async function setServiceDHCP(service: string): Promise<number> {
     .nothrow();
   return exitCode;
 }
+
+/**
+ * Desactive IPv4 sur un service, ce que macOS presente comme "Configure IPv4:
+ * Off" et que `-getinfo` rapporte en "IP address: none". Distinct de DHCP :
+ * necessaire pour restaurer fidelement un service que l'utilisateur avait
+ * deliberement desactive avant l'installation.
+ */
+export async function setServiceIPv4Off(service: string): Promise<number> {
+  const { exitCode } = await $`sudo networksetup -setv4off ${service}`
+    .quiet()
+    .nothrow();
+  return exitCode;
+}
 ```
 
 - [ ] **Step 4: Lancer les tests et vérifier qu'ils passent**
@@ -1291,11 +1304,13 @@ import { CONFIG } from "../../src/config";
 let currentInfo: ServiceIPConfig;
 const setManual = mock(async (..._args: unknown[]) => 0);
 const setDhcp = mock(async (..._args: unknown[]) => 0);
+const setOff = mock(async (..._args: unknown[]) => 0);
 
 mock.module("../../src/lib/shell", () => ({
   getServiceInfo: async () => currentInfo,
   setServiceManualIP: setManual,
   setServiceDHCP: setDhcp,
+  setServiceIPv4Off: setOff,
 }));
 
 const { macNetworkStep } = await import("../../src/steps/network-mac");
@@ -1303,6 +1318,7 @@ const { macNetworkStep } = await import("../../src/steps/network-mac");
 beforeEach(() => {
   setManual.mockClear();
   setDhcp.mockClear();
+  setOff.mockClear();
 });
 
 describe("inspect", () => {
@@ -1381,9 +1397,22 @@ describe("restore", () => {
     expect(setManual).toHaveBeenCalledWith("AX88179A", "192.168.5.5", "255.255.255.0");
   });
 
-  test("retombe sur DHCP si l'etat anterieur etait sans adresse", async () => {
+  test("redesactive IPv4 si le service etait desactive avant l'installation", async () => {
+    // Le remettre en DHCP serait deviner a la place de l'utilisateur.
     await macNetworkStep.restore(CONFIG, {
       mode: "off",
+      ip: null,
+      subnetMask: null,
+      router: null,
+    });
+    expect(setOff).toHaveBeenCalledTimes(1);
+    expect(setOff).toHaveBeenCalledWith("AX88179A");
+    expect(setDhcp).not.toHaveBeenCalled();
+  });
+
+  test("retombe sur DHCP si l'etat anterieur est manuel mais incomplet", async () => {
+    await macNetworkStep.restore(CONFIG, {
+      mode: "manual",
       ip: null,
       subnetMask: null,
       router: null,
@@ -1406,6 +1435,7 @@ Expected: FAIL — le module `../../src/steps/network-mac` n'existe pas.
 import {
   getServiceInfo,
   setServiceDHCP,
+  setServiceIPv4Off,
   setServiceManualIP,
   type ServiceIPConfig,
 } from "../lib/shell";
@@ -1451,8 +1481,14 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
       );
       return;
     }
-    // DHCP comme dans le cas "off" : c'est l'etat par defaut d'un service macOS,
-    // et le seul qui ne laisse pas une adresse morte derriere lui.
+    if (previous.mode === "off") {
+      // Restaurer en DHCP un service que l'utilisateur avait desactive serait
+      // deviner a sa place : la spec exige de rendre l'etat anterieur, pas un
+      // etat plausible.
+      await setServiceIPv4Off(config.mac.serviceName);
+      return;
+    }
+
     await setServiceDHCP(config.mac.serviceName);
   },
 };
@@ -1461,7 +1497,7 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
 - [ ] **Step 5: Lancer les tests et vérifier qu'ils passent**
 
 Run: `bun test --isolate test/steps/network-mac.test.ts`
-Expected: PASS, huit tests.
+Expected: PASS, neuf tests.
 
 - [ ] **Step 6: Lancer la suite complète pour vérifier l'absence de régression**
 
