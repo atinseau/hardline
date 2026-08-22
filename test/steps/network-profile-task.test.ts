@@ -74,6 +74,55 @@ describe("apply", () => {
   });
 });
 
+// Une fenetre masquee sous SYSTEM est le pire endroit ou perdre une erreur :
+// personne ne la voit, le lien reste Public — donc le pare-feu ferme — et rien
+// n'en garde trace jusqu'au redemarrage suivant.
+describe("apply, le script planifie verifie ce qu'il ecrit", () => {
+  async function scheduledScript(): Promise<string> {
+    await windowsProfileTaskStep.apply(CONFIG);
+    return String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+  }
+
+  test("arrete les erreurs au lieu de les laisser filer", async () => {
+    // Sans cette preference, un Set-NetConnectionProfile refuse continue en
+    // silence. Le script planifie n'est pas confie a runRemoteChecked : c'est
+    // un contenu encode, la preference doit y etre posee explicitement.
+    expect(await scheduledScript()).toContain(
+      "$ErrorActionPreference = 'Stop'",
+    );
+  });
+
+  test("relit le profil apres l'avoir ecrit", async () => {
+    const script = await scheduledScript();
+    const reads = script.match(/Get-NetConnectionProfile/g) ?? [];
+    const write = script.indexOf("Set-NetConnectionProfile");
+
+    // Une lecture pour attendre l'interface, une pour verifier l'ecriture.
+    expect(reads.length).toBeGreaterThanOrEqual(2);
+    expect(script.lastIndexOf("Get-NetConnectionProfile")).toBeGreaterThan(
+      write,
+    );
+  });
+
+  test("ne sort de la boucle qu'une fois le profil constate en Private", async () => {
+    // La version fautive sortait sur la simple presence du profil : un Set
+    // refuse laissait le lien en Public sans que personne le sache.
+    const script = await scheduledScript();
+    expect(script).toMatch(/if \(\$last -eq 'Private'\)[\s\S]{0,80}break/);
+    expect(script.indexOf("break")).toBeGreaterThan(
+      script.indexOf("Set-NetConnectionProfile"),
+    );
+  });
+
+  test("laisse une trace quand il n'a pas pu appliquer le profil", async () => {
+    const script = await scheduledScript();
+    expect(script).toMatch(/if \(-not \$applied\) \{/);
+    expect(script).toContain("Add-Content");
+    expect(script).toContain("network-profile.log");
+    expect(script).toContain("profil privé non appliqué");
+  });
+});
+
 describe("restore", () => {
   test("supprime la tache si hardline l'avait creee", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
@@ -84,5 +133,23 @@ describe("restore", () => {
   test("ne supprime rien si une tache de ce nom preexistait", async () => {
     await windowsProfileTaskStep.restore(CONFIG, { present: true, state: "Ready" });
     expect(runRemoteChecked).not.toHaveBeenCalled();
+  });
+
+  test("emporte le journal laisse par la tache", async () => {
+    // Le seul residu que la tache puisse ecrire ; le laisser derriere elle
+    // ferait de l'uninstall une restauration approximative.
+    await windowsProfileTaskStep.restore(CONFIG, { present: false, state: null });
+    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    expect(script).toContain("Remove-Item");
+    expect(script).toContain("hardline");
+  });
+
+  test("n'avale pas un code de retour non nul", async () => {
+    runRemoteChecked.mockImplementationOnce(async () => {
+      throw new Error("Commande distante en echec (code 1) : Access is denied");
+    });
+    await expect(
+      windowsProfileTaskStep.restore(CONFIG, { present: false, state: null }),
+    ).rejects.toThrow(/code 1/);
   });
 });
