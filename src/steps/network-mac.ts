@@ -1,6 +1,7 @@
 import {
   getServiceInfo,
   setServiceDHCP,
+  setServiceIPv4Off,
   setServiceManualIP,
   type ServiceIPConfig,
 } from "../lib/shell";
@@ -46,8 +47,14 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
       );
       return;
     }
-    // DHCP comme dans le cas "off" : c'est l'etat par defaut d'un service macOS,
-    // et le seul qui ne laisse pas une adresse morte derriere lui.
+    if (previous.mode === "off") {
+      // Restaurer en DHCP un service que l'utilisateur avait desactive serait
+      // deviner a sa place : la spec exige de rendre l'etat anterieur, pas un
+      // etat plausible.
+      await setServiceIPv4Off(config.mac.serviceName);
+      return;
+    }
+
     await setServiceDHCP(config.mac.serviceName);
   },
 };

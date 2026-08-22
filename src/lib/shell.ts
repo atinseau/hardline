@@ -139,3 +139,16 @@ export async function setServiceDHCP(service: string): Promise<number> {
     .nothrow();
   return exitCode;
 }
+
+/**
+ * Desactive IPv4 sur un service, ce que macOS presente comme "Configure IPv4:
+ * Off" et que `-getinfo` rapporte en "IP address: none". Distinct de DHCP :
+ * necessaire pour restaurer fidelement un service que l'utilisateur avait
+ * deliberement desactive avant l'installation.
+ */
+export async function setServiceIPv4Off(service: string): Promise<number> {
+  const { exitCode } = await $`sudo networksetup -setv4off ${service}`
+    .quiet()
+    .nothrow();
+  return exitCode;
+}

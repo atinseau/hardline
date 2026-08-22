@@ -5,11 +5,13 @@ import { CONFIG } from "../../src/config";
 let currentInfo: ServiceIPConfig;
 const setManual = mock(async (..._args: unknown[]) => 0);
 const setDhcp = mock(async (..._args: unknown[]) => 0);
+const setOff = mock(async (..._args: unknown[]) => 0);
 
 mock.module("../../src/lib/shell", () => ({
   getServiceInfo: async () => currentInfo,
   setServiceManualIP: setManual,
   setServiceDHCP: setDhcp,
+  setServiceIPv4Off: setOff,
 }));
 
 const { macNetworkStep } = await import("../../src/steps/network-mac");
@@ -17,6 +19,7 @@ const { macNetworkStep } = await import("../../src/steps/network-mac");
 beforeEach(() => {
   setManual.mockClear();
   setDhcp.mockClear();
+  setOff.mockClear();
 });
 
 describe("inspect", () => {
@@ -95,9 +98,22 @@ describe("restore", () => {
     expect(setManual).toHaveBeenCalledWith("AX88179A", "192.168.5.5", "255.255.255.0");
   });
 
-  test("retombe sur DHCP si l'etat anterieur etait sans adresse", async () => {
+  test("redesactive IPv4 si le service etait desactive avant l'installation", async () => {
+    // Le remettre en DHCP serait deviner a la place de l'utilisateur.
     await macNetworkStep.restore(CONFIG, {
       mode: "off",
+      ip: null,
+      subnetMask: null,
+      router: null,
+    });
+    expect(setOff).toHaveBeenCalledTimes(1);
+    expect(setOff).toHaveBeenCalledWith("AX88179A");
+    expect(setDhcp).not.toHaveBeenCalled();
+  });
+
+  test("retombe sur DHCP si l'etat anterieur est manuel mais incomplet", async () => {
+    await macNetworkStep.restore(CONFIG, {
+      mode: "manual",
       ip: null,
       subnetMask: null,
       router: null,
