@@ -193,19 +193,40 @@ rempli quand il apparaît, jamais anonyme — et rendu à la fin de l'exécution
 échec. La seconde exécution dit qu'une autre est en cours, nomme son processus, et ne
 modifie rien.
 
-**Un verrou orphelin est un état prévu, pas un accident à conjurer.** Aucun traitement de
-sortie n'est garanti : une mise à mort du processus, une coupure de courant, un plantage
-laissent le verrou en place, et c'est la reprise qui rattrape cela. Elle n'a lieu que sur
-*preuve* que le détenteur n'existe plus — le processus nommé a disparu, ou la machine a
-redémarré depuis que le verrou a été posé. Cette seconde preuve n'est pas un raffinement :
-les identifiants de processus sont recyclés, un verrou laissé avant un redémarrage nomme
-ensuite un processus étranger bien vivant, et sans elle l'outil se refusait à son
-propriétaire définitivement. La reprise elle-même passe par un renommage, atomique, pour
-qu'entre plusieurs exécutions ayant constaté le même orphelin une seule l'emporte ; une
-suppression, que toutes réussissent, ferait effacer par la perdante le verrou tout neuf de
-la gagnante. Voler un verrou tenu serait exactement le dégât que le verrou existe pour
-empêcher — et lorsque le doute subsiste, **le message nomme le fichier à supprimer**, pour
-qu'un refus n'ait jamais le dernier mot.
+Le verrou est rendu par le `finally` de l'exécution, et — pendant un indicateur
+d'activité — par un gestionnaire de sortie synchrone, seul filet là où `block()` fait
+mourir le processus sans dérouler un `finally`. Hors de ce cas, rien n'est garanti.
+
+**Un verrou orphelin est donc un état prévu, pas un accident à conjurer.** Une mise à mort
+du processus, une coupure de courant, un plantage laissent le verrou en place, et c'est la
+reprise qui rattrape cela.
+
+**Une seule chose autorise une reprise : le processus nommé n'existe plus.** Le temps n'y
+suffit jamais. L'instant du dernier démarrage est enregistré dans le verrou et il est
+utile — un verrou antérieur à ce démarrage ne peut appartenir à personne — mais il se
+calcule à partir de deux horloges, celle du noyau et celle du mur, et la seconde est
+corrigible à tout instant par le réseau. Un pas d'horloge pendant les dix minutes
+d'attente de l'amorçage suffirait à faire passer un verrou tenu pour un verrou mort. Or
+l'arbitrage est déséquilibré : voler un verrou tenu, c'est la double écriture silencieuse
+du manifeste ; refuser à tort, c'est un `rm` que le message épelle. Le temps est donc
+**une information portée par le message**, jamais une autorisation.
+
+**La reprise ne détruit rien qu'elle n'ait prouvé être l'orphelin.** Elle donne d'abord un
+second nom au fichier présent — un lien dur, qui ne déplace ni n'efface —, le relit sous ce
+nom, vérifie que le verrou désigne toujours ce même fichier, et alors seulement retire le
+nom d'origine. Une exécution qui s'arrête avant ce dernier geste, parce que le fichier
+n'est pas l'orphelin ou parce qu'elle meurt, n'a rien abîmé. Les deux formes essayées avant
+celle-ci laissaient au contraire deux exécutions détenir le verrou ensemble : une
+suppression inconditionnelle, que toutes réussissent, faisait effacer par la perdante le
+verrou tout neuf de la gagnante ; un déplacement atomique désignait bien un seul gagnant,
+mais déplaçait avant de lire, emportait parfois un verrou vivant et n'arrivait plus à le
+remettre. Il reste une fenêtre de deux appels système entre la vérification et le retrait,
+qu'aucune primitive disponible ne ferme — Bun n'expose pas `O_EXLOCK` — et elle est écrite
+dans le code plutôt que tue.
+
+Voler un verrou tenu serait exactement le dégât que le verrou existe pour empêcher — et
+lorsque le doute subsiste, **le message nomme le fichier à supprimer**, pour qu'un refus
+n'ait jamais le dernier mot.
 
 ## 10. Persistance au redémarrage
 

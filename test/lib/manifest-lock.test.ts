@@ -157,11 +157,31 @@ describe("acquireManifestLock", () => {
     }
   });
 
-  test("reprend un verrou pose avant le dernier demarrage, pid vivant ou non", async () => {
-    // Le scenario qui condamnait l'outil : Ctrl+C pendant la convergence,
-    // redemarrage, pid reattribue a n'importe quoi. Ici le pid est celui du
-    // processus de test, donc rigoureusement vivant, et pourtant le verrou est
-    // reprenable, parce qu'aucun processus ne survit a un redemarrage.
+  test("ne vole pas un verrou vivant, meme repute anterieur au demarrage", async () => {
+    // L'instant de demarrage est calcule a partir de DEUX horloges : celle du
+    // noyau et celle du mur, corrigible a tout instant par le reseau. Un pas
+    // d'horloge suffit a faire passer un verrou tenu pour un verrou d'avant
+    // redemarrage, et le voler, c'est deux executions ecrivant le manifeste
+    // ensemble, la perte de donnees que ce verrou existe pour empecher.
+    const vivant = JSON.stringify({
+      pid: process.pid,
+      startedAt: "2020-01-01T00:00:00.000Z",
+      bootedAt: "2020-01-01T00:00:00.000Z",
+    });
+    await writeFile(lockPath, vivant);
+
+    await expect(acquireManifestLock(manifestPath)).rejects.toBeInstanceOf(
+      ManifestLockedError,
+    );
+    // Rigoureusement intact : ni repris, ni reecrit.
+    expect(await readFile(lockPath, "utf8")).toBe(vivant);
+  });
+
+  test("un verrou d'avant le dernier demarrage le dit dans son refus", async () => {
+    // Le temps ne peut prouver qu'une chose : que le verrou est VIEUX. Il ne
+    // prouve jamais que son detenteur est mort. Il n'autorise donc rien, mais
+    // il renseigne, et c'est ce qui rend le rm manifestement sans risque a qui
+    // le lit.
     await writeFile(
       lockPath,
       JSON.stringify({
@@ -170,9 +190,22 @@ describe("acquireManifestLock", () => {
         bootedAt: "2020-01-01T00:00:00.000Z",
       }),
     );
+    const refus = await acquireManifestLock(manifestPath).catch(errorMessage);
+    expect(refus).toContain("antérieur au dernier démarrage");
+    expect(refus).toContain(lockPath);
+  });
+
+  test("un verrou de la session courante ne dit rien de tel", async () => {
+    // Le controle : sans lui, une mention systematique passerait aussi le test
+    // precedent et ne prouverait rien de la comparaison.
     const lock = await acquireManifestLock(manifestPath);
-    expect(await readFile(lockPath, "utf8")).toContain(`"pid":${process.pid}`);
-    await lock.release();
+    try {
+      const refus = await acquireManifestLock(manifestPath).catch(errorMessage);
+      expect(refus).not.toContain("antérieur au dernier démarrage");
+      expect(refus).toContain(lockPath);
+    } finally {
+      await lock.release();
+    }
   });
 
   test("ne reprend pas un verrou pose depuis le dernier demarrage", async () => {
