@@ -99,15 +99,18 @@ une décision ultérieure, pas une dette de conception.
 ## 7. Flux d'installation sur un PC neuf
 
 1. Brancher le câble Ethernet entre les deux machines.
-2. Sur le PC, dans un PowerShell administrateur, une seule ligne :
+2. Sur le Mac, `hardline install`. La commande constate que le PC ne répond pas,
+   affiche la ligne à coller et sert le script d'amorçage.
+3. Sur le PC, dans un PowerShell administrateur, la ligne affichée :
    `irm http://<nom-du-mac>.local:8080/bootstrap.ps1 | iex`
    Elle installe OpenSSH, dépose la clé publique du Mac dans
    `administrators_authorized_keys`, ouvre le port 22 et fixe l'adresse du lien direct.
    Le nom mDNS du Mac est résolu nativement par Windows 11, par Wi-Fi comme par
    Ethernet : aucune adresse à retenir.
-3. Sur le Mac, `hardline install`. Tout le reste passe par SSH.
+4. `hardline install`, toujours en cours sur le Mac, détecte que le PC répond et
+   reprend son cours. Il n'y a pas de seconde commande à lancer.
 
-Le serveur HTTP de l'étape 2 est éphémère : il n'est actif que pendant la phase
+Le serveur HTTP de l'étape 3 est éphémère : il n'est actif que pendant la phase
 d'amorçage et s'arrête ensuite.
 
 ## 8. Idempotence
@@ -157,12 +160,33 @@ sur cette seule interface.
 
 ## 11. Préconditions et gestion d'erreurs
 
-Vérifiées avant toute action, chacune bloquante avec un message explicite : PC
-joignable sur le lien direct, session SSH fonctionnelle, Windows 11, GPU NVIDIA
-présent, lien Ethernet actif des deux côtés, privilèges administrateur côté Windows.
+Les préconditions se vérifient en deux phases, et cet ordre est imposé par la
+physique du lien, pas par commodité. Tant que le Mac n'a pas d'adresse sur le
+réseau `10.10.10.0/24`, aucune route ne mène au PC : une sonde SSH vers
+`10.10.10.1` partirait par la passerelle Wi-Fi et expirerait, quel que soit l'état
+réel du PC. **Aucune précondition distante n'est donc observable avant que le côté
+Mac ait convergé.**
 
-Une précondition non satisfaite arrête l'installation avant toute modification. Aucun
-état partiellement appliqué n'est laissé derrière.
+*Phase locale.* Le service réseau du Mac existe et l'adaptateur est branché.
+Bloquante. Rien n'est modifié avant qu'elle passe.
+
+*Convergence locale.* L'adresse fixe du Mac est posée, son état antérieur écrit sur
+disque d'abord. Le lien devient routable.
+
+*Phase distante.* PC joignable sur le lien direct, session SSH fonctionnelle,
+Windows 11, GPU NVIDIA présent, lien Ethernet actif côté PC, privilèges
+administrateur côté Windows. Chacune bloquante avec un message explicite. Si seule
+la précondition SSH échoue, l'amorçage manuel est proposé et la commande attend que
+le PC réponde, puis rejoue cette phase.
+
+*Convergence distante.* Les étapes côté PC, chacune précédée de l'écriture de son
+état antérieur.
+
+Une précondition non satisfaite arrête l'installation à la phase où elle échoue.
+L'invariant qui tient de bout en bout n'est pas « rien n'a été modifié » — il ne
+peut pas l'être — mais **rien n'a été modifié dont l'état antérieur ne soit déjà sur
+disque**. Un arrêt en phase distante laisse donc le Mac converge et enregistré :
+`hardline uninstall` le rend, `hardline install` reprend là où il s'était arrêté.
 
 ## 12. Commandes
 
