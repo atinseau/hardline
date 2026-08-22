@@ -63,10 +63,13 @@ Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory Private`;
  * Windows accepte le client DHCP et des adresses fixes en meme temps : rendre
  * l'un sans l'autre ne serait pas rendre l'etat anterieur.
  *
- * Les adresses enregistrees sont reposees AVANT de toucher au client DHCP :
- * l'ordre inverse ferait reposer tout l'invariant sur une affirmation non
- * verifiee — que `-Dhcp Enabled` laisse les adresses `Manual` en place. Reposer
- * d'abord ne coute rien et supprime l'hypothese.
+ * Les adresses enregistrees sont reposees AVANT de toucher au client DHCP.
+ * Cet ordre ne supprime pas l'hypothese que `-Dhcp Enabled` laisse les adresses
+ * `Manual` en place — si elle etait fausse, l'activation effacerait aussi celle
+ * qu'on vient de reposer. Il garantit seulement que la repose est TENTEE en
+ * premier, donc qu'une repose qui echoue interrompt le script apres l'essai et
+ * non avant. L'hypothese elle-meme tient : le decoupage `addresses` /
+ * `manualAddresses` que renvoie INSPECT presuppose deja la coexistence.
  *
  * Le prefixe est traite comme dans APPLY : une adresse presente avec le mauvais
  * prefixe est corrigee sur place, jamais retiree puis reposee.
