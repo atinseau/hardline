@@ -126,6 +126,12 @@ describe("sendPin et listClients", () => {
     expect(result).toBe(false);
   });
 
+  test("sendPin rend false quand le serveur repond 200 avec status: false", async () => {
+    responses.push(new Response(JSON.stringify({ status: false }), { status: 200 }));
+    const result = await sendPin(CONFIG, CREDS, "4821", "hardline-mac");
+    expect(result).toBe(false);
+  });
+
   test("listClients leve quand le serveur repond en echec", async () => {
     responses.push(new Response("", { status: 500 }));
     await expect(listClients(CONFIG, CREDS)).rejects.toThrow("500");
