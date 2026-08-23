@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun run src/cli.ts",
     "test": "bun test --isolate",
-    "build": "bun run scripts/build.ts"
+    "build": "swiftc -O tools/display-probe.swift -o src/assets/display-probe.bin && bun run scripts/build.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
