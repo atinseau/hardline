@@ -262,7 +262,12 @@ const ko = (name: string, blocking = true): CheckResult => ({
 const MAC_OK = [ok("service-mac")];
 const PC_OK = [ok("ssh"), ok("windows-version"), ok("gpu"), ok("lien-windows")];
 
-const LOCAL_GROUP = ["network-mac", "moonlight-install", "smb-credentials"];
+const LOCAL_GROUP = [
+  "network-mac",
+  "moonlight-install",
+  "smb-credentials",
+  "smb-mountpoints",
+];
 const CAPTURE_GROUP = ["bootstrap-windows"];
 const REMOTE_GROUP = [
   "network-windows",
@@ -327,7 +332,7 @@ describe("installCommand", () => {
     expect(trace).toEqual([
       "preflight-local",
       "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials",
+      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "preflight-remote",
       "apply:bootstrap-windows",
       "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
@@ -361,7 +366,7 @@ describe("installCommand", () => {
     expect(trace).toEqual([
       "preflight-local",
       "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials",
+      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "preflight-remote",
       "serve",
       "wait",
@@ -414,7 +419,7 @@ describe("installCommand", () => {
     expect(trace).toEqual([
       "preflight-local",
       "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials",
+      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "preflight-remote",
       "serve",
       "wait",
@@ -491,7 +496,7 @@ describe("installCommand", () => {
     expect(trace).toEqual([
       "preflight-local",
       "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials",
+      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "preflight-remote",
       "forgetPassword",
     ]);
@@ -505,12 +510,12 @@ describe("installCommand", () => {
   });
 
   test("un echec de la convergence du Mac n'envoie pas sonder le PC", async () => {
-    applyThrowsOn = "network-mac+moonlight-install+smb-credentials";
+    applyThrowsOn = "network-mac+moonlight-install+smb-credentials+smb-mountpoints";
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
       "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials",
+      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "forgetPassword",
     ]);
     expect(failures.join("\n")).toContain("Convergence du Mac — boum");

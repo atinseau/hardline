@@ -6,6 +6,7 @@ import { REQUIRED_CONF } from "../../src/lib/apollo-conf";
 const realShell = await import("../../src/lib/shell");
 const realSsh = await import("../../src/lib/ssh");
 const realPlist = await import("../../src/lib/moonlight-plist");
+const realSmb = await import("../../src/lib/smb");
 const realKeychain = await import("../../src/lib/keychain");
 const realBrew = await import("../../src/lib/brew");
 const realApolloApi = await import("../../src/lib/apollo-api");
@@ -139,6 +140,13 @@ mock.module("../../src/lib/apollo-api", () => ({
 mock.module("../../src/lib/moonlight-plist", () => ({
   ...realPlist,
   readHosts: async () => [{ address: "10.10.10.1" }],
+}));
+
+// Meme raison : smb-mountpoints lit /Volumes, et un diagnostic simule ne doit
+// pas dependre de ce que la machine qui execute la suite y porte.
+mock.module("../../src/lib/smb", () => ({
+  ...realSmb,
+  mountPointExists: async () => true,
 }));
 
 /**

@@ -9,18 +9,21 @@ import { smbSharesStep } from "./smb-shares";
 import { moonlightInstallStep } from "./moonlight-install";
 import { pairingStep } from "./pairing";
 import { smbCredentialsStep } from "./smb-credentials";
+import { smbMountPointsStep } from "./smb-mountpoints";
 import type { Step } from "./types";
 
 /**
  * Etapes cote Mac. Elles convergent sans qu'aucune precondition distante ne
  * soit observable : ce sont elles qui rendent le lien routable, posent le
- * client de streaming, et deposent au trousseau le mot de passe des partages.
+ * client de streaming, deposent au trousseau le mot de passe des partages, et
+ * creent sous sudo les points de montage que /Volumes interdit a l'utilisateur.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const LOCAL_STEPS: Step<any>[] = [
   macNetworkStep,
   moonlightInstallStep,
   smbCredentialsStep,
+  smbMountPointsStep,
 ];
 
 /**
