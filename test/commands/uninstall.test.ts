@@ -139,6 +139,14 @@ describe("bootstrapCaveats", () => {
     expect(lines).toContain("amorçage");
     expect(lines).toContain("plus joignable en SSH");
   });
+
+  test("nomme les sauvegardes d'Apollo laissees sur le PC", () => {
+    // install montre ce chemin quand il sauvegarde ; la desinstallation le
+    // taisait, et ces fichiers s'accumulent sans que rien ne les retire.
+    const lines = (bootstrapCaveats(["bootstrap-windows"]) ?? []).join("\n");
+    expect(lines).toContain("C:\\ProgramData\\hardline\\");
+    expect(lines).toContain("sauvegardes de la configuration d'Apollo");
+  });
 });
 
 describe("uninstallCommand", () => {

@@ -58,6 +58,9 @@ export function bootstrapCaveats(recorded: string[]): string[] | null {
     "Tout le reste part\u00a0: clé publique du Mac, règle de pare-feu, adressage et",
     "profil réseau du lien direct. Le PC ne sera donc plus joignable en SSH, et",
     "une nouvelle installation redemandera le geste manuel d'amorçage sur le PC.",
+    "",
+    "Les sauvegardes de la configuration d'Apollo restent sur le PC, dans",
+    "C:\\ProgramData\\hardline\\\u00a0: hardline ne les efface jamais.",
   ];
 }
 
