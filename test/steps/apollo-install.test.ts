@@ -47,6 +47,70 @@ function logIndexOf(marker: string): number {
   return scriptLog.findIndex((script) => script.includes(marker));
 }
 
+/**
+ * La ligne du script qui lance un installateur NSIS, reperee par SON marqueur
+ * d'arguments - /D= a l'installation, _?= a la desinstallation - et non par le
+ * nom du lanceur : reperer la ligne par « Start-Process » presupposerait ce
+ * qu'on veut prouver, et la retrouverait meme apres un retour a `&`.
+ *
+ * Les garanties d'attente portent sur CETTE ligne, pas sur le script entier :
+ * un Start-Process -Wait present ailleurs ne prouve rien sur l'installateur.
+ */
+function launchLine(script: string, marker: string): string {
+  const lines = script.split("\n").filter((candidate) => candidate.includes(marker));
+  expect(lines).toHaveLength(1);
+  return lines[0] ?? "";
+}
+
+/**
+ * Le defaut du 23 aout, en une fonction : PowerShell N'ATTEND PAS un
+ * executable GUI lance par `&` - les installateurs NSIS en sont - et ne met
+ * pas $LASTEXITCODE a jour. Le controle qui suivait relisait le code de la
+ * commande precedente, et la suite du script s'executait PENDANT
+ * l'installation. Seul Start-Process -Wait -PassThru attend, et seul .ExitCode
+ * de l'objet rendu porte le vrai code.
+ *
+ * Un retour a `& (Join-Path ...)` ou une relecture de $LASTEXITCODE fait
+ * tomber ce controle.
+ */
+function expectAwaitedLauncher(script: string, marker: string, variable: string): void {
+  const line = launchLine(script, marker);
+  expect(line).toContain("Start-Process");
+  expect(line).toContain("-Wait");
+  expect(line).toContain("-PassThru");
+  expect(line).toContain(`$${variable} = `);
+  // L'operateur d'appel, qui rend la main aussitot sur un binaire GUI.
+  expect(line).not.toMatch(/(^|[;{]\s*)&\s/);
+
+  const guard = script
+    .split("\n")
+    .find((candidate) => candidate.includes(`$${variable}.ExitCode -ne 0`));
+  expect(guard).toBeDefined();
+  // Le code lu est celui du processus attendu, jamais celui qui traine.
+  expect(guard).not.toContain("$LASTEXITCODE");
+  expect(script.indexOf(`$${variable}.ExitCode`)).toBeGreaterThan(script.indexOf(marker));
+}
+
+/**
+ * Les marqueurs NSIS /D= et _?= prennent tout le reste de la ligne de commande
+ * BRUTE, guillemets compris. `-ArgumentList` concatene ses elements par des
+ * espaces sans les reciter (verifie sur le PC, PowerShell 5.1) : les
+ * apostrophes de psQuote sont consommees par PowerShell, ce qui est juste, mais
+ * un guillemet ajoute a la main ferait partie du chemin, et un marqueur qui ne
+ * serait pas le dernier element verrait la suite avalee dans son chemin.
+ */
+function expectTrailingNsisMarker(line: string, marker: string): void {
+  const list = line.slice(line.indexOf("-ArgumentList") + "-ArgumentList".length);
+  const args = list.slice(0, list.indexOf("-Wait")).trim().replace(/,$/, "");
+  const elements = args.split(",").map((element) => element.trim());
+  expect(elements[0]).toBe("'/S'");
+  expect(elements.at(-1)).toContain(marker);
+  expect(elements.at(-1)).not.toContain('"');
+  // psQuote reste le seul citateur : la valeur arrive entre apostrophes.
+  expect(elements.at(-1)?.startsWith("'")).toBe(true);
+  expect(elements.at(-1)?.endsWith("'")).toBe(true);
+}
+
 describe("inspect", () => {
   test("absent", async () => {
     jsonQueue.push([
@@ -142,7 +206,7 @@ describe("apply - installation neuve", () => {
     const download = script.indexOf("Invoke-WebRequest");
     const hashCheck = script.indexOf("Get-FileHash");
     const compare = script.indexOf("if ($actual -ne");
-    const install = script.indexOf("& $tempPath");
+    const install = script.indexOf("Start-Process -FilePath $tempPath");
     const marker = script.indexOf(MARKER_FILE);
 
     expect(download).toBeGreaterThanOrEqual(0);
@@ -154,6 +218,42 @@ describe("apply - installation neuve", () => {
     expect(script).toContain(CONFIG.apollo.installerSha256);
     expect(script).toContain("'/S'");
     expect(script).toContain(`/D=${CONFIG.apollo.installDir}`);
+  });
+
+  /**
+   * L'installateur est un binaire NSIS, donc un executable GUI : sans
+   * Start-Process -Wait, la suppression du telechargement et le depot du
+   * marqueur s'executent PENDANT l'installation, et le controle de code qui
+   * suit est un faux positif systematique.
+   */
+  test("attend reellement l'installateur et lit SON code de sortie", async () => {
+    jsonQueue.push([
+      { installed: false, version: null, ours: false, pairedClients: 0, hasConfig: false },
+    ]);
+    await apolloInstallStep.apply(CONFIG);
+    const script = checkedScript(0);
+
+    expectAwaitedLauncher(script, `/D=${CONFIG.apollo.installDir}`, "install");
+
+    // La suppression du telechargement et le marqueur viennent APRES le
+    // controle du code, jamais pendant l'installation. lastIndexOf : une
+    // premiere suppression existe deja dans la branche d'empreinte invalide.
+    expect(script.lastIndexOf("Remove-Item -Path $tempPath")).toBeGreaterThan(
+      script.indexOf("$install.ExitCode"),
+    );
+    expect(script.indexOf(MARKER_FILE)).toBeGreaterThan(
+      script.indexOf("$install.ExitCode"),
+    );
+  });
+
+  test("/D= arrive nu et en dernier, comme NSIS l'exige", async () => {
+    jsonQueue.push([
+      { installed: false, version: null, ours: false, pairedClients: 0, hasConfig: false },
+    ]);
+    await apolloInstallStep.apply(CONFIG);
+    const line = launchLine(checkedScript(0), `/D=${CONFIG.apollo.installDir}`);
+    expect(line).toContain("-FilePath $tempPath");
+    expectTrailingNsisMarker(line, `/D=${CONFIG.apollo.installDir}`);
   });
 });
 
@@ -248,7 +348,10 @@ describe("restore", () => {
     const remove = script.indexOf("Remove-Item");
     const scDelete = script.indexOf("sc.exe delete");
     const netsh = script.indexOf("netsh.exe");
-    const resetExitCode = script.indexOf("$LASTEXITCODE = 0");
+    // lastIndexOf : le script remet aussi $LASTEXITCODE a zero juste apres
+    // sc.exe stop, et c'est la remise FINALE - celle qui protege le code de
+    // sortie de la session SSH - qui doit suivre netsh.
+    const resetExitCode = script.lastIndexOf("$LASTEXITCODE = 0");
 
     expect(stop).toBeGreaterThanOrEqual(0);
     expect(uninstallExe).toBeGreaterThan(stop);
@@ -269,6 +372,87 @@ describe("restore", () => {
 
     expect(script).not.toContain("uninstall.bat");
     expect(script).not.toContain("pause");
+  });
+
+  /**
+   * Le defaut du 23 aout, teste de face. Uninstall.exe est un binaire GUI
+   * (Subsystem=2 sur le PC) : lance par `&`, PowerShell rend la main aussitot
+   * sans mettre $LASTEXITCODE a jour. nefconc, les certutil et le Remove-Item
+   * du dossier s'executaient alors PENDANT la desinstallation, et le controle
+   * de code relisait celui de sc.exe stop - 1062 sur un service deja arrete,
+   * d'ou l'echec observe. Un retour a `&` doit faire tomber ce test.
+   */
+  test("attend reellement Uninstall.exe et lit SON code de sortie", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    const script = checkedScript(0);
+
+    expectAwaitedLauncher(script, "_?=", "uninstall");
+    expect(launchLine(script, "_?=")).toContain("Uninstall.exe");
+
+    // Rien de la suite ne commence avant que le code d'Uninstall.exe soit lu.
+    const guard = script.indexOf("$uninstall.ExitCode");
+    for (const suivant of [
+      "nefconc.exe",
+      "-delstore root",
+      "-delstore TrustedPublisher",
+      "uninstall-gamepad.ps1",
+      "update-path.bat",
+      `Remove-Item -Path ${"'" + CONFIG.apollo.installDir + "'"}`,
+    ]) {
+      expect(script.indexOf(suivant)).toBeGreaterThan(guard);
+    }
+  });
+
+  /**
+   * _?= reste OBLIGATOIRE, et pour une raison distincte de l'attente : sans
+   * lui, NSIS se recopie dans un dossier temporaire et se detache, si bien
+   * qu'il n'y a meme plus de processus a attendre. -Wait sans _?= attendrait
+   * un processus qui a deja rendu la main.
+   */
+  test("_?= arrive nu et en dernier, comme NSIS l'exige", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    expectTrailingNsisMarker(
+      launchLine(checkedScript(0), "_?="),
+      `_?=${CONFIG.apollo.installDir}`,
+    );
+  });
+
+  /**
+   * sc.exe stop rend 1062 (ERROR_SERVICE_NOT_ACTIVE) sur un service deja
+   * arrete - le cas nominal apres un plantage - et `| Out-Null` ne remet pas
+   * $LASTEXITCODE a zero. C'est ce 1062 survivant qui a fait lever l'etape.
+   */
+  test("l'arret du service accepte 1062 et ne laisse survivre aucun code", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    const script = checkedScript(0);
+
+    const stop = script.indexOf("sc.exe stop");
+    const garde = script.indexOf("$LASTEXITCODE -ne 1062");
+    const reset = script.indexOf("$LASTEXITCODE = 0");
+
+    // 1062 est nomme, donc traite comme un succes explicite.
+    expect(garde).toBeGreaterThan(stop);
+    // ... ainsi que 1060, ERROR_SERVICE_DOES_NOT_EXIST : plus rien a arreter.
+    expect(script).toContain("$LASTEXITCODE -ne 1060");
+    // La remise a zero suit l'arret et PRECEDE le lancement d'Uninstall.exe :
+    // aucun code parasite ne subsiste pour la suite du script.
+    expect(reset).toBeGreaterThan(garde);
+    expect(reset).toBeLessThan(script.indexOf("Uninstall.exe"));
   });
 
   /**

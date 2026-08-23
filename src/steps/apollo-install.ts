@@ -92,6 +92,26 @@ function toState(remote: RemoteApolloState): ApolloInstallState {
   };
 }
 
+/**
+ * L'installateur d'Apollo est un binaire NSIS, donc un executable GUI
+ * (Subsystem=2 dans son en-tete PE). PowerShell N'ATTEND PAS un executable GUI
+ * lance par l'operateur d'appel `&` : il rend la main aussitot et ne met meme
+ * pas $LASTEXITCODE a jour. Le controle qui suivait `& $tempPath` relisait donc
+ * le code de la commande PRECEDENTE, pendant que l'installation tournait encore
+ * et que la suite du script - suppression du telechargement, depot du marqueur -
+ * s'executait par-dessus elle.
+ *
+ * Start-Process -Wait -PassThru est le seul idiome qui attende vraiment et qui
+ * rende le code de sortie reel, par .ExitCode de l'objet processus.
+ *
+ * Citation des arguments : -ArgumentList concatene ses elements par des espaces
+ * SANS les reciter (verifie sur le PC, PowerShell 5.1). Les apostrophes de
+ * psQuote sont donc consommees par PowerShell et n'atteignent pas
+ * l'installateur, ce qui est exactement ce qu'il faut : `/D=` prend tout le
+ * reste de la ligne de commande brute, espaces compris, et refuse les
+ * guillemets - un guillemet ajoute ici ferait partie du chemin. `/D=` doit
+ * pour la meme raison rester le DERNIER element.
+ */
 function installScript(config: Config): string {
   const urlQ = psQuote(config.apollo.installerUrl, "URL de l'installateur");
   const sha256Q = psQuote(config.apollo.installerSha256, "empreinte SHA-256 attendue");
@@ -106,8 +126,8 @@ if ($actual -ne ${sha256Q}) {
   Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
   throw "Empreinte SHA-256 invalide pour l'installateur Apollo (obtenu $actual)"
 }
-& $tempPath '/S' ${installArgQ}
-if ($LASTEXITCODE -ne 0) { throw "Echec de l'installateur Apollo (code $LASTEXITCODE)" }
+$install = Start-Process -FilePath $tempPath -ArgumentList '/S', ${installArgQ} -Wait -PassThru
+if ($install.ExitCode -ne 0) { throw "Echec de l'installateur Apollo (code $($install.ExitCode))" }
 Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
 New-Item -ItemType File -Path (Join-Path ${installDirQ} '${MARKER_FILE}') -Force | Out-Null`;
 }
@@ -158,14 +178,32 @@ function uninstallScript(config: Config): string {
     // 1. Le service ne doit plus tourner pendant que Uninstall.exe retire
     //    les fichiers qu'il tient ouverts.
     `sc.exe stop ${serviceNameQ} | Out-Null`,
-    // 2. _?= est OBLIGATOIRE. Sans lui, Uninstall.exe (un installateur NSIS)
-    //    se recopie dans un dossier temporaire et se DETACHE aussitot : la
-    //    commande SSH rend alors la main immediatement, pendant que la
-    //    desinstallation tourne encore sur le PC, et l'etape suivante
-    //    agirait sur des fichiers pas encore liberes. _?= force NSIS a
-    //    s'executer EN PLACE, de facon synchrone.
-    `& (Join-Path ${installDirQ} 'Uninstall.exe') '/S' ${uninstallArgQ}`,
-    `if ($LASTEXITCODE -ne 0) { throw "Echec de Uninstall.exe (code $LASTEXITCODE)" }`,
+    //    1062 est ERROR_SERVICE_NOT_ACTIVE : le service etait deja arrete,
+    //    ce qui est le cas NOMINAL apres un plantage et non un echec. 1060 est
+    //    ERROR_SERVICE_DOES_NOT_EXIST : il n'y a plus rien a arreter, ce qui
+    //    n'en est pas un davantage. Tout autre code est un vrai probleme -
+    //    un acces refuse, par exemple - et la desinstallation ne doit pas
+    //    continuer dessus.
+    //    La remise a zero qui suit n'est pas cosmetique : `| Out-Null` ne
+    //    reinitialise PAS $LASTEXITCODE, et c'est cette valeur survivante qui
+    //    etait relue plus bas a la place du code d'Uninstall.exe.
+    `if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1062 -and $LASTEXITCODE -ne 1060) { throw "Echec de l'arrêt du service Apollo (code $LASTEXITCODE)" }`,
+    `$LASTEXITCODE = 0`,
+    // 2. DEUX garanties distinctes, qu'on a longtemps confondues.
+    //    _?= est OBLIGATOIRE cote NSIS : sans lui, Uninstall.exe se recopie
+    //    dans un dossier temporaire et se DETACHE, si bien qu'il n'y a meme
+    //    plus de processus a attendre. _?= le force a s'executer EN PLACE.
+    //    Mais _?= ne fait pas attendre POWERSHELL : Uninstall.exe est un
+    //    binaire GUI (Subsystem=2), et l'operateur `&` rend la main aussitot
+    //    sans mettre $LASTEXITCODE a jour. Le controle qui suivait relisait
+    //    donc le code de sc.exe stop, et le reste du script - nefconc,
+    //    certutil, Remove-Item - s'executait PENDANT la desinstallation.
+    //    Start-Process -Wait -PassThru attend reellement et rend le code par
+    //    .ExitCode. Les deux sont necessaires ; aucune ne remplace l'autre.
+    //    _?= reste le DERNIER element : comme /D=, NSIS lit tout le reste de
+    //    la ligne de commande brute, et -ArgumentList ne recite rien.
+    `$uninstall = Start-Process -FilePath (Join-Path ${installDirQ} 'Uninstall.exe') -ArgumentList '/S', ${uninstallArgQ} -Wait -PassThru`,
+    `if ($uninstall.ExitCode -ne 0) { throw "Echec de Uninstall.exe (code $($uninstall.ExitCode))" }`,
     // 3. Le pilote SudoVDA n'est PAS retire par Uninstall.exe /S : c'est une
     //    des trois boites de dialogue que le mode silencieux refuse par
     //    defaut. nefconc.exe est appele EN DIRECT, jamais par uninstall.bat :
