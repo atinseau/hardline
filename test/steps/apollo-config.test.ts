@@ -346,3 +346,93 @@ describe("scripts de releve envoyes au PC", () => {
     expect(script).not.toContain(String(CONFIG.apollo.apiPort));
   });
 });
+
+/**
+ * Get-Content -Raw rend une chaine decoree des proprietes que le fournisseur
+ * de systeme de fichiers attache a tout objet qu'il emet (PSPath,
+ * PSParentPath, PSChildName, PSDrive, PSProvider, ReadCount).
+ * ConvertTo-Json (via runRemoteJson) les serialise toutes : conf arrivait
+ * cote Mac comme un objet, pas une chaine, et faisait tomber parseConf sur
+ * "text.split is not a function". Le remede force le type avec [string],
+ * mais UNIQUEMENT dans la branche Test-Path : [string]$null vaut "", pas
+ * null, et confondrait "fichier absent" avec "fichier vide" - distinction
+ * dont restore() depend (apollo-config.ts:196, previous.conf === null).
+ */
+describe("cast du releve conf : type force sans perdre la distinction null/vide", () => {
+  const CAST_LINE = "{ [string](Get-Content -Path $confPath -Raw) } else { $null }";
+
+  test("READ_STATE (inspect) caste le releve en chaine, dans la branche Test-Path seulement", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false }]);
+    await apolloConfigStep.inspect(CONFIG);
+    expect(jsonScripts[0]).toContain(CAST_LINE);
+  });
+
+  test("READ_STATE_FOR_APPLY (apply) caste le releve en chaine, dans la branche Test-Path seulement", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    expect(jsonScripts[0]).toContain(CAST_LINE);
+  });
+
+  /**
+   * Preuve du piege signale dans le brief : caster l'expression ENTIERE
+   * (`[string](if (...) { ... } else { ... })`) rendrait "" au lieu de null
+   * quand le fichier est absent. Cette assertion ancree sur la branche else
+   * exacte echoue si le cast migre hors de la branche Test-Path pour
+   * envelopper tout le if/else - le $null doit rester litteral, jamais
+   * lui-meme caste.
+   */
+  test("un fichier absent rend toujours $null litteral, jamais une chaine vide issue d'un cast", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false }]);
+    await apolloConfigStep.inspect(CONFIG);
+    const script = jsonScripts[0]!;
+    expect(script).toContain("} else { $null }");
+    expect(script).not.toContain("[string]($null)");
+    expect(script).not.toContain("[string](if (Test-Path");
+  });
+});
+
+/**
+ * Le defaut reel : le PC rendait pour conf un objet decore plutot qu'une
+ * chaine ou null, et l'etape explosait dans les entrailles de parseConf
+ * (text.split is not a function) - une exception de bas niveau qui ne nomme
+ * ni l'etape ni le champ en cause. Le garde assertConfShape doit refuser
+ * cette valeur avec un diagnostic qui les nomme tous les deux, cote inspect
+ * comme cote apply.
+ */
+describe("releve malforme cote PC : conf n'est ni une chaine ni null", () => {
+  const CONF_DECORE = {
+    value: "server_cmd = [\"cmd\"]\r\n",
+    PSPath: "C:\\Program Files\\Apollo\\config\\sunshine.conf",
+    PSParentPath: "C:\\Program Files\\Apollo\\config",
+    PSChildName: "sunshine.conf",
+    PSDrive: "C",
+    PSProvider: "Microsoft.PowerShell.Core\\FileSystem",
+    ReadCount: 1,
+  };
+
+  test("inspect refuse un conf decore avec un diagnostic qui nomme l'etape, pas une TypeError de bas niveau", async () => {
+    jsonQueue.push([{ conf: CONF_DECORE, hadCredentials: true }]);
+    let caught: unknown;
+    try {
+      await apolloConfigStep.inspect(CONFIG);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("apollo-config");
+    expect((caught as Error).message).not.toContain("split is not a function");
+  });
+
+  test("apply refuse un conf decore avec un diagnostic qui nomme l'etape, pas une TypeError de bas niveau", async () => {
+    jsonQueue.push([{ conf: CONF_DECORE, hadCredentials: true, serviceRunning: false }]);
+    let caught: unknown;
+    try {
+      await apolloConfigStep.apply(CONFIG);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("apollo-config");
+    expect((caught as Error).message).not.toContain("split is not a function");
+  });
+});

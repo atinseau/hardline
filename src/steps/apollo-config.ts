@@ -28,7 +28,14 @@ const READ_STATE = (installDir: string) => {
   return `
 $confPath = ${CONFIG_PATH_EXPR(installDirQ)}
 $statePath = ${STATE_PATH_EXPR(installDirQ)}
-$conf = if (Test-Path $confPath) { Get-Content -Path $confPath -Raw } else { $null }
+# Get-Content -Raw rend une chaine decoree des proprietes que le fournisseur
+# de systeme de fichiers attache (PSPath, PSParentPath, PSChildName, PSDrive,
+# PSProvider, ReadCount) : ConvertTo-Json les serialise alors toutes, et conf
+# arrive cote Mac comme un objet au lieu d'une chaine. Le cast [string] force
+# le type et doit rester DANS la branche Test-Path : caster l'expression
+# entiere transformerait $null en "", et confondrait "fichier absent" avec
+# "fichier vide" - distinction dont restore() depend (previous.conf === null).
+$conf = if (Test-Path $confPath) { [string](Get-Content -Path $confPath -Raw) } else { $null }
 $hadCredentials = $false
 if (Test-Path $statePath) {
   try {
@@ -50,7 +57,10 @@ const READ_STATE_FOR_APPLY = (installDir: string, serviceName: string) => {
   return `
 $confPath = ${CONFIG_PATH_EXPR(installDirQ)}
 $statePath = ${STATE_PATH_EXPR(installDirQ)}
-$conf = if (Test-Path $confPath) { Get-Content -Path $confPath -Raw } else { $null }
+# Meme cause qu'en lecture seule (voir READ_STATE) : le cast [string] doit
+# rester DANS la branche Test-Path, sinon [string]$null devient "" et efface
+# la distinction "fichier absent" / "fichier vide" dont restore() depend.
+$conf = if (Test-Path $confPath) { [string](Get-Content -Path $confPath -Raw) } else { $null }
 $hadCredentials = $false
 if (Test-Path $statePath) {
   try {
@@ -117,6 +127,22 @@ function buildApplyScript(
   return lines.join("\n");
 }
 
+/**
+ * runRemoteJson ne verifie rien au runtime : un script PowerShell de releve
+ * modifie par erreur (par exemple un Get-Content -Raw sans cast [string],
+ * qui serialise l'objet decore par le fournisseur de systeme de fichiers -
+ * PSPath, PSChildName, etc.) peut rendre pour conf un objet plutot qu'une
+ * chaine ou null. Sans ce garde, cette valeur explose plus loin dans
+ * parseConf (text.split n'est pas une fonction), avec un message qui ne
+ * nomme ni l'etape ni le champ en cause. Ici, le diagnostic nomme les deux.
+ */
+function assertConfShape(conf: unknown): string | null {
+  if (conf === null || typeof conf === "string") return conf;
+  throw new Error(
+    "apollo-config\u00a0: le PC a renvoyé, pour la configuration Apollo (conf), une valeur qui n'est ni une chaîne ni l'absence de fichier. Vérifier le script PowerShell de relevé.",
+  );
+}
+
 export const apolloConfigStep: Step<ApolloConfState> = {
   name: "apollo-config",
   label: "Configuration et identifiants Apollo (PC)",
@@ -132,7 +158,8 @@ export const apolloConfigStep: Step<ApolloConfState> = {
         "Le PC n'a renvoyé aucun état de configuration Apollo. Vérifier la liaison SSH.",
       );
     }
-    const conforming = current.hadCredentials && confConforms(current.conf ?? "", REQUIRED_CONF);
+    const conf = assertConfShape(current.conf);
+    const conforming = current.hadCredentials && confConforms(conf ?? "", REQUIRED_CONF);
     return {
       conforming,
       current,
@@ -156,7 +183,8 @@ export const apolloConfigStep: Step<ApolloConfState> = {
       );
     }
 
-    const patched = patchConf(current.conf ?? "", REQUIRED_CONF);
+    const conf = assertConfShape(current.conf);
+    const patched = patchConf(conf ?? "", REQUIRED_CONF);
 
     // Un identifiant deja present n'est jamais regenere : cela romprait un
     // mot de passe deja en service et deja au trousseau, pour une etape qui
