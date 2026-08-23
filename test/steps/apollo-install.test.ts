@@ -17,9 +17,15 @@ const runRemoteJson = mock(async (_target: unknown, script: string) => {
   if (!next) throw new Error("file d'attente JSON vide dans le test");
   return next;
 });
+/**
+ * Ce que le PC ecrit sur sa sortie standard. La desinstallation y depose, par
+ * un marqueur, ce qu'elle n'a PAS pu faire : sans stdout pilotable, aucun test
+ * ne peut prouver que ce canal est relu jusqu'a l'ecran.
+ */
+let checkedStdout = "";
 const runRemoteChecked = mock(async (_target: unknown, script: string) => {
   scriptLog.push(script);
-  return { exitCode: 0, stdout: "", stderr: "" };
+  return { exitCode: 0, stdout: checkedStdout, stderr: "" };
 });
 
 mock.module("../../src/lib/ssh", () => ({
@@ -27,13 +33,13 @@ mock.module("../../src/lib/ssh", () => ({
   runRemoteChecked,
 }));
 
-const { apolloInstallStep, ForeignApolloError, MARKER_FILE } = await import(
-  "../../src/steps/apollo-install"
-);
+const { apolloInstallStep, ForeignApolloError, MARKER_FILE, UNINSTALL_WARN_MARK } =
+  await import("../../src/steps/apollo-install");
 
 beforeEach(() => {
   jsonQueue = [];
   scriptLog = [];
+  checkedStdout = "";
   runRemoteJson.mockClear();
   runRemoteChecked.mockClear();
 });
@@ -338,30 +344,38 @@ describe("restore", () => {
     const script = checkedScript(0);
 
     const stop = script.indexOf("sc.exe stop");
-    const uninstallArg = script.indexOf("_?=");
-    const uninstallExe = script.indexOf("Uninstall.exe");
-    const nefconc = script.indexOf("nefconc.exe");
-    const certRoot = script.indexOf("-delstore root");
-    const certTrusted = script.indexOf("-delstore TrustedPublisher");
+    const driverQuery = script.indexOf("Win32_PnPSignedDriver");
+    const removeDevice = script.indexOf("/remove-device");
+    const deleteDriver = script.indexOf("/delete-driver");
     const gamepad = script.indexOf("uninstall-gamepad.ps1");
     const path = script.indexOf("update-path.bat");
+    const uninstallExe = script.indexOf("Uninstall.exe");
+    const uninstallArg = script.indexOf("_?=");
+    const certRoot = script.indexOf("-delstore root");
+    const certTrusted = script.indexOf("-delstore TrustedPublisher");
     const remove = script.indexOf("Remove-Item");
     const scDelete = script.indexOf("sc.exe delete");
     const netsh = script.indexOf("netsh.exe");
-    // lastIndexOf : le script remet aussi $LASTEXITCODE a zero juste apres
-    // sc.exe stop, et c'est la remise FINALE - celle qui protege le code de
-    // sortie de la session SSH - qui doit suivre netsh.
+    // lastIndexOf : le script remet aussi $LASTEXITCODE a zero apres sc.exe
+    // stop, apres pnputil et apres chaque certutil, et c'est la remise FINALE -
+    // celle qui protege le code de sortie de la session SSH - qui doit suivre
+    // netsh.
     const resetExitCode = script.lastIndexOf("$LASTEXITCODE = 0");
 
     expect(stop).toBeGreaterThanOrEqual(0);
-    expect(uninstallExe).toBeGreaterThan(stop);
-    expect(uninstallArg).toBeGreaterThan(stop);
-    expect(nefconc).toBeGreaterThan(uninstallExe);
-    expect(certRoot).toBeGreaterThan(nefconc);
-    expect(certTrusted).toBeGreaterThan(certRoot);
-    expect(gamepad).toBeGreaterThan(certTrusted);
+    // Le pilote et les deux scripts d'Apollo passent AVANT Uninstall.exe :
+    // c'est lui qui supprime tools\, scripts\ et update-path.bat.
+    expect(driverQuery).toBeGreaterThan(stop);
+    expect(removeDevice).toBeGreaterThan(driverQuery);
+    expect(deleteDriver).toBeGreaterThan(removeDevice);
+    expect(gamepad).toBeGreaterThan(deleteDriver);
     expect(path).toBeGreaterThan(gamepad);
-    expect(remove).toBeGreaterThan(path);
+    expect(uninstallExe).toBeGreaterThan(path);
+    expect(uninstallArg).toBeGreaterThan(uninstallExe);
+    // Les certificats ne dependent d'aucun fichier d'Apollo : ils suivent.
+    expect(certRoot).toBeGreaterThan(uninstallArg);
+    expect(certTrusted).toBeGreaterThan(certRoot);
+    expect(remove).toBeGreaterThan(certTrusted);
     expect(scDelete).toBeGreaterThan(remove);
     expect(netsh).toBeGreaterThan(scDelete);
     // netsh sort en code non nul quand aucune regle ne correspond deja - le
@@ -372,6 +386,57 @@ describe("restore", () => {
 
     expect(script).not.toContain("uninstall.bat");
     expect(script).not.toContain("pause");
+    // nefconc.exe vivait sous tools\, que Uninstall.exe supprime : plus aucun
+    // appel ne doit en dependre, ou que ce soit dans le script.
+    expect(script).not.toContain("nefconc");
+  });
+
+  /**
+   * Le sujet des certificats, et non le nom du fichier livre par Apollo.
+   * Verifie en lecture sur le PC : `certutil -store root sudovda.cer` rend
+   * NTE_NOT_FOUND, tandis que `certutil -store root sudovda@su.mk` trouve le
+   * certificat. L'ancienne ligne n'aurait jamais rien retire des deux magasins,
+   * meme si le script l'avait atteinte.
+   */
+  test("les certificats sont designes par leur sujet, dans les deux magasins", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    const script = checkedScript(0);
+
+    expect(script).toContain("-delstore root 'sudovda@su.mk'");
+    expect(script).toContain("-delstore TrustedPublisher 'sudovda@su.mk'");
+    // Le nom du fichier ne designe aucun certificat : il ne doit plus paraitre.
+    expect(script).not.toContain("sudovda.cer");
+  });
+
+  /**
+   * Le pilote se retire par pnputil, outil natif : il ne disparait pas avec le
+   * dossier d'Apollo, il sait nettoyer une installation deja demontee, et il
+   * n'exige pas d'executer un binaire tiers avec des privileges.
+   *
+   * Le pilote est retrouve par Win32_PnPSignedDriver, a partir de l'identifiant
+   * materiel : les intitules de `pnputil /enum-drivers` sont TRADUITS et leur
+   * analyse dependrait de la langue du PC.
+   */
+  test("le pilote SudoVDA est retire par pnputil, repere par son identifiant materiel", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    const script = checkedScript(0);
+
+    expect(script).toContain("Win32_PnPSignedDriver");
+    expect(script).toContain("$_.HardWareID -eq 'root\\sudomaker\\sudovda'");
+    expect(script).toContain("pnputil.exe /remove-device $device.DeviceID");
+    expect(script).toContain("pnputil.exe /delete-driver $device.InfName");
+    // L'analyse de la sortie de pnputil dependrait de la langue du PC.
+    expect(script).not.toContain("/enum-drivers");
   });
 
   /**
@@ -392,20 +457,146 @@ describe("restore", () => {
     const script = checkedScript(0);
 
     expectAwaitedLauncher(script, "_?=", "uninstall");
-    expect(launchLine(script, "_?=")).toContain("Uninstall.exe");
+    // Le lanceur designe Uninstall.exe par la variable qui porte son chemin,
+    // laquelle est bien construite sous le dossier d'Apollo.
+    expect(launchLine(script, "_?=")).toContain("-FilePath $uninstallExe");
+    expect(script).toContain(
+      `$uninstallExe = Join-Path '${CONFIG.apollo.installDir}' 'Uninstall.exe'`,
+    );
 
     // Rien de la suite ne commence avant que le code d'Uninstall.exe soit lu.
     const guard = script.indexOf("$uninstall.ExitCode");
     for (const suivant of [
-      "nefconc.exe",
       "-delstore root",
       "-delstore TrustedPublisher",
-      "uninstall-gamepad.ps1",
-      "update-path.bat",
       `Remove-Item -Path ${"'" + CONFIG.apollo.installDir + "'"}`,
     ]) {
       expect(script.indexOf(suivant)).toBeGreaterThan(guard);
     }
+  });
+
+  /**
+   * Ce que le deuxieme essai reel a revele, verrouille de face.
+   *
+   * Uninstall.exe supprime tools\, scripts\ et update-path.bat. Tout ce qui
+   * EXECUTE un fichier fourni par Apollo doit donc passer AVANT lui, sans quoi
+   * le script appelle des fichiers qui n'existent plus : « Le terme
+   * C:\Program Files\Apollo\tools\nefconc.exe n'est pas reconnu ».
+   *
+   * Deux filets, et le second est celui qui mord sur ce qui n'existe pas encore.
+   * Le premier nomme les fichiers connus. Le second BALAYE le script : toute
+   * ligne qui execute quelque chose situe sous le dossier d'Apollo - par son
+   * chemin en clair, ou par une variable affectee depuis ce dossier - doit
+   * preceder le lancement d'Uninstall.exe, quel que soit le nom de l'outil.
+   * Un retour a l'ancien ordre fait tomber les deux.
+   */
+  test("tout ce qui depend d'un fichier fourni par Apollo precede Uninstall.exe", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    const lignes = checkedScript(0).split("\n");
+
+    // La ligne qui LANCE Uninstall.exe, reperee par son marqueur NSIS : la
+    // simple mention du nom apparait des l'affectation du chemin.
+    const lancement = lignes.findIndex((ligne) => ligne.includes("_?="));
+    expect(lancement).toBeGreaterThanOrEqual(0);
+
+    for (const fourni of ["uninstall-gamepad.ps1", "update-path.bat", "nefconc.exe"]) {
+      const at = lignes.findIndex((ligne) => ligne.includes(fourni));
+      if (at >= 0) expect(at).toBeLessThan(lancement);
+    }
+
+    // Les variables PowerShell qui designent un fichier SOUS le dossier
+    // d'Apollo : sans elles, deplacer l'affectation avant le lancement et
+    // l'appel apres suffirait a passer le premier filet.
+    const sousApollo = new Set<string>();
+    for (const ligne of lignes) {
+      const affectation = ligne.match(/^\s*\$(\w+)\s*=\s*Join-Path\s+'([^']*)'/);
+      if (affectation?.[1] && affectation[2] === CONFIG.apollo.installDir) {
+        sousApollo.add(affectation[1]);
+      }
+    }
+    expect(sousApollo.size).toBeGreaterThan(0);
+
+    lignes.forEach((ligne, index) => {
+      if (index === lancement) return;
+      const execute = /(^|[\s;{])&\s|Start-Process/.test(ligne);
+      const viseApollo =
+        ligne.includes(CONFIG.apollo.installDir) ||
+        [...sousApollo].some((nom) => new RegExp(`\\$${nom}\\b`).test(ligne));
+      if (execute && viseApollo) expect(index).toBeLessThan(lancement);
+    });
+  });
+
+  /**
+   * L'etat reel du PC apres le deuxieme essai : Uninstall.exe est passe,
+   * scripts\ et update-path.bat ont disparu, le pilote et les certificats sont
+   * restes. Une nouvelle execution doit aller jusqu'au bout de ce qui reste au
+   * lieu de lever sur le premier fichier manquant - et nommer chaque manque.
+   */
+  test("chaque geste tolere l'absence de sa cible, et le dit", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+    const script = checkedScript(0);
+
+    // Chaque fichier fourni par Apollo est teste avant d'etre appele.
+    expect(script).toContain("if (Test-Path $gamepadScript) {");
+    expect(script).toContain("if (Test-Path $updatePath) {");
+    expect(script).toContain("if (Test-Path $uninstallExe) {");
+
+    // Et chaque absence a sa branche qui la NOMME. Un `else` vide passerait le
+    // controle precedent tout en retablissant le silence.
+    const absences = script
+      .split("\n")
+      .filter((ligne) => ligne.includes("$warnings +="));
+    for (const attendu of [
+      "ViGEmBus",
+      "update-path.bat",
+      "Uninstall.exe",
+      "SudoVDA",
+      "root",
+      "TrustedPublisher",
+    ]) {
+      expect(absences.some((ligne) => ligne.includes(attendu))).toBe(true);
+    }
+
+    // Le canal de retour existe, et il est le seul.
+    expect(script).toContain(`Write-Output "${UNINSTALL_WARN_MARK} $warning"`);
+  });
+
+  /**
+   * La tolerance ne doit jamais devenir du silence : ce que le PC dit n'avoir
+   * pas pu faire remonte tel quel dans le rapport de fin, comme pairing.restore
+   * le fait de ses propres cessions.
+   */
+  test("ce que le PC n'a pas pu faire remonte en cession", async () => {
+    jsonQueue.push([{ backupPath: null }]);
+    checkedStdout = [
+      "Un bavardage quelconque de certutil",
+      `${UNINSTALL_WARN_MARK} Pilote SudoVDA introuvable.`,
+      `${UNINSTALL_WARN_MARK} update-path.bat absent.`,
+    ].join("\n");
+
+    const outcome = await apolloInstallStep.restore(
+      CONFIG,
+      { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
+      { pending: [] },
+    );
+
+    const dit = outcome && "yielded" in outcome ? outcome.yielded : "";
+    expect(dit).toContain("Pilote SudoVDA introuvable.");
+    expect(dit).toContain("update-path.bat absent.");
+    // Le marqueur est un detail de transport : il ne s'affiche pas.
+    expect(dit).not.toContain(UNINSTALL_WARN_MARK);
+    // Ce qui n'est pas marque n'est pas un avertissement.
+    expect(dit).not.toContain("bavardage");
   });
 
   /**
