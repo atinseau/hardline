@@ -190,6 +190,11 @@ function uninstallScript(config: Config): string {
     //    echoue en silence.
     `sc.exe delete ${serviceNameQ} | Out-Null`,
     `netsh.exe advfirewall firewall delete rule name=Apollo | Out-Null`,
+    // netsh sort en code non nul quand aucune regle ne correspond deja - le
+    // cas normal apres une desinstallation propre - et runRemoteChecked leve
+    // sur tout code non nul : une restauration reussie serait rapportee en
+    // echec sans cette remise a zero explicite.
+    `$LASTEXITCODE = 0`,
   ].join("\n");
 }
 
@@ -270,21 +275,33 @@ export const apolloInstallStep: Step<ApolloInstallState> = {
   },
 
   /**
-   * "ours" tranche tout : posee par hardline, elle est entierement retiree
-   * dans l'ordre de la section 10 — la meme fonction que le remplacement
-   * d'apply(). Etrangere, elle est laissee en place : hardline ne l'a pas
-   * installee et ne sait pas la remettre. Le dire plutot que le taire.
+   * Le releve du manifeste (previous) decrit l'etat d'AVANT apply, jamais ce
+   * qui est installe au moment de rendre : applySteps enregistre state.current
+   * avant d'appeler apply (src/lib/orchestrator.ts). Dans le cas nominal,
+   * previous vaut { installed: false, ours: false } alors qu'Apollo, pose par
+   * hardline, tourne bel et bien sur le PC. Ce que hardline a pose part donc
+   * TOUJOURS, sans jamais se fier a previous.ours pour decider de le faire.
+   *
+   * previous ne sert plus qu'a un seul usage : dire, en plus, qu'un Apollo
+   * etranger existait avant l'intervention de hardline et que celui-la n'est
+   * pas remis - hardline ne sait pas le reinstaller a l'identique. C'est le
+   * cas de l'etranger efface apres consentement de l'utilisateur (tache 12) :
+   * previous porte encore { installed: true, ours: false } issu du releve
+   * d'origine, alors que c'est desormais le notre qui tourne et qui doit etre
+   * retire comme le reste.
    */
   async restore(config: Config, previous: ApolloInstallState, _context: RestoreContext) {
-    if (!previous.ours) {
+    await backupApolloConfig(config);
+    await uninstallApollo(config);
+
+    if (previous.installed && !previous.ours) {
       return {
         yielded:
-          `Apollo étranger laissé en place (version ${previous.version ?? "inconnue"}, ` +
-          `${previous.pairedClients} client(s) appairé(s) au moment du constat)` +
-          `\u00a0: hardline ne l'a pas installé et ne sait pas le remettre.`,
+          `Apollo étranger qui existait avant hardline (version ${previous.version ?? "inconnue"}, ` +
+          `${previous.pairedClients} client(s) appairé(s) au moment du constat) ` +
+          `retiré avec l'accord de l'utilisateur en même temps que l'Apollo de hardline` +
+          `\u00a0: hardline ne sait pas le remettre.`,
       };
     }
-
-    await uninstallApollo(config);
   },
 };
