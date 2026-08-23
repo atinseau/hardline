@@ -29,6 +29,9 @@ let waitCalls = 0;
 const finishes: string[] = [];
 const failures: string[] = [];
 const reports: string[][] = [];
+/** Tout ce que l'interface rend visible passe par un journal, info et warn compris. */
+const infos: string[] = [];
+const warns: string[] = [];
 let applyThrowsOn: string | null = null;
 let publicKey: string | null = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 const appliedGroups: string[][] = [];
@@ -185,8 +188,12 @@ mock.module("../../src/lib/bootstrap-server", () => ({
   localBootstrapUrl: (port: number) => `http://mac.local:${port}/bootstrap.ps1`,
 }));
 
+/** Le terminal, tel que la commande le voit. Faux = script, tache planifiee. */
+let interactif = true;
+
 mock.module("../../src/lib/ui", () => ({
   configureOutput: () => {},
+  isInteractive: () => interactif,
   withSpinner: async <T>(_label: string, run: () => Promise<T>) => run(),
   askConfirmation,
   askSecret,
@@ -200,8 +207,8 @@ mock.module("../../src/lib/ui", () => ({
     detached: () => {},
     failed: ({ label, detail }: { label: string; detail: string }) =>
       failures.push(`${label} — ${detail}`),
-    info: () => {},
-    warn: () => {},
+    info: (message: string) => infos.push(message),
+    warn: (message: string) => warns.push(message),
     report: (title: string, lines: string[]) => reports.push([title, ...lines]),
   },
 }));
@@ -272,6 +279,8 @@ beforeEach(() => {
   finishes.length = 0;
   failures.length = 0;
   reports.length = 0;
+  infos.length = 0;
+  warns.length = 0;
   applyThrowsOn = null;
   applyThrowsForeign = false;
   foreignRemoved = false;
@@ -286,6 +295,7 @@ beforeEach(() => {
   askSecret.mockClear();
   askSecretCalls.length = 0;
   askSecretRejects = false;
+  interactif = true;
   publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
   appliedGroups.length = 0;
   manifestPaths.length = 0;
@@ -639,7 +649,14 @@ describe("installCommand, mot de passe Windows", () => {
   test("l'invite ne contient jamais le mot de passe, et le mot de passe ne s'affiche nulle part", async () => {
     windowsSecretPresent = false;
     await installCommand();
-    const visible = [...askSecretCalls, ...finishes, ...failures, ...reports.flat()].join("\n");
+    const visible = [
+      ...askSecretCalls,
+      ...finishes,
+      ...failures,
+      ...reports.flat(),
+      ...infos,
+      ...warns,
+    ].join("\n");
     expect(visible).not.toContain("mot-de-passe-saisi");
   });
 
@@ -698,5 +715,54 @@ describe("installCommand, le mot de passe en memoire est efface en fin de conver
     confirmForeignAnswer = false;
     await installCommand({ yes: false });
     expect(forgetPassword).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("installCommand, Apollo etranger hors terminal", () => {
+  test("refuse d'effacer sans --yes quand aucun terminal ne peut repondre", async () => {
+    // askConfirmation rend « oui » hors terminal : sans garde-fou en amont, un
+    // install lance depuis un script effacerait l'Apollo d'un tiers sans que
+    // personne n'ait repondu.
+    interactif = false;
+    applyThrowsForeign = true;
+    await installCommand({ yes: false });
+
+    expect(backupApolloConfig).not.toHaveBeenCalled();
+    expect(uninstallApollo).not.toHaveBeenCalled();
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
+    expect(process.exitCode).toBe(1);
+    const message = finishes.join("\n");
+    expect(message).toContain("Apollo étranger conservé");
+    expect(message).toContain("--yes");
+  });
+
+  test("l'invite n'est meme pas posee hors terminal sans --yes", async () => {
+    interactif = false;
+    applyThrowsForeign = true;
+    await installCommand({ yes: false });
+    expect(askConfirmation).not.toHaveBeenCalled();
+  });
+
+  test("--yes autorise le remplacement hors terminal", async () => {
+    // Le consentement est alors porte par la ligne de commande, ecrite a la main.
+    interactif = false;
+    applyThrowsForeign = true;
+    await installCommand({ yes: true });
+
+    expect(backupApolloConfig).toHaveBeenCalledTimes(1);
+    expect(uninstallApollo).toHaveBeenCalledTimes(1);
+    expect(trace.indexOf("backup")).toBeLessThan(trace.indexOf("uninstall"));
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("en terminal, sans --yes, la question est bien posee", async () => {
+    // Le controle des trois precedents : c'est le terminal qui fait la
+    // difference, pas le simple fait d'avoir trouve un Apollo etranger.
+    interactif = true;
+    applyThrowsForeign = true;
+    await installCommand({ yes: false });
+    expect(askConfirmation).toHaveBeenCalledTimes(1);
+    expect(uninstallApollo).toHaveBeenCalledTimes(1);
   });
 });

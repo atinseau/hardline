@@ -30,7 +30,14 @@ import {
 import { getSecret } from "../lib/keychain";
 import { forgetPassword, providePassword } from "../steps/smb-credentials";
 import type { Step } from "../steps/types";
-import { askConfirmation, askSecret, configureOutput, ui, withSpinner } from "../lib/ui";
+import {
+  askConfirmation,
+  askSecret,
+  configureOutput,
+  isInteractive,
+  ui,
+  withSpinner,
+} from "../lib/ui";
 
 const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
 
@@ -178,6 +185,21 @@ async function handleForeignApollo(
       ? "Sa configuration sera sauvegardée sur le PC avant d'être remplacée."
       : "Aucune configuration existante à sauvegarder.",
   ]);
+
+  // askConfirmation rend "oui" hors terminal, ce qui est le bon defaut pour une
+  // question benigne mais jamais pour celle-ci : sans ce garde-fou, un install
+  // lance depuis un script effacerait l'Apollo d'un tiers sans que personne
+  // n'ait repondu. Le consentement doit alors etre porte par --yes, ecrit a la
+  // main dans la ligne de commande.
+  if (!options.yes && !isInteractive()) {
+    ui.finish(
+      "Installation interrompue\u00a0: Apollo étranger conservé, rien n'a été modifié sur le PC. " +
+        "Hors terminal, son remplacement doit être autorisé explicitement par " +
+        "«\u00a0hardline install --yes\u00a0».",
+    );
+    process.exitCode = 1;
+    return false;
+  }
 
   const confirmed = await askConfirmation(
     "Remplacer cette installation d'Apollo par celle de hardline\u00a0?",

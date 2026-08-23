@@ -87,12 +87,27 @@ const finishes: string[] = [];
 const failures: string[] = [];
 const infos: string[] = [];
 const warns: string[] = [];
+/** Les libelles de spinner ouverts, dans l'ordre, et leurs etapes annoncees. */
+const spinnerLabels: string[] = [];
+const spinnerProgress: string[] = [];
+
 mock.module("../../src/lib/ui", () => ({
   configureOutput: () => {},
+  // Le journal note l'ouverture ET la fermeture du spinner : c'est le seul
+  // moyen de voir ce qui tourne A L'INTERIEUR, et notamment que runStream n'y
+  // est pas — Moonlight herite du terminal et entrelacerait son rendu.
   withSpinner: async <T>(
-    _label: string,
+    label: string,
     run: (progress: (m: string) => void) => Promise<T>,
-  ) => run(() => {}),
+  ) => {
+    spinnerLabels.push(label);
+    order.push(`spinner:start:${label}`);
+    try {
+      return await run((m) => spinnerProgress.push(m));
+    } finally {
+      order.push(`spinner:stop:${label}`);
+    }
+  },
   ui: {
     start: () => {},
     finish: (message: string) => finishes.push(message),
@@ -145,6 +160,8 @@ beforeEach(() => {
   failures.length = 0;
   infos.length = 0;
   warns.length = 0;
+  spinnerLabels.length = 0;
+  spinnerProgress.length = 0;
 
   runRemoteJson.mockClear();
   runRemoteChecked.mockClear();
@@ -533,5 +550,65 @@ describe("upCommand, drapeaux tels que commander les rend", () => {
       resolution: null,
       fps: null,
     });
+  });
+});
+
+describe("upCommand, le spinner ne tourne jamais par-dessus le flux", () => {
+  test("runStream part APRES la fermeture du spinner", async () => {
+    // runStream lance Moonlight avec les flux du terminal herites : un spinner
+    // qui tourne par-dessus entrelace son rendu et reste fige sur son libelle
+    // toute la duree de la session. Le contrat de withSpinner l'interdit.
+    await upCommand({ fullscreen: false });
+
+    const arret = order.lastIndexOf("spinner:stop:Préparation de la session");
+    const flux = order.indexOf("runStream");
+    expect(arret).toBeGreaterThanOrEqual(0);
+    expect(flux).toBeGreaterThan(arret);
+  });
+
+  test("la preparation, elle, tourne bien dans le spinner", async () => {
+    // Le controle du test precedent : sans lui, un up qui n'ouvrirait aucun
+    // spinner le satisferait aussi.
+    reachable = false;
+    await upCommand({ fullscreen: false });
+
+    const debut = order.indexOf("spinner:start:Préparation de la session");
+    const arret = order.indexOf("spinner:stop:Préparation de la session");
+    expect(debut).toBeGreaterThanOrEqual(0);
+    for (const evenement of ["sendMagicPacket", "waitForRemote", "mount:arthur"]) {
+      const index = order.indexOf(evenement);
+      expect(index).toBeGreaterThan(debut);
+      expect(index).toBeLessThan(arret);
+    }
+  });
+
+  test("aucun spinner n'est ouvert autour du flux, ni apres", async () => {
+    await upCommand({ fullscreen: false });
+    expect(spinnerLabels).toEqual(["Préparation de la session"]);
+  });
+
+  test("le demontage et la fermeture surviennent hors du spinner, apres le flux", async () => {
+    streamThrows = new Error("moonlight a planté");
+    await upCommand({ fullscreen: false });
+
+    const arret = order.lastIndexOf("spinner:stop:Préparation de la session");
+    expect(order.indexOf("unmount:arthur")).toBeGreaterThan(arret);
+    expect(order.indexOf("runQuit")).toBeGreaterThan(arret);
+    expect(unmountShare).toHaveBeenCalledTimes(3);
+    expect(runQuit).toHaveBeenCalledTimes(1);
+  });
+
+  test("une ligne d'information annonce que la session s'ouvre, avant le flux", async () => {
+    await upCommand({ fullscreen: false });
+    expect(infos.join("\n")).toContain("Session ouverte");
+  });
+
+  test("le spinner annonce les etapes de la preparation", async () => {
+    reachable = false;
+    apolloStatusRounds = ["Stopped", "Running"];
+    await upCommand({ fullscreen: false });
+    expect(spinnerProgress).toContain("réveil du PC");
+    expect(spinnerProgress).toContain("démarrage du service Apollo");
+    expect(spinnerProgress).toContain("montage des partages");
   });
 });

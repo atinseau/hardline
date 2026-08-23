@@ -142,55 +142,117 @@ async function ensureApolloRunning(config: Config): Promise<void> {
 }
 
 /**
- * L'enchainement complet d'une session. Le demontage et l'appel a `moonlight
- * quit` sont dans un `finally` qui englobe le montage ET le flux : une
- * interruption a n'importe quel point apres le premier montage doit encore
- * defaire ce qui a ete monte et fermer la session cote serveur, sans quoi
- * l'ecran virtuel reste sur le PC. unmountShare ne leve jamais pour un
- * partage jamais monte (voir src/lib/smb.ts), ce qui rend sur d'appeler ce
- * nettoyage sur TOUS les partages, meme ceux qu'un montage partiel n'a
- * jamais atteints.
+ * Enveloppe la phase preparatoire. Meme forme que `withSpinner`, dont c'est
+ * le seul emploi legitime ici : la preparation capture toutes ses sorties,
+ * le flux non.
  */
-export async function runUp(config: Config, options: StreamOptions): Promise<number> {
-  if (!(await pcReachable(config))) {
-    await wakePC(config);
-  }
+export type PreparationWrapper = <T>(
+  label: string,
+  run: (progress: (message: string) => void) => Promise<T>,
+) => Promise<T>;
 
-  const display = mainDisplay(await listDisplays());
-  await ensureApolloRunning(config);
+export type UpHooks = {
+  /** Enveloppe la seule phase preparatoire, jamais le flux. */
+  withPreparation: PreparationWrapper;
+  /** Appele une fois tout pret, juste avant que le flux ne parte. */
+  onStreamStart: () => void;
+};
 
-  // Le mot de passe ne quitte jamais cette portee : il part dans mountShare,
-  // qui compose l'URL SMB lui-meme et retire le secret de ses propres messages
-  // d'erreur. Il n'est ni journalise, ni passe en argument de commande, ni
-  // repris dans une erreur d'ici.
-  const password = await getSecret("windows-account");
-  if (password === null) {
-    throw new Error(
-      "Aucun mot de passe Windows au trousseau\u00a0: lancer «\u00a0hardline install\u00a0» d'abord.",
-    );
-  }
+const NO_HOOKS: UpHooks = {
+  withPreparation: (_label, run) => run(() => {}),
+  onStreamStart: () => {},
+};
+
+/**
+ * L'enchainement complet d'une session.
+ *
+ * `runStream` lance Moonlight avec les flux du terminal HERITES : il ecrit
+ * directement sur stdout et prend le terminal jusqu'a la fermeture de la
+ * session. Aucun spinner ne peut tourner par-dessus sans entrelacer son rendu
+ * et rester fige sur son libelle (voir le contrat de withSpinner,
+ * src/lib/ui.ts). La phase preparatoire — reveil, ecrans, service, montages —
+ * capture au contraire tout ce qu'elle lance : c'est elle, et elle seule, que
+ * `hooks.withPreparation` enveloppe.
+ *
+ * Le demontage et l'appel a `moonlight quit` sont dans un `finally` qui
+ * englobe le montage ET le flux : une interruption a n'importe quel point
+ * apres le premier montage doit encore defaire ce qui a ete monte et fermer la
+ * session cote serveur, sans quoi l'ecran virtuel reste sur le PC.
+ * unmountShare ne leve jamais pour un partage jamais monte (voir
+ * src/lib/smb.ts), ce qui rend sur d'appeler ce nettoyage sur TOUS les
+ * partages, meme ceux qu'un montage partiel n'a jamais atteints.
+ *
+ * `monte` garde la frontiere d'avant : un PC qui ne se reveille jamais n'a
+ * rien fait monter, et rien ne doit alors etre demonte ni clos sur une machine
+ * qu'on n'a jamais atteinte.
+ */
+export async function runUp(
+  config: Config,
+  options: StreamOptions,
+  hooks: UpHooks = NO_HOOKS,
+): Promise<number> {
+  let monte = false;
 
   try {
-    for (const share of config.smb.shares) {
-      await mountShare(share, config, password);
-    }
+    const display = await hooks.withPreparation(
+      "Préparation de la session",
+      async (progress) => {
+        if (!(await pcReachable(config))) {
+          progress("réveil du PC");
+          await wakePC(config);
+        }
+
+        const ecran = mainDisplay(await listDisplays());
+
+        progress("démarrage du service Apollo");
+        await ensureApolloRunning(config);
+
+        // Le mot de passe ne quitte jamais cette portee : il part dans
+        // mountShare, qui compose l'URL SMB lui-meme et retire le secret de
+        // ses propres messages d'erreur. Il n'est ni journalise, ni passe en
+        // argument de commande, ni repris dans une erreur d'ici.
+        const password = await getSecret("windows-account");
+        if (password === null) {
+          throw new Error(
+            "Aucun mot de passe Windows au trousseau\u00a0: lancer «\u00a0hardline install\u00a0» d'abord.",
+          );
+        }
+
+        progress("montage des partages");
+        monte = true;
+        for (const share of config.smb.shares) {
+          await mountShare(share, config, password);
+        }
+
+        return ecran;
+      },
+    );
+
+    hooks.onStreamStart();
     return await runStream(config, display, options);
   } finally {
-    for (const share of config.smb.shares) {
-      try {
-        await unmountShare(share);
-      } catch {
-        // Demontage en best effort a la fermeture : un partage qui refuse de
-        // se demonter ne doit ni empecher les autres ni empecher la fermeture
-        // cote serveur.
-      }
+    if (monte) {
+      await releaseSession(config);
     }
+  }
+}
+
+/** Defait ce que la session a monte, puis la clot cote serveur. */
+async function releaseSession(config: Config): Promise<void> {
+  for (const share of config.smb.shares) {
     try {
-      await runQuit(config);
+      await unmountShare(share);
     } catch {
-      // La session doit se fermer cote client quoi qu'il arrive : une erreur
-      // ici ne doit pas masquer celle, plus importante, du flux lui-meme.
+      // Demontage en best effort a la fermeture : un partage qui refuse de se
+      // demonter ne doit ni empecher les autres ni empecher la fermeture cote
+      // serveur.
     }
+  }
+  try {
+    await runQuit(config);
+  } catch {
+    // La session doit se fermer cote client quoi qu'il arrive : une erreur
+    // ici ne doit pas masquer celle, plus importante, du flux lui-meme.
   }
 }
 
@@ -213,9 +275,15 @@ export async function upCommand(cliOptions: UpCliOptions): Promise<void> {
   }
 
   try {
-    const exitCode = await withSpinner("Ouverture de la session", () =>
-      runUp(CONFIG, options),
-    );
+    // Le spinner n'enveloppe que la preparation : Moonlight herite du terminal
+    // et le garde jusqu'a la fin de la session.
+    const exitCode = await runUp(CONFIG, options, {
+      withPreparation: withSpinner,
+      onStreamStart: () =>
+        ui.info(
+          "Session ouverte\u00a0: Moonlight prend le terminal jusqu'à sa fermeture.",
+        ),
+    });
     ui.finish(
       exitCode === 0 ? "Session terminée." : `Session terminée avec le code ${exitCode}.`,
     );
