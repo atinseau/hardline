@@ -38,6 +38,14 @@ export function streamArgs(
     // la souris relative des jeux en vue subjective ne fonctionne pas dans ce
     // mode — hardline sert a travailler sur le PC, pas a y jouer.
     "--absolute-mouse",
+    // 4:4:4 transmet la chrominance a pleine resolution. Par defaut, le flux
+    // est en 4:2:0 : la couleur est sous-echantillonnee d'un facteur deux en
+    // largeur ET en hauteur, ce qui suffit a une image filmee mais fait baver
+    // le texte fin et colore — du code, une interface. C'est le seul reglage
+    // qui change vraiment la nettete d'un bureau distant. Moonlight le
+    // demande « si le serveur le sait faire » et retombe seul en 4:2:0 sinon,
+    // donc le passer n'est jamais un pari.
+    "--yuv444",
   ];
 
   const resolution =

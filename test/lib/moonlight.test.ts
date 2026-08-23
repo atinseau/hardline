@@ -76,6 +76,7 @@ describe("streamArgs", () => {
       "--display-mode",
       "fullscreen",
       "--absolute-mouse",
+      "--yuv444",
       "--resolution",
       "3840x2160",
       "--fps",
@@ -97,6 +98,7 @@ describe("streamArgs", () => {
       "--display-mode",
       "windowed",
       "--absolute-mouse",
+      "--yuv444",
       "--resolution",
       "3456x2234",
       "--fps",
@@ -111,7 +113,7 @@ describe("streamArgs", () => {
       fps: null,
     });
 
-    expect(args).toEqual(["stream", "10.10.10.1", "Desktop", "--display-mode", "windowed", "--absolute-mouse"]);
+    expect(args).toEqual(["stream", "10.10.10.1", "Desktop", "--display-mode", "windowed", "--absolute-mouse", "--yuv444"]);
     expect(args).not.toContain("--resolution");
     expect(args).not.toContain("--fps");
   });
@@ -139,6 +141,7 @@ describe("streamArgs", () => {
       "--display-mode",
       "windowed",
       "--absolute-mouse",
+      "--yuv444",
       "--resolution",
       "3456x2234",
     ]);
@@ -208,6 +211,7 @@ describe("frontiere systeme", () => {
       "--display-mode",
       "windowed",
       "--absolute-mouse",
+      "--yuv444",
       "--resolution",
       "3456x2234",
       "--fps",
@@ -230,4 +234,14 @@ test("streamArgs demande la souris absolue, pour ne pas capturer le curseur du M
   const args = streamArgs(CONFIG, null, { fullscreen: true, resolution: null, fps: null });
   expect(args).toContain("--absolute-mouse");
   expect(args).not.toContain("--no-absolute-mouse");
+});
+
+/**
+ * Le seul reglage qui change vraiment la nettete d'un bureau distant : en
+ * 4:2:0, la chrominance est sous-echantillonnee et le texte fin bave.
+ */
+test("streamArgs demande le 4:4:4, pour que le texte reste net", () => {
+  const args = streamArgs(CONFIG, null, { fullscreen: true, resolution: null, fps: null });
+  expect(args).toContain("--yuv444");
+  expect(args).not.toContain("--no-yuv444");
 });

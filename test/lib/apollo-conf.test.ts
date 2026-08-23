@@ -13,7 +13,7 @@ const CONF_FIXTURE = [
 ].join("\n");
 
 describe("REQUIRED_CONF", () => {
-  test("contient exactement les six cles imposees par Apollo", () => {
+  test("contient exactement les huit cles imposees par Apollo", () => {
     expect(REQUIRED_CONF).toEqual({
       headless_mode: "enabled",
       dd_configuration_option: "ensure_only_display",
@@ -21,6 +21,8 @@ describe("REQUIRED_CONF", () => {
       dd_refresh_rate_option: "auto",
       dd_config_revert_on_disconnect: "enabled",
       capture: "ddx",
+      nvenc_preset: "5",
+      nvenc_spatial_aq: "enabled",
     });
   });
 });
@@ -41,7 +43,7 @@ describe("parseConf", () => {
 });
 
 describe("confConforms", () => {
-  test("est faux tant que les six cles ne sont pas exactement imposees", () => {
+  test("est faux tant que les huit cles ne sont pas exactement imposees", () => {
     expect(confConforms(CONF_FIXTURE, REQUIRED_CONF)).toBe(false);
   });
 
@@ -52,7 +54,7 @@ describe("confConforms", () => {
       "dd_resolution_option = auto",
       "dd_refresh_rate_option = auto",
       "dd_config_revert_on_disconnect = enabled",
-      "capture = ddx",
+      "capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled",
     ].join("\n");
     expect(confConforms(conforming, REQUIRED_CONF)).toBe(true);
   });
@@ -115,7 +117,7 @@ describe("patchConf", () => {
         "dd_resolution_option = auto\n" +
         "dd_refresh_rate_option = auto\n" +
         "dd_config_revert_on_disconnect = enabled\n" +
-        "capture = ddx\n",
+        "capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled\n",
     );
   });
 });

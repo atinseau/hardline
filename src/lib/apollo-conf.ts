@@ -1,4 +1,18 @@
-/** Les six cles que hardline impose. Rien d'autre n'est touche. */
+/**
+ * Les huit cles que hardline impose. Rien d'autre n'est touche.
+ *
+ * Les six premieres decident de l'ecran virtuel ; les deux dernieres, de la
+ * qualite de l'encodage. Le journal d'Apollo revelait
+ * « NvEnc: created encoder HEVC P1 » : P1 est le preset le PLUS RAPIDE de
+ * NVENC, donc celui de moindre qualite, et c'est le defaut. Sur une carte qui
+ * encode ce flux sans effort et un lien direct qui porte 106 Mbps, le payer
+ * en qualite n'a aucune contrepartie utile. P5 garde une marge confortable
+ * avant P7, que rien ne justifie en temps reel.
+ *
+ * spatial_aq repartit le debit vers les zones peu detaillees — un fond uni
+ * parseme de texte, c'est-a-dire exactement un bureau. C'est ce qui evite le
+ * grain autour des caracteres.
+ */
 export const REQUIRED_CONF: Readonly<Record<string, string>> = {
   headless_mode: "enabled",
   dd_configuration_option: "ensure_only_display",
@@ -6,6 +20,8 @@ export const REQUIRED_CONF: Readonly<Record<string, string>> = {
   dd_refresh_rate_option: "auto",
   dd_config_revert_on_disconnect: "enabled",
   capture: "ddx",
+  nvenc_preset: "5",
+  nvenc_spatial_aq: "enabled",
 };
 
 /** Fonction pure. Lit un sunshine.conf en paires cle/valeur. */
