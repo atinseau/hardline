@@ -248,6 +248,7 @@ describe("restore", () => {
     const remove = script.indexOf("Remove-Item");
     const scDelete = script.indexOf("sc.exe delete");
     const netsh = script.indexOf("netsh.exe");
+    const resetExitCode = script.indexOf("$LASTEXITCODE = 0");
 
     expect(stop).toBeGreaterThanOrEqual(0);
     expect(uninstallExe).toBeGreaterThan(stop);
@@ -260,6 +261,11 @@ describe("restore", () => {
     expect(remove).toBeGreaterThan(path);
     expect(scDelete).toBeGreaterThan(remove);
     expect(netsh).toBeGreaterThan(scDelete);
+    // netsh sort en code non nul quand aucune regle ne correspond deja - le
+    // cas normal apres une desinstallation propre - sans quoi runRemoteChecked
+    // rapporterait en echec une restauration reussie : la remise a zero doit
+    // survivre APRES cet appel, pas seulement figurer quelque part dans le texte.
+    expect(resetExitCode).toBeGreaterThan(netsh);
 
     expect(script).not.toContain("uninstall.bat");
     expect(script).not.toContain("pause");
