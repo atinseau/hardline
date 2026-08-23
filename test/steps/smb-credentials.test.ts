@@ -17,7 +17,7 @@ mock.module("../../src/lib/keychain", () => ({
   deleteSecret,
 }));
 
-const { smbCredentialsStep, providePassword } = await import(
+const { smbCredentialsStep, providePassword, forgetPassword } = await import(
   "../../src/steps/smb-credentials"
 );
 
@@ -71,6 +71,22 @@ describe("apply", () => {
       /Mot de passe Windows manquant/,
     );
     expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  test("forgetPassword efface le mot de passe depose mais jamais consomme", async () => {
+    // L'orchestrateur saute apply() quand l'etape est deja conforme : sans
+    // cet effacement, le secret survit en memoire de module jusqu'a la fin
+    // du processus, sans que rien ne l'ait jamais range.
+    providePassword("hunter2");
+    forgetPassword();
+    await expect(smbCredentialsStep.apply(CONFIG)).rejects.toThrow(
+      /Mot de passe Windows manquant/,
+    );
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  test("forgetPassword est sans effet quand rien n'a ete depose", () => {
+    expect(() => forgetPassword()).not.toThrow();
   });
 
   test("rejette si aucun mot de passe n'a ete depose", async () => {

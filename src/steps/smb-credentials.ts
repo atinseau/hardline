@@ -17,6 +17,17 @@ export function providePassword(value: string): void {
   pendingPassword = value;
 }
 
+/**
+ * Efface le mot de passe garde en memoire de module. apply() le fait deja
+ * quand il s'execute, mais l'orchestrateur le saute quand l'etape est deja
+ * conforme : le secret survivrait alors jusqu'a la fin du processus sans que
+ * rien ne l'ait jamais range. La commande appelle donc ceci en fin de
+ * convergence, quel que soit le chemin de sortie.
+ */
+export function forgetPassword(): void {
+  pendingPassword = null;
+}
+
 export const smbCredentialsStep: Step<CredentialState> = {
   name: "smb-credentials",
   label: "Identifiants des partages au trousseau (Mac)",

@@ -27,8 +27,10 @@ import {
   ForeignApolloError,
   uninstallApollo,
 } from "../steps/apollo-install";
+import { getSecret } from "../lib/keychain";
+import { forgetPassword, providePassword } from "../steps/smb-credentials";
 import type { Step } from "../steps/types";
-import { askConfirmation, configureOutput, ui, withSpinner } from "../lib/ui";
+import { askConfirmation, askSecret, configureOutput, ui, withSpinner } from "../lib/ui";
 
 const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
 
@@ -88,6 +90,20 @@ async function bootstrapRemote(): Promise<boolean> {
   } finally {
     server.stop();
   }
+}
+
+/**
+ * Le mot de passe Windows n'est jamais recueilli par l'etape elle-meme : les
+ * etapes ne dialoguent jamais. Il est demande ici, une seule fois, avant que
+ * la convergence locale ne commence, et depose dans smb-credentials par ce
+ * pont.
+ */
+async function ensureWindowsPassword(): Promise<void> {
+  if ((await getSecret("windows-account")) !== null) return;
+  const password = await askSecret(
+    `Mot de passe du compte Windows «\u00a0${CONFIG.smb.user}\u00a0», pour les partages\u00a0:`,
+  );
+  providePassword(password);
 }
 
 /**
@@ -219,6 +235,10 @@ export async function installCommand(options: { yes?: boolean } = {}): Promise<v
   try {
     await install(manifestPath, { yes: options.yes ?? false });
   } finally {
+    // Quel que soit le chemin de sortie, echec compris : l'orchestrateur saute
+    // apply() quand smb-credentials est deja conforme, et le mot de passe garde
+    // en memoire de module survivrait alors jusqu'a la fin du processus.
+    forgetPassword();
     await lock.release();
   }
 }
@@ -243,6 +263,7 @@ async function install(manifestPath: string, options: { yes: boolean }): Promise
   // Phase 2 - convergence locale. C'est elle qui cree la route vers le
   // lien direct : sans elle, aucune precondition distante n'est observable.
   // Elle passe par applySteps, qui ecrit l'etat anterieur avant de modifier.
+  await ensureWindowsPassword();
   if (!(await converge(LOCAL_STEPS, "Convergence du Mac", manifestPath))) return;
 
   // Phase 3 - preconditions distantes, desormais observables.

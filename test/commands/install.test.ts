@@ -37,11 +37,14 @@ const manifestPaths: string[] = [];
 const manifestOrder: string[] = [];
 /** Faux quand le PC ne porte aucun releve exploitable : l'etape n'enregistre rien. */
 let releveEnregistrable = true;
+/** Fait lever la sonde locale : le seul chemin ou install() sort par une exception. */
+let preflightThrows = false;
 
 mock.module("../../src/lib/preflight", () => ({
   ...realPreflight,
   runLocalPreflight: async () => {
     trace.push("preflight-local");
+    if (preflightThrows) throw new Error("sonde locale cassée");
     return localChecks;
   },
   runRemotePreflight: async () => {
@@ -100,6 +103,38 @@ mock.module("../../src/steps/apollo-install", () => ({
 let confirmForeignAnswer = true;
 const askConfirmation = mock(async (..._args: unknown[]) => confirmForeignAnswer);
 
+// Le mot de passe Windows : demande par la commande, jamais par l'etape.
+let windowsSecretPresent = false;
+const realKeychain = await import("../../src/lib/keychain");
+const getSecretForCredentials = mock(async (..._args: unknown[]) =>
+  windowsSecretPresent ? "deja-au-trousseau" : null,
+);
+mock.module("../../src/lib/keychain", () => ({
+  ...realKeychain,
+  getSecret: getSecretForCredentials,
+}));
+
+const realCredentials = await import("../../src/steps/smb-credentials");
+const providePassword = mock((..._args: unknown[]) => {
+  trace.push("providePassword");
+});
+const forgetPassword = mock(() => {
+  trace.push("forgetPassword");
+});
+mock.module("../../src/steps/smb-credentials", () => ({
+  ...realCredentials,
+  providePassword,
+  forgetPassword,
+}));
+
+const askSecretCalls: string[] = [];
+let askSecretRejects = false;
+const askSecret = mock(async (message: string) => {
+  askSecretCalls.push(message);
+  if (askSecretRejects) throw new Error("Interrompu par l'utilisateur.");
+  return "mot-de-passe-saisi";
+});
+
 mock.module("../../src/lib/orchestrator", () => ({
   applySteps: async (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -154,7 +189,7 @@ mock.module("../../src/lib/ui", () => ({
   configureOutput: () => {},
   withSpinner: async <T>(_label: string, run: () => Promise<T>) => run(),
   askConfirmation,
-  askSecret: async () => "mot-de-passe-test",
+  askSecret,
   ui: {
     start: () => {},
     finish: (message: string) => finishes.push(message),
@@ -244,11 +279,19 @@ beforeEach(() => {
   backupApolloConfig.mockClear();
   uninstallApollo.mockClear();
   askConfirmation.mockClear();
+  windowsSecretPresent = false;
+  getSecretForCredentials.mockClear();
+  providePassword.mockClear();
+  forgetPassword.mockClear();
+  askSecret.mockClear();
+  askSecretCalls.length = 0;
+  askSecretRejects = false;
   publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
   appliedGroups.length = 0;
   manifestPaths.length = 0;
   manifestOrder.length = 0;
   releveEnregistrable = true;
+  preflightThrows = false;
   localChecks = MAC_OK;
   remoteRounds = [PC_OK];
   remoteCalls = 0;
@@ -273,10 +316,12 @@ describe("installCommand", () => {
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
+      "providePassword",
       "apply:network-mac+moonlight-install+smb-credentials",
       "preflight-remote",
       "apply:bootstrap-windows",
       "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
+      "forgetPassword",
     ]);
     expect(process.exitCode).toBe(0);
   });
@@ -293,7 +338,7 @@ describe("installCommand", () => {
     localChecks = [ko("service-mac")];
     await installCommand();
     // Ni convergence, ni sonde distante, ni dix minutes passees devant le PC.
-    expect(trace).toEqual(["preflight-local"]);
+    expect(trace).toEqual(["preflight-local", "forgetPassword"]);
     expect(serveCalls).toBe(0);
     expect(waitCalls).toBe(0);
     expect(process.exitCode).toBe(1);
@@ -305,6 +350,7 @@ describe("installCommand", () => {
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
+      "providePassword",
       "apply:network-mac+moonlight-install+smb-credentials",
       "preflight-remote",
       "serve",
@@ -313,6 +359,7 @@ describe("installCommand", () => {
       "preflight-remote",
       "apply:bootstrap-windows",
       "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
+      "forgetPassword",
     ]);
     expect(finishes.join("\n")).toContain("Liaison établie");
     expect(finishes.join("\n")).not.toContain("Relancer");
@@ -356,6 +403,7 @@ describe("installCommand", () => {
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
     expect(trace).toEqual([
       "preflight-local",
+      "providePassword",
       "apply:network-mac+moonlight-install+smb-credentials",
       "preflight-remote",
       "serve",
@@ -363,6 +411,7 @@ describe("installCommand", () => {
       "stop",
       "preflight-remote",
       "apply:bootstrap-windows",
+      "forgetPassword",
     ]);
     expect(process.exitCode).toBe(1);
     expect(finishes.join("\n")).toContain("relevé d'amorçage du PC enregistré");
@@ -416,7 +465,7 @@ describe("installCommand", () => {
   test("une cle publique manquante bloque en phase 1, avant toute modification", async () => {
     localChecks = [ok("service-mac"), ko("cle-publique")];
     await installCommand();
-    expect(trace).toEqual(["preflight-local"]);
+    expect(trace).toEqual(["preflight-local", "forgetPassword"]);
     expect(appliedGroups).toEqual([]);
     expect(serveCalls).toBe(0);
     expect(finishes.join("\n")).toContain("Rien n'a été modifié");
@@ -429,7 +478,13 @@ describe("installCommand", () => {
     remoteRounds = [[ko("ssh")]];
     publicKey = null;
     await installCommand();
-    expect(trace).toEqual(["preflight-local", "apply:network-mac+moonlight-install+smb-credentials", "preflight-remote"]);
+    expect(trace).toEqual([
+      "preflight-local",
+      "providePassword",
+      "apply:network-mac+moonlight-install+smb-credentials",
+      "preflight-remote",
+      "forgetPassword",
+    ]);
     expect(serveCalls).toBe(0);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
     expect(failures.join("\n")).toContain("ssh-keygen -t ed25519");
@@ -442,7 +497,12 @@ describe("installCommand", () => {
   test("un echec de la convergence du Mac n'envoie pas sonder le PC", async () => {
     applyThrowsOn = "network-mac+moonlight-install+smb-credentials";
     await installCommand();
-    expect(trace).toEqual(["preflight-local", "apply:network-mac+moonlight-install+smb-credentials"]);
+    expect(trace).toEqual([
+      "preflight-local",
+      "providePassword",
+      "apply:network-mac+moonlight-install+smb-credentials",
+      "forgetPassword",
+    ]);
     expect(failures.join("\n")).toContain("Convergence du Mac — boum");
     expect(process.exitCode).toBe(1);
   });
@@ -560,5 +620,83 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
     await installCommand({ yes: true });
     expect(failures.join("\n")).toContain("Convergence du PC — boum");
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe("installCommand, mot de passe Windows", () => {
+  test("le demande une seule fois quand le trousseau est vide, avant la convergence locale", async () => {
+    windowsSecretPresent = false;
+    await installCommand();
+    expect(askSecret).toHaveBeenCalledTimes(1);
+    expect(providePassword).toHaveBeenCalledWith("mot-de-passe-saisi");
+    const depot = trace.indexOf("providePassword");
+    const convergenceLocale = trace.indexOf(`apply:${LOCAL_GROUP.join("+")}`);
+    expect(depot).toBeGreaterThanOrEqual(0);
+    expect(convergenceLocale).toBeGreaterThanOrEqual(0);
+    expect(depot).toBeLessThan(convergenceLocale);
+  });
+
+  test("l'invite ne contient jamais le mot de passe, et le mot de passe ne s'affiche nulle part", async () => {
+    windowsSecretPresent = false;
+    await installCommand();
+    const visible = [...askSecretCalls, ...finishes, ...failures, ...reports.flat()].join("\n");
+    expect(visible).not.toContain("mot-de-passe-saisi");
+  });
+
+  test("ne demande rien quand un mot de passe est deja au trousseau", async () => {
+    windowsSecretPresent = true;
+    await installCommand();
+    expect(askSecret).not.toHaveBeenCalled();
+    expect(providePassword).not.toHaveBeenCalled();
+  });
+});
+
+describe("installCommand, le mot de passe en memoire est efface en fin de convergence", () => {
+  test("apres une installation reussie", async () => {
+    await installCommand();
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
+    // Il est efface EN DERNIER : apres la derniere convergence, pas avant.
+    expect(trace.lastIndexOf("forgetPassword")).toBe(trace.length - 1);
+  });
+
+  test("meme quand la convergence locale echoue", async () => {
+    applyThrowsOn = LOCAL_GROUP.join("+");
+    await installCommand();
+    expect(process.exitCode).toBe(1);
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
+  });
+
+  test("meme quand la convergence distante echoue", async () => {
+    applyThrowsOn = REMOTE_GROUP.join("+");
+    await installCommand();
+    expect(process.exitCode).toBe(1);
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
+  });
+
+  test("meme quand le Mac bloque en phase 1, avant toute modification", async () => {
+    localChecks = [ko("service-mac")];
+    await installCommand();
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
+  });
+
+  test("meme quand la commande sort par une exception, et non par un retour", async () => {
+    // Le seul chemin qui distingue un effacement dans le finally d'un
+    // effacement pose apres l'appel : une exception qui traverse install().
+    preflightThrows = true;
+    await expect(installCommand()).rejects.toThrow("sonde locale cassée");
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
+  });
+
+  test("meme quand l'utilisateur annule l'invite du mot de passe", async () => {
+    askSecretRejects = true;
+    await expect(installCommand()).rejects.toThrow(/Interrompu/);
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
+  });
+
+  test("meme quand l'utilisateur refuse d'effacer un Apollo etranger", async () => {
+    applyThrowsForeign = true;
+    confirmForeignAnswer = false;
+    await installCommand({ yes: false });
+    expect(forgetPassword).toHaveBeenCalledTimes(1);
   });
 });
