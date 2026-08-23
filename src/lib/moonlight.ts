@@ -30,6 +30,14 @@ export function streamArgs(
     config.moonlight.app,
     "--display-mode",
     options.fullscreen ? "fullscreen" : "windowed",
+    // Le curseur du Mac n'est plus capture par la fenetre : on en sort comme
+    // de n'importe quelle autre. Moonlight decrit lui-meme ce mode comme
+    // « optimise pour le bureau a distance » ; sans lui, il faut connaitre
+    // Ctrl+Alt+Shift+Z pour recuperer sa souris, ce qui est exactement le
+    // genre de detail que hardline existe pour eviter. Contrepartie assumee :
+    // la souris relative des jeux en vue subjective ne fonctionne pas dans ce
+    // mode — hardline sert a travailler sur le PC, pas a y jouer.
+    "--absolute-mouse",
   ];
 
   const resolution =

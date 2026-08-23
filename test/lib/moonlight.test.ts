@@ -75,6 +75,7 @@ describe("streamArgs", () => {
       "Desktop",
       "--display-mode",
       "fullscreen",
+      "--absolute-mouse",
       "--resolution",
       "3840x2160",
       "--fps",
@@ -95,6 +96,7 @@ describe("streamArgs", () => {
       "Desktop",
       "--display-mode",
       "windowed",
+      "--absolute-mouse",
       "--resolution",
       "3456x2234",
       "--fps",
@@ -109,7 +111,7 @@ describe("streamArgs", () => {
       fps: null,
     });
 
-    expect(args).toEqual(["stream", "10.10.10.1", "Desktop", "--display-mode", "windowed"]);
+    expect(args).toEqual(["stream", "10.10.10.1", "Desktop", "--display-mode", "windowed", "--absolute-mouse"]);
     expect(args).not.toContain("--resolution");
     expect(args).not.toContain("--fps");
   });
@@ -136,6 +138,7 @@ describe("streamArgs", () => {
       "Desktop",
       "--display-mode",
       "windowed",
+      "--absolute-mouse",
       "--resolution",
       "3456x2234",
     ]);
@@ -204,6 +207,7 @@ describe("frontiere systeme", () => {
       "Desktop",
       "--display-mode",
       "windowed",
+      "--absolute-mouse",
       "--resolution",
       "3456x2234",
       "--fps",
@@ -216,4 +220,14 @@ describe("frontiere systeme", () => {
 
     expect(spawnCalls[0]!.cmd).toEqual(["/opt/homebrew/bin/moonlight", "quit", "10.10.10.1"]);
   });
+});
+
+/**
+ * Sans ce drapeau, la fenetre de streaming capture le curseur du Mac, et il
+ * faut connaitre Ctrl+Alt+Shift+Z pour le recuperer.
+ */
+test("streamArgs demande la souris absolue, pour ne pas capturer le curseur du Mac", () => {
+  const args = streamArgs(CONFIG, null, { fullscreen: true, resolution: null, fps: null });
+  expect(args).toContain("--absolute-mouse");
+  expect(args).not.toContain("--no-absolute-mouse");
 });
