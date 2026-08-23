@@ -141,6 +141,18 @@ describe("mountShare", () => {
     expect(caught?.message).not.toContain(encodeURIComponent(password));
     expect(caught?.message).toContain(anchor);
   });
+
+  test("ne remonte pas un partage deja monte", async () => {
+    // Sans cette garde, un montage laisse par un up interrompu s'empile au
+    // lancement suivant : macOS suffixe le point de montage plutot que de
+    // refuser, et l'utilisateur se retrouve avec pc-d, pc-d-1, pc-d-2.
+    mountOutput = `//arthur@10.10.10.1/hardline-d on ${SHARE_D.mountPoint} (smbfs, nodev, nosuid, mounted by arthur)`;
+
+    await mountShare(SHARE_D, CONFIG, "s3cret!");
+
+    expect(spawnCalls.some((c) => c.cmd[0] === "mount_smbfs")).toBe(false);
+    expect(mkdirCalls).toEqual([]);
+  });
 });
 
 describe("unmountShare", () => {

@@ -3,14 +3,21 @@ import { CONFIG } from "../../src/config";
 import type { ShareState } from "../../src/steps/smb-shares";
 
 let remoteState: ShareState[];
+/** Journal d'appels partage : c'est l'ORDRE qui porte la garantie du demontage. */
+const order: string[] = [];
+
 const runRemoteJson = mock(async (..._args: unknown[]) => remoteState);
-const runRemoteChecked = mock(async (..._args: unknown[]) => ({
-  exitCode: 0,
-  stdout: "",
-  stderr: "",
-}));
+const runRemoteChecked = mock(async (..._args: unknown[]) => {
+  order.push("runRemoteChecked");
+  return { exitCode: 0, stdout: "", stderr: "" };
+});
 
 mock.module("../../src/lib/ssh", () => ({ runRemoteJson, runRemoteChecked }));
+
+const unmountShare = mock(async (share: { name: string }) => {
+  order.push(`unmount:${share.name}`);
+});
+mock.module("../../src/lib/smb", () => ({ unmountShare }));
 
 const { smbSharesStep } = await import("../../src/steps/smb-shares");
 
@@ -19,8 +26,10 @@ function scriptOf(call: number): string {
 }
 
 beforeEach(() => {
+  order.length = 0;
   runRemoteJson.mockClear();
   runRemoteChecked.mockClear();
+  unmountShare.mockClear();
 });
 
 describe("inspect", () => {
@@ -150,5 +159,45 @@ describe("restore", () => {
         NO_PENDING,
       ),
     ).rejects.toThrow("acces refuse");
+  });
+
+  test("demonte cote Mac AVANT de retirer les partages cote PC", async () => {
+    // Un montage dont le serveur vient de disparaitre est le Finder fige que
+    // le projet promet d'eviter : l'ordre est la garantie, pas le geste.
+    await smbSharesStep.restore(
+      CONFIG,
+      [
+        { name: "hardline-d", existed: false },
+        { name: "hardline-e", existed: false },
+      ],
+      NO_PENDING,
+    );
+
+    expect(order).toEqual([
+      "unmount:arthur",
+      "unmount:hardline-d",
+      "unmount:hardline-e",
+      "runRemoteChecked",
+    ]);
+  });
+
+  test("demonte tous les partages configures, y compris celui qu'elle n'a pas cree", async () => {
+    // Une session tuee peut avoir laisse n'importe lequel monte, « arthur »
+    // compris : le releve de cette etape ne dit rien des montages du Mac.
+    await smbSharesStep.restore(
+      CONFIG,
+      [
+        { name: "hardline-d", existed: true },
+        { name: "hardline-e", existed: true },
+      ],
+      NO_PENDING,
+    );
+
+    expect(order).toEqual([
+      "unmount:arthur",
+      "unmount:hardline-d",
+      "unmount:hardline-e",
+    ]);
+    expect(runRemoteChecked).not.toHaveBeenCalled();
   });
 });

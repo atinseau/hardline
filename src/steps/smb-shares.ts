@@ -1,4 +1,5 @@
 import { psQuote } from "../lib/powershell";
+import { unmountShare } from "../lib/smb";
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config, SMBShare } from "../config";
 import type { Step } from "./types";
@@ -74,7 +75,19 @@ export const smbSharesStep: Step<ShareState[]> = {
     await runRemoteChecked(config.ssh, APPLY(managed, config.smb.user));
   },
 
+  /**
+   * Demonte cote Mac AVANT de retirer les partages cote PC. L'ordre n'est pas
+   * une precaution de style : un volume dont le serveur vient de disparaitre
+   * est exactement le Finder fige que le projet promet d'eviter. Le demontage
+   * porte sur TOUS les partages configures, y compris ceux que cette etape n'a
+   * pas crees — une session tuee peut en avoir laisse n'importe lequel monte —
+   * et unmountShare ne leve jamais quand rien ne l'est.
+   */
   async restore(config: Config, previous: ShareState[]) {
+    for (const share of config.smb.shares) {
+      await unmountShare(share);
+    }
+
     const toRemove = previous.filter((s) => !s.existed).map((s) => s.name);
     if (toRemove.length === 0) return;
     await runRemoteChecked(config.ssh, RESTORE(toRemove));

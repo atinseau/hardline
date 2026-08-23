@@ -23,12 +23,20 @@ function stripSecret(text: string, secret: string): string {
 
 // --- Frontiere systeme. ---
 
-/** Monte un partage. Cree le point de montage au besoin. */
+/**
+ * Monte un partage. Cree le point de montage au besoin.
+ *
+ * Symetrique d'unmountShare, et gardee comme elle par isMounted : un montage
+ * laisse par un `up` interrompu s'empilerait sinon a chaque lancement, macOS
+ * ajoutant un suffixe au point de montage plutot que de refuser.
+ */
 export async function mountShare(
   share: SMBShare,
   config: Config,
   password: string,
 ): Promise<void> {
+  if (await isMounted(share)) return;
+
   await mkdir(share.mountPoint, { recursive: true });
 
   const url = smbUrl(config.ssh.host, config.smb.user, password, share.name);
