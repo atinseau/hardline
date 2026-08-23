@@ -5,6 +5,7 @@ import {
   type ApolloCredentials,
 } from "../lib/apollo-api";
 import { spawnPair } from "../lib/moonlight";
+import { errorMessage } from "../lib/errors";
 import { containsHost, forgetHost, readHosts } from "../lib/moonlight-plist";
 import { generatePin, getSecret } from "../lib/keychain";
 import type { Config } from "../config";
@@ -90,13 +91,33 @@ export const pairingStep: Step<PairingState> = {
   /**
    * Se defait EN PREMIER parmi les etapes distantes, puisqu'elle vient en
    * dernier dans REMOTE_STEPS : on depaire tant que le serveur repond encore.
+   *
+   * Les deux volets sont INDEPENDANTS, et le volet Mac ne doit jamais etre pris
+   * en otage par le volet PC. Apollo arrete alors que le PC repond encore en
+   * SSH faisait lever listClients, l'etape restait au manifeste, et la boucle
+   * de restauration continuait jusqu'a apollo-config, qui efface le secret
+   * apollo-web du trousseau. La desinstallation suivante levait alors sur ce
+   * secret disparu, avant meme d'avoir touche au Mac : l'appairage ne se
+   * restaurait plus jamais, uninstall sortait en echec a perpetuite, et
+   * l'entree d'hote restait a demeure dans le plist de Moonlight. forgetHost,
+   * elle, aurait reussi dans tous ces cas. Elle passe donc INCONDITIONNELLEMENT,
+   * et ce que le PC n'a pas rendu est NOMME plutot que remonte.
    */
   async restore(config: Config, previous: PairingState, _context: RestoreContext) {
-    const creds = await credentials(config);
-    const clients = await listClients(config, creds);
-    const ours = clients.find((c) => c.name === config.moonlight.clientName);
-    if (ours) {
-      await unpairClient(config, creds, ours.uuid);
+    const cedes: string[] = [];
+
+    try {
+      const creds = await credentials(config);
+      const clients = await listClients(config, creds);
+      const ours = clients.find((c) => c.name === config.moonlight.clientName);
+      if (ours) {
+        await unpairClient(config, creds, ours.uuid);
+      }
+    } catch (error) {
+      cedes.push(
+        `Client «\u00a0${config.moonlight.clientName}\u00a0» peut-être encore appairé côté PC\u00a0: ` +
+          `${errorMessage(error)}`,
+      );
     }
 
     // Un hote deja connu du plist avant hardline n'est jamais le notre a
@@ -107,12 +128,13 @@ export const pairingStep: Step<PairingState> = {
     if (!previous.hostKnown) {
       const forgotten = await forgetHost(config.ssh.host);
       if (!forgotten) {
-        return {
-          yielded:
-            "Hôte encore connu de Moonlight sur ce Mac\u00a0: la suppression via " +
+        cedes.push(
+          "Hôte encore connu de Moonlight sur ce Mac\u00a0: la suppression via " +
             "PlistBuddy n'a pas pu être confirmée.",
-        };
+        );
       }
     }
+
+    if (cedes.length > 0) return { yielded: cedes.join(" ") };
   },
 };

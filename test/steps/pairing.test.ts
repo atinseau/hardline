@@ -214,3 +214,75 @@ describe("restore", () => {
     expect(unpairClient).not.toHaveBeenCalled();
   });
 });
+
+describe("restore, le volet Mac n'est jamais pris en otage par le volet PC", () => {
+  test("oublie l'hote meme quand la liste des clients leve", async () => {
+    // Apollo arrete alors que le PC repond encore en SSH. Sans isolement, la
+    // levee remontait, apollo-config effacait ensuite le secret apollo-web, et
+    // la desinstallation suivante ne pouvait plus jamais depairer ni oublier.
+    listClients.mockImplementationOnce(async () => {
+      throw new Error("Apollo ne repond pas");
+    });
+
+    const outcome = await pairingStep.restore(
+      CONFIG,
+      { clients: [], hostKnown: false },
+      NO_PENDING,
+    );
+
+    expect(forgetHost).toHaveBeenCalledWith("10.10.10.1");
+    expect((outcome as { yielded: string }).yielded).toContain("Apollo ne repond pas");
+  });
+
+  test("oublie l'hote meme quand le secret Apollo a deja disparu du trousseau", async () => {
+    apolloWebSecret = null;
+
+    const outcome = await pairingStep.restore(
+      CONFIG,
+      { clients: [], hostKnown: false },
+      NO_PENDING,
+    );
+
+    expect(forgetHost).toHaveBeenCalledWith("10.10.10.1");
+    expect(outcome).not.toBeUndefined();
+  });
+
+  test("ne leve jamais pour un echec cote PC, et n'appelle pas le depairage", async () => {
+    listClients.mockImplementationOnce(async () => {
+      throw new Error("Apollo ne repond pas");
+    });
+
+    await expect(
+      pairingStep.restore(CONFIG, { clients: [], hostKnown: false }, NO_PENDING),
+    ).resolves.not.toBeUndefined();
+    expect(unpairClient).not.toHaveBeenCalled();
+  });
+
+  test("nomme les DEUX volets quand aucun des deux n'a pu etre mene a bien", async () => {
+    listClients.mockImplementationOnce(async () => {
+      throw new Error("Apollo ne repond pas");
+    });
+    forgetHostResult = false;
+
+    const outcome = await pairingStep.restore(
+      CONFIG,
+      { clients: [], hostKnown: false },
+      NO_PENDING,
+    );
+
+    const yielded = (outcome as { yielded: string }).yielded;
+    expect(yielded).toContain("Apollo ne repond pas");
+    expect(yielded).toContain("Moonlight");
+  });
+
+  test("ne cede rien quand le PC a repondu et que le plist a ete nettoye", async () => {
+    clientList = [{ name: "hardline-mac", uuid: "u-7" }];
+    const outcome = await pairingStep.restore(
+      CONFIG,
+      { clients: [], hostKnown: false },
+      NO_PENDING,
+    );
+    expect(unpairClient).toHaveBeenCalled();
+    expect(outcome).toBeUndefined();
+  });
+});
