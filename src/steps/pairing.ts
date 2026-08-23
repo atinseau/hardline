@@ -4,7 +4,7 @@ import {
   unpairClient,
   type ApolloCredentials,
 } from "../lib/apollo-api";
-import { spawnPair } from "../lib/moonlight";
+import { isPairedFromMac, spawnPair } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
 import { containsHost, forgetHost, readHosts } from "../lib/moonlight-plist";
 import { generatePin, getSecret } from "../lib/keychain";
@@ -134,6 +134,23 @@ export const pairingStep: Step<PairingState> = {
   async apply(config: Config) {
     const creds = await credentials(config);
     await waitForApollo(config, creds);
+
+    // Un Mac deja appaire fait sortir `moonlight pair` sans rien faire et sans
+    // rien dire : le PIN part alors dans le vide, /api/pin rend
+    // {"status":false}, et l'etape echouait sur « n'apparait pas » en laissant
+    // croire a un probleme d'appairage. On nomme la vraie cause, et on nomme
+    // aussi les clients a retirer — hardline ne les depaire pas de lui-meme :
+    // ce sont des appairages anterieurs, qui appartiennent a l'utilisateur.
+    if (await isPairedFromMac(config)) {
+      const existants = await listClients(config, creds);
+      throw new Error(
+        "Ce Mac est déjà appairé à ce PC, mais sous un autre nom que " +
+          `«\u00a0${config.moonlight.clientName}\u00a0»\u00a0: Moonlight refuse alors de ` +
+          "recommencer, et l'appairage ne peut pas aboutir. Retirer le ou les " +
+          `clients concernés depuis l'interface d'Apollo (${existants.map((c) => `«\u00a0${c.name}\u00a0»`).join(", ") || "aucun client listé"}), ` +
+          "puis relancer «\u00a0hardline install\u00a0».",
+      );
+    }
 
     const pin = generatePin();
     const pairing = spawnPair(config, pin);

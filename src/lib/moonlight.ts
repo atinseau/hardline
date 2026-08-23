@@ -55,6 +55,49 @@ export function quitArgs(config: Config): string[] {
 // --- Frontiere systeme. ---
 
 /** Lance l'appairage sans attendre sa fin. */
+/** Fonction pure. La ligne qui interroge les applications d'un hote. */
+export function listArgs(config: Config): string[] {
+  return ["list", config.ssh.host];
+}
+
+/**
+ * Ce Mac est-il deja appaire avec le PC ?
+ *
+ * `moonlight list` exige l'appairage : il rend 0 et enumere les applications
+ * quand ce Mac est appaire, et 255 avec « n'a pas ete couple » sinon. C'est
+ * le SEUL signal fiable cote Mac — `serverinfo?uniqueid=…` rend PairStatus=0
+ * meme pour un client appaire, parce que ce champ ne vaut que sur la requete
+ * HTTPS portant le certificat client, que curl ne presente pas.
+ *
+ * Pourquoi c'est indispensable : quand ce Mac est deja appaire,
+ * `moonlight pair` n'a rien a faire et sort SANS RIEN DIRE. Le code y voyait
+ * un appairage qui echoue, et l'etape rendait « hardline-mac n'apparait pas »
+ * sans jamais nommer la vraie cause.
+ *
+ * Le delai plafond evite qu'un Moonlight qui n'aboutit pas retienne l'etape
+ * indefiniment ; un depassement se lit « pas appaire », le cas ou l'on agit.
+ */
+export async function isPairedFromMac(
+  config: Config,
+  deadlineMs = 30_000,
+): Promise<boolean> {
+  const proc = Bun.spawn([config.moonlight.binary, ...listArgs(config)], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+
+  const code = await Promise.race([
+    proc.exited,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), deadlineMs)),
+  ]);
+
+  if (code === null) {
+    proc.kill();
+    return false;
+  }
+  return code === 0;
+}
+
 export function spawnPair(config: Config, pin: string): { kill(): void } {
   const proc = Bun.spawn([config.moonlight.binary, ...pairArgs(config, pin)], {
     stdout: "ignore",

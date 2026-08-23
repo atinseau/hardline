@@ -27,7 +27,14 @@ const listClients = mock(async (..._args: unknown[]) => {
 const unpairClient = mock(async (..._args: unknown[]) => {});
 
 mock.module("../../src/lib/apollo-api", () => ({ listClients, sendPin, unpairClient }));
-mock.module("../../src/lib/moonlight", () => ({ spawnPair }));
+/**
+ * `moonlight list` est le seul signal fiable cote Mac : il rend 0 quand ce
+ * Mac est appaire, 255 sinon. Un Mac deja appaire fait sortir
+ * `moonlight pair` sans rien faire ET sans rien dire.
+ */
+let dejaAppaire = false;
+const isPairedFromMac = mock(async (..._args: unknown[]) => dejaAppaire);
+mock.module("../../src/lib/moonlight", () => ({ spawnPair, isPairedFromMac }));
 
 const forgetHost = mock(async (..._args: unknown[]) => forgetHostResult);
 mock.module("../../src/lib/moonlight-plist", () => ({
@@ -89,6 +96,8 @@ beforeEach(() => {
   plistHosts = [];
   killCalls = 0;
   forgetHostResult = true;
+  dejaAppaire = false;
+  isPairedFromMac.mockClear();
   listClients.mockImplementation(async () => {
     order.push("listClients");
     return clientListAfterPin ?? clientList;
@@ -436,5 +445,44 @@ describe("désamorçage de l'état Apollo", () => {
     await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/non confirmé/);
     expect(remoteWrites).toHaveLength(0);
     expect(killCalls).toBe(1);
+  });
+});
+
+describe("Mac déjà appairé sous un autre nom", () => {
+  test("nomme la cause réelle au lieu d'échouer sur « n'apparaît pas »", async () => {
+    dejaAppaire = true;
+    clientList = [{ name: "Mac", uuid: "u-ancien" }];
+
+    await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/déjà appairé à ce PC/);
+    // Aucun appairage n'est tenté : il ne pourrait qu'échouer en silence.
+    expect(spawnPair).not.toHaveBeenCalled();
+    expect(sendPin).not.toHaveBeenCalled();
+  });
+
+  test("le message nomme les clients à retirer", async () => {
+    dejaAppaire = true;
+    clientList = [{ name: "Mac", uuid: "u-1" }, { name: "Salon", uuid: "u-2" }];
+
+    await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/Mac.*Salon/s);
+  });
+
+  /**
+   * hardline ne dépaire JAMAIS de lui-même : ces appairages sont antérieurs
+   * et appartiennent à l'utilisateur.
+   */
+  test("ne dépaire rien de lui-même", async () => {
+    dejaAppaire = true;
+    clientList = [{ name: "Mac", uuid: "u-1" }];
+
+    await expect(pairingStep.apply(CONFIG)).rejects.toThrow();
+    expect(unpairClient).not.toHaveBeenCalled();
+  });
+
+  test("un Mac non appairé suit le chemin nominal", async () => {
+    dejaAppaire = false;
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-3" }];
+
+    await pairingStep.apply(CONFIG);
+    expect(spawnPair).toHaveBeenCalled();
   });
 });
