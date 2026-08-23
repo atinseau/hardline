@@ -8,6 +8,9 @@ import { spawnPair } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
 import { containsHost, forgetHost, readHosts } from "../lib/moonlight-plist";
 import { generatePin, getSecret } from "../lib/keychain";
+import { normalizeState } from "../lib/apollo-state";
+import { psDoubleQuote, psQuote } from "../lib/powershell";
+import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import type { Config } from "../config";
 import type { RestoreContext, Step } from "./types";
 
@@ -32,11 +35,79 @@ async function credentials(config: Config): Promise<ApolloCredentials> {
   return { user: config.apollo.webUser, password };
 }
 
+const STATE_PATH_EXPR = (installDirQ: string) =>
+  `(Join-Path ${installDirQ} (Join-Path 'config' 'sunshine_state.json'))`;
+
+/**
+ * Le fichier d'etat tel qu'il est sur le PC, ou null s'il n'existe pas.
+ *
+ * Se lit par SSH et non par l'API : quand cet etat est toxique, Apollo est
+ * mort et l'API ne repond plus du tout. Un diagnostic qui passerait par elle
+ * ne pourrait jamais nommer la cause de sa propre panne. Le cast [string]
+ * reste DANS la branche Test-Path, pour la meme raison que dans
+ * src/steps/apollo-config.ts : [string]$null vaut "" et confondrait « fichier
+ * absent » avec « fichier vide ».
+ */
+async function readRemoteState(config: Config): Promise<string | null> {
+  const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
+  const rows = await runRemoteJson<{ state: string | null }>(
+    config.ssh,
+    `
+$statePath = ${STATE_PATH_EXPR(installDirQ)}
+$state = if (Test-Path $statePath) { [string](Get-Content -Path $statePath -Raw) } else { $null }
+[pscustomobject]@{ state = $state }`,
+  );
+  const value = rows[0]?.state ?? null;
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Desamorce le fichier d'etat qu'Apollo vient d'ecrire. Rend true quand une
+ * correction a ete posee, false quand il n'y avait rien a corriger.
+ *
+ * Aucun redemarrage du service : Apollo tourne deja avec cet etat en memoire,
+ * et c'est SON PROCHAIN demarrage que la correction sauve. Le relancer ici
+ * lui offrirait au contraire l'occasion de reecrire le fichier.
+ */
+async function normalizeRemoteState(config: Config): Promise<boolean> {
+  const text = await readRemoteState(config);
+  if (text === null) return false;
+
+  const patched = normalizeState(text);
+  if (patched === null) return false;
+
+  const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
+  await runRemoteChecked(
+    config.ssh,
+    `[System.IO.File]::WriteAllText(${STATE_PATH_EXPR(installDirQ)}, ${psDoubleQuote(patched)}, (New-Object System.Text.UTF8Encoding($false)))`,
+  );
+  return true;
+}
+
 export const pairingStep: Step<PairingState> = {
   name: "pairing",
   label: "Mac appairé au serveur (Mac)",
 
+  /**
+   * Le fichier d'etat est releve AVANT l'API, et un etat toxique rend l'etape
+   * non conforme sans qu'aucune requete ne parte. Sans cela, le seul cas ou
+   * la reparation compte serait aussi le seul ou elle serait impossible :
+   * Apollo mort, listClients qui leve, et l'etape en echec plutot qu'en
+   * « a appliquer ». Un client deja appaire ne suffit donc pas a etre
+   * conforme — encore faut-il que le PC survive a son prochain demarrage.
+   */
   async inspect(config: Config) {
+    const rawState = await readRemoteState(config);
+    if (rawState !== null && normalizeState(rawState) !== null) {
+      return {
+        conforming: false,
+        current: { clients: [], hostKnown: containsHost(await readHosts(), config.ssh.host) },
+        detail:
+          "état Apollo à désamorcer\u00a0: les booléens du client appairé y sont " +
+          "des chaînes, ce qui fait planter Apollo au prochain démarrage",
+      };
+    }
+
     const creds = await credentials(config);
     const clients = await listClients(config, creds);
     const hostKnown = containsHost(await readHosts(), config.ssh.host);
@@ -86,6 +157,11 @@ export const pairingStep: Step<PairingState> = {
     } finally {
       pairing.kill();
     }
+
+    // HORS du finally : desamorcer un etat qu'on n'a pas reussi a produire
+    // n'a pas de sens, et masquerait l'echec d'appairage derriere une erreur
+    // d'ecriture. Voir src/lib/apollo-state.ts pour le defaut contourne.
+    await normalizeRemoteState(config);
   },
 
   /**
@@ -102,6 +178,14 @@ export const pairingStep: Step<PairingState> = {
    * l'entree d'hote restait a demeure dans le plist de Moonlight. forgetHost,
    * elle, aurait reussi dans tous ces cas. Elle passe donc INCONDITIONNELLEMENT,
    * et ce que le PC n'a pas rendu est NOMME plutot que remonte.
+   *
+   * Le desamorcage de sunshine_state.json (voir apply) n'est deliberement PAS
+   * defait ici, alors que hardline restaure tout le reste. Le remettre en
+   * l'etat, ce serait reecrire des chaines la ou Apollo attend des booleens,
+   * c'est-a-dire rendre le PC dans un etat ou Apollo meurt au demarrage
+   * suivant. Une restauration fidele n'a de sens que quand l'etat d'origine
+   * fonctionnait. Le contournement disparait de lui-meme : depaire, Apollo
+   * reecrit ce fichier sans l'entree fautive.
    */
   async restore(config: Config, previous: PairingState, _context: RestoreContext) {
     const cedes: string[] = [];

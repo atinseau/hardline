@@ -42,6 +42,42 @@ mock.module("../../src/lib/keychain", () => ({
   generatePin: () => "4821",
 }));
 
+/**
+ * Sans ce mock, readRemoteState ouvrirait une VRAIE session SSH vers le PC :
+ * la suite passerait ou echouerait selon que la machine est allumee, et
+ * lirait un etat que le test ne controle pas.
+ */
+let remoteState: string | null = null;
+const remoteWrites: string[] = [];
+const runRemoteJson = mock(async (..._args: unknown[]) => [{ state: remoteState }]);
+const runRemoteChecked = mock(async (_target: unknown, script: string) => {
+  order.push("writeState");
+  remoteWrites.push(script);
+});
+mock.module("../../src/lib/ssh", () => ({ runRemoteJson, runRemoteChecked }));
+
+/** L'etat toxique qu'Apollo ecrit lui-meme apres un appairage. */
+function etatApresAppairage(booleensEnChaines: boolean): string {
+  const brut = booleensEnChaines ? "false" : false;
+  return JSON.stringify({
+    username: "hardline",
+    root: {
+      uniqueid: "U-1",
+      named_devices: [
+        {
+          name: "hardline-mac",
+          uuid: "u-1",
+          cert: "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
+          perm: "117440512",
+          allow_client_commands: brut,
+          always_use_virtual_display: brut,
+          enable_legacy_ordering: brut,
+        },
+      ],
+    },
+  });
+}
+
 const { pairingStep } = await import("../../src/steps/pairing");
 
 beforeEach(() => {
@@ -53,6 +89,10 @@ beforeEach(() => {
   plistHosts = [];
   killCalls = 0;
   forgetHostResult = true;
+  remoteState = null;
+  remoteWrites.length = 0;
+  runRemoteJson.mockClear();
+  runRemoteChecked.mockClear();
   spawnPair.mockClear();
   sendPin.mockClear();
   listClients.mockClear();
@@ -284,5 +324,76 @@ describe("restore, le volet Mac n'est jamais pris en otage par le volet PC", () 
     );
     expect(unpairClient).toHaveBeenCalled();
     expect(outcome).toBeUndefined();
+  });
+});
+
+/**
+ * Le contournement du defaut d'Apollo 0.4.6 mesure sur la machine : les trois
+ * booleens du client appaire sont ecrits en CHAINES, et Apollo meurt au
+ * demarrage suivant. Voir src/lib/apollo-state.ts pour la table de decision.
+ */
+describe("désamorçage de l'état Apollo", () => {
+  test("inspect déclare non conforme un état toxique, sans interroger l'API", async () => {
+    clientList = [{ name: "hardline-mac", uuid: "u-1" }];
+    remoteState = etatApresAppairage(true);
+
+    const state = await pairingStep.inspect(CONFIG);
+
+    expect(state.conforming).toBe(false);
+    expect(state.detail).toContain("désamorcer");
+    // Apollo est mort quand cet etat existe : l'interroger echouerait.
+    expect(listClients).not.toHaveBeenCalled();
+  });
+
+  test("inspect reste conforme quand l'état est déjà sain", async () => {
+    clientList = [{ name: "hardline-mac", uuid: "u-1" }];
+    remoteState = etatApresAppairage(false);
+
+    const state = await pairingStep.inspect(CONFIG);
+
+    expect(state.conforming).toBe(true);
+    expect(listClients).toHaveBeenCalled();
+  });
+
+  test("inspect ne bute pas sur un état absent", async () => {
+    clientList = [{ name: "hardline-mac", uuid: "u-1" }];
+    remoteState = null;
+
+    expect((await pairingStep.inspect(CONFIG)).conforming).toBe(true);
+  });
+
+  test("apply réécrit l'état avec de vrais booléens, après l'appairage", async () => {
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-1" }];
+    remoteState = etatApresAppairage(true);
+
+    await pairingStep.apply(CONFIG);
+
+    expect(remoteWrites).toHaveLength(1);
+    // Les booleens nus, jamais les chaines d'origine. Les guillemets sont
+    // echappes en `" par psDoubleQuote : l'assertion les prend tels quels,
+    // ce qui verifie du meme coup que l'echappement a bien eu lieu.
+    expect(remoteWrites[0]).toContain('`"allow_client_commands`": false');
+    expect(remoteWrites[0]).not.toContain('`"allow_client_commands`": `"false`"');
+    // Et ne jamais perdre le certificat, dont l'absence plante aussi Apollo.
+    expect(remoteWrites[0]).toContain("BEGIN CERTIFICATE");
+    expect(order.indexOf("writeState")).toBeGreaterThan(order.indexOf("listClients"));
+  });
+
+  test("apply n'écrit rien quand l'état est déjà sain", async () => {
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-1" }];
+    remoteState = etatApresAppairage(false);
+
+    await pairingStep.apply(CONFIG);
+
+    expect(remoteWrites).toHaveLength(0);
+  });
+
+  test("un appairage non confirmé lève sans toucher à l'état", async () => {
+    clientListAfterPin = [];
+    remoteState = etatApresAppairage(true);
+
+    await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/non confirmé/);
+    expect(remoteWrites).toHaveLength(0);
+    expect(killCalls).toBe(1);
   });
 });
