@@ -73,6 +73,17 @@ $service = Get-Service -Name ${serviceNameQ} -ErrorAction SilentlyContinue
  * fois), ou suivie d'un redemarrage explicite si le service tournait deja
  * (reexecution partielle). password passe TOUJOURS par psQuote : jamais
  * d'interpolation directe d'un secret dans le script distant.
+ *
+ * Le mot de passe cite est affecte a une variable sur SA PROPRE ligne, avant
+ * l'appel a sunshine.exe : une affectation n'echoue pas et n'a donc pas de
+ * PositionMessage a montrer. Si l'appel echoue autrement que par un code de
+ * retour (executable absent, execution refusee), PowerShell reimprime le
+ * texte SOURCE de la ligne en cause dans son PositionMessage, et
+ * runRemoteChecked (src/lib/ssh.ts) recopie stderr tel quel dans le message
+ * d'erreur remonte : si le mot de passe etait cousu en litteral dans cette
+ * ligne d'appel, il y reapparaitrait. La ligne d'appel ne contient donc que
+ * $applyWebPassword, jamais le secret lui-meme ; 2>$null ecarte en plus tout
+ * bruit que l'executable ecrirait lui-meme sur son flux d'erreur.
  */
 function buildApplyScript(
   config: Config,
@@ -88,14 +99,15 @@ function buildApplyScript(
     const userQ = psQuote(config.apollo.webUser, "compte web Apollo");
     const passwordQ = psQuote(password, "mot de passe web Apollo");
     lines.push(
-      `& (Join-Path ${installDirQ} 'sunshine.exe') '--creds' ${userQ} ${passwordQ}`,
+      `$applyWebPassword = ${passwordQ}`,
+      `& (Join-Path ${installDirQ} 'sunshine.exe') '--creds' ${userQ} $applyWebPassword 2>$null`,
       `if ($LASTEXITCODE -ne 0) { throw "Echec de sunshine.exe --creds (code $LASTEXITCODE)" }`,
     );
   }
 
   lines.push(
     `New-Item -ItemType Directory -Path (Join-Path ${installDirQ} 'config') -Force -ErrorAction SilentlyContinue | Out-Null`,
-    `Set-Content -Path ${CONFIG_PATH_EXPR(installDirQ)} -Value ${psDoubleQuote(patchedConf)} -Encoding ascii`,
+    `[System.IO.File]::WriteAllText(${CONFIG_PATH_EXPR(installDirQ)}, ${psDoubleQuote(patchedConf)}, (New-Object System.Text.UTF8Encoding($false)))`,
   );
 
   if (serviceWasRunning) {
@@ -162,19 +174,28 @@ export const apolloConfigStep: Step<ApolloConfState> = {
   },
 
   /**
-   * Rend le contenu exact d'avant, verbatim. hadCredentials decrit l'etat
-   * AVANT apply() : s'il etait false, c'est hardline qui a cree ce secret,
-   * et lui seul est retire. La restitution du fichier n'implique aucune
-   * hypothese sur ce qu'apollo-install fera ensuite (dans l'ordre inverse,
-   * apollo-install.restore s'execute apres) : ce cas compte precisement
-   * quand Apollo est etranger et qu'apollo-install.restore cede sa place.
+   * Rend le contenu exact d'avant, verbatim, octet pour octet. hadCredentials
+   * decrit l'etat AVANT apply() : s'il etait false, c'est hardline qui a cree
+   * ce secret, et lui seul est retire. La restitution du fichier n'implique
+   * aucune hypothese sur ce qu'apollo-install fera ensuite (dans l'ordre
+   * inverse, apollo-install.restore s'execute apres) : ce cas compte
+   * precisement quand Apollo est etranger et qu'apollo-install.restore cede
+   * sa place.
+   *
+   * [System.IO.File]::WriteAllText ecrit en UTF-8 sans marque d'ordre des
+   * octets (le troisieme argument) et n'ajoute RIEN a la fin du fichier :
+   * Set-Content -Encoding ascii remplacait tout accent par '?', et
+   * Set-Content -Value ajoutait un saut de ligne meme quand le contenu relu
+   * par Get-Content -Raw en portait deja un. Les deux defauts auraient rompu
+   * la promesse "verbatim" au premier accent ou au premier saut de ligne de
+   * fin de fichier.
    */
   async restore(config: Config, previous: ApolloConfState, _context: RestoreContext) {
     const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
     const script =
       previous.conf === null
         ? `Remove-Item -Path ${CONFIG_PATH_EXPR(installDirQ)} -Force -ErrorAction SilentlyContinue`
-        : `Set-Content -Path ${CONFIG_PATH_EXPR(installDirQ)} -Value ${psDoubleQuote(previous.conf)} -Encoding ascii`;
+        : `[System.IO.File]::WriteAllText(${CONFIG_PATH_EXPR(installDirQ)}, ${psDoubleQuote(previous.conf)}, (New-Object System.Text.UTF8Encoding($false)))`;
 
     await runRemoteChecked(config.ssh, script);
 

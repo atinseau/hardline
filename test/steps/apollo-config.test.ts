@@ -2,7 +2,10 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { CONFIG } from "../../src/config";
 
 let jsonQueue: unknown[][] = [];
-const runRemoteJson = mock(async () => {
+/** Les scripts envoyes a runRemoteJson, dans l'ordre reel des appels. */
+let jsonScripts: string[] = [];
+const runRemoteJson = mock(async (_target: unknown, script: string) => {
+  jsonScripts.push(script);
   const next = jsonQueue.shift();
   if (!next) throw new Error("file d'attente JSON vide dans le test");
   return next;
@@ -29,6 +32,7 @@ const { apolloConfigStep } = await import("../../src/steps/apollo-config");
 
 beforeEach(() => {
   jsonQueue = [];
+  jsonScripts = [];
   runRemoteJson.mockClear();
   runRemoteChecked.mockClear();
   setSecret.mockClear();
@@ -79,7 +83,7 @@ describe("apply", () => {
 
     const script = checkedScript(0);
     const creds = script.indexOf("--creds");
-    const patch = script.indexOf("Set-Content");
+    const patch = script.indexOf("WriteAllText");
     expect(creds).toBeGreaterThanOrEqual(0);
     expect(patch).toBeGreaterThan(creds);
     expect(script).toContain("headless_mode");
@@ -149,6 +153,91 @@ describe("apply", () => {
     const script = checkedScript(0);
     expect(script).toContain("'S3cr3t-Passw0rd!'");
   });
+
+  /**
+   * Preuve par mutation (ronde 1) : le mot de passe ne doit apparaitre que
+   * sur sa ligne d'affectation, jamais sur la ligne d'appel a sunshine.exe.
+   * Une interpolation directe dans l'appel (le defaut corrige) mettrait le
+   * mot de passe sur les DEUX lignes, ou ferait disparaitre la ligne
+   * d'affectation ; l'un ou l'autre fait tomber ce test.
+   */
+  test("le mot de passe n'apparait jamais sur la ligne d'appel a --creds, seulement dans l'affectation qui precede", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    const script = checkedScript(0);
+    const lines = script.split("\n");
+    const assignIndex = lines.findIndex((l) => l.includes("S3cr3t-Passw0rd!"));
+    const credsIndex = lines.findIndex((l) => l.includes("--creds"));
+    expect(assignIndex).toBeGreaterThanOrEqual(0);
+    expect(lines[assignIndex]).toContain("=");
+    expect(credsIndex).toBeGreaterThan(assignIndex);
+    expect(lines[credsIndex]).not.toContain("S3cr3t-Passw0rd!");
+  });
+
+  /**
+   * Preuve par mutation (ronde 1) : simule un echec de la ligne d'appel a
+   * sunshine.exe --creds comme le ferait PowerShell via son PositionMessage,
+   * qui recite le texte SOURCE de la ligne en cause - et que
+   * runRemoteChecked (src/lib/ssh.ts) recopie tel quel dans le message
+   * d'erreur remonte. Si le mot de passe etait cousu en litteral dans cette
+   * ligne, il reapparaitrait ici ; avec l'affectation intermediaire, la
+   * ligne en cause ne contient que $applyWebPassword.
+   */
+  test("le mot de passe n'apparait dans aucun message d'erreur remonte, meme si l'appel --creds echoue", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
+    runRemoteChecked.mockImplementationOnce(async (..._args: unknown[]) => {
+      const script = String(_args[1]);
+      const credsLine = script.split("\n").find((l) => l.includes("--creds"));
+      throw new Error(
+        `Commande distante en échec (code 1)\u00a0: At line:2 char:1\n+ ${credsLine}\n+ ~~~~`,
+      );
+    });
+    let caught: unknown;
+    try {
+      await apolloConfigStep.apply(CONFIG);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain("S3cr3t-Passw0rd!");
+  });
+
+  /**
+   * Preuve par mutation (ronde 1) : le contenu ecrit passe par psDoubleQuote,
+   * qui echappe accent grave, dollar et guillemet. Une interpolation nue
+   * (par exemple un template `"${patchedConf}"` a la main) laisserait `$` et
+   * `"` intacts dans le script, ce que ce test detecte.
+   */
+  test("le contenu ecrit est echappe par psDoubleQuote : dollar et guillemet survivent cites", async () => {
+    jsonQueue.push([
+      {
+        conf: 'sunshine_name = "valeur $HOME"',
+        hadCredentials: true,
+        serviceRunning: false,
+      },
+    ]);
+    await apolloConfigStep.apply(CONFIG);
+    const script = checkedScript(0);
+    expect(script).toContain("`$HOME");
+    expect(script).toContain('`"valeur');
+  });
+
+  /**
+   * Preuve par mutation (ronde 1) : WriteAllText ecrit en UTF-8 sans BOM et
+   * ne mutile pas les accents, contrairement a Set-Content -Encoding ascii.
+   */
+  test("le contenu accentue et un commentaire francais sont ecrits par WriteAllText en UTF-8 sans BOM", async () => {
+    const conf = "# Commentaire en français : éàïôû\nsunshine_name = PC de l'étage";
+    jsonQueue.push([{ conf, hadCredentials: true, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    const script = checkedScript(0);
+    expect(script).toContain("[System.IO.File]::WriteAllText(");
+    expect(script).toContain("New-Object System.Text.UTF8Encoding($false)");
+    expect(script).not.toContain("-Encoding ascii");
+    expect(script).not.toContain("Set-Content");
+    expect(script).toContain("Commentaire en français");
+    expect(script).toContain("PC de l'étage");
+  });
 });
 
 describe("restore", () => {
@@ -159,7 +248,7 @@ describe("restore", () => {
       { pending: [] },
     );
     expect(checkedScript(0)).toContain("sunshine_name = ancien");
-    expect(checkedScript(0)).toContain("Set-Content");
+    expect(checkedScript(0)).toContain("WriteAllText");
     expect(deleteSecret).toHaveBeenCalledWith("apollo-web");
   });
 
@@ -167,5 +256,60 @@ describe("restore", () => {
     await apolloConfigStep.restore(CONFIG, { conf: null, hadCredentials: true }, { pending: [] });
     expect(checkedScript(0)).toContain("Remove-Item");
     expect(deleteSecret).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Preuve par mutation (ronde 1) : restore() ecrit par WriteAllText en
+   * UTF-8 sans BOM, verbatim, accents et commentaire francais compris - la
+   * meme garantie que pour apply(), et le meme defaut a corriger si elle
+   * disparait (Set-Content -Encoding ascii mutilait les accents).
+   */
+  test("rend un contenu accentue et un commentaire francais par WriteAllText en UTF-8 sans BOM", async () => {
+    const conf = "# commentaire français\nsunshine_name = café de l'étage";
+    await apolloConfigStep.restore(CONFIG, { conf, hadCredentials: true }, { pending: [] });
+    const script = checkedScript(0);
+    expect(script).toContain("[System.IO.File]::WriteAllText(");
+    expect(script).toContain("New-Object System.Text.UTF8Encoding($false)");
+    expect(script).not.toContain("-Encoding ascii");
+    expect(script).not.toContain("Set-Content");
+    expect(script).toContain("commentaire français");
+    expect(script).toContain("café de l'étage");
+  });
+});
+
+/**
+ * Preuve par mutation (ronde 1) : les mocks ci-dessus injectent le JSON de
+ * retour sans jamais regarder le script ENVOYE a runRemoteJson. Un relecteur
+ * a deja remplace root.username par root.named_certs dans les deux scripts
+ * (onze tests verts), puis a remplace tout le releve par un appel HTTP a
+ * l'API d'Apollo - exactement ce que le brief interdit (onze tests verts).
+ * Ces tests capturent le script REEL envoye et verifient qu'il lit bien
+ * sunshine_state.json / root.username, et qu'il ne contient AUCUN appel
+ * HTTP. Les deux scripts (inspect et apply) sont couverts separement : ils
+ * se ressemblent mais ne partagent aucune logique (voir la decision de
+ * conception dans le brief), donc rien ne garantit qu'une mutation posee
+ * dans l'un soit posee dans l'autre.
+ */
+describe("scripts de releve envoyes au PC", () => {
+  test("inspect lit sunshine_state.json et root.username, sans appel HTTP", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false }]);
+    await apolloConfigStep.inspect(CONFIG);
+    const script = jsonScripts[0]!;
+    expect(script).toContain("sunshine_state.json");
+    expect(script).toContain("root.username");
+    expect(script).not.toContain("Invoke-WebRequest");
+    expect(script).not.toContain("Invoke-RestMethod");
+    expect(script).not.toContain(String(CONFIG.apollo.apiPort));
+  });
+
+  test("apply lit sunshine_state.json et root.username, sans appel HTTP", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    const script = jsonScripts[0]!;
+    expect(script).toContain("sunshine_state.json");
+    expect(script).toContain("root.username");
+    expect(script).not.toContain("Invoke-WebRequest");
+    expect(script).not.toContain("Invoke-RestMethod");
+    expect(script).not.toContain(String(CONFIG.apollo.apiPort));
   });
 });
