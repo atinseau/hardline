@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   encodePowerShell,
-  withOutputEncoding,
+  withRemotePreamble,
   buildSSHArgs,
   parseRemoteJson,
   type SSHTarget,
@@ -34,16 +34,56 @@ describe("encodePowerShell", () => {
   });
 });
 
-describe("withOutputEncoding", () => {
+describe("withRemotePreamble", () => {
   test("prefixe le script pour forcer une sortie UTF-8", () => {
-    const wrapped = withOutputEncoding("Write-Output 'réseau privé'");
+    const wrapped = withRemotePreamble("Write-Output 'réseau privé'");
     expect(wrapped).toContain("OutputEncoding");
     expect(wrapped).toContain("UTF8Encoding");
   });
 
   test("laisse le script d'origine intact a la fin", () => {
     const script = "Get-NetAdapter | Select-Object Name";
-    expect(withOutputEncoding(script).endsWith(script)).toBe(true);
+    expect(withRemotePreamble(script).endsWith(script)).toBe(true);
+  });
+
+  /**
+   * Sans console attachee, PowerShell serialise chaque enregistrement de
+   * progression en CLIXML sur la sortie d'erreur : le message d'echec utile
+   * arrive noye au milieu de plusieurs centaines d'octets de XML. Le remede
+   * tient au point de passage COMMUN, pas dans chaque script : un script
+   * distant qui l'oublierait rendrait a nouveau du CLIXML.
+   */
+  test("fait taire la progression, source du bruit CLIXML sur la sortie d'erreur", () => {
+    expect(withRemotePreamble("Get-Service")).toContain(
+      "$ProgressPreference = 'SilentlyContinue'",
+    );
+  });
+
+  test("la preference est posee AVANT le script, jamais apres", () => {
+    const wrapped = withRemotePreamble("Invoke-WebRequest -Uri http://x -OutFile y");
+    expect(wrapped.indexOf("$ProgressPreference")).toBeLessThan(
+      wrapped.indexOf("Invoke-WebRequest"),
+    );
+  });
+});
+
+/**
+ * La garantie que le point d'entree COMMUN porte le preambule : c'est
+ * runRemote, et lui seul, qui encode le script envoye au PC. Un preambule pose
+ * ailleurs - dans chaque script d'etape - ne serait vrai que des scripts qui
+ * pensent a le poser.
+ */
+describe("preambule pose au point d'entree commun", () => {
+  test("tout script encode par runRemote porte le preambule complet", () => {
+    // Reproduit l'assemblage exact de runRemote : encodePowerShell o
+    // withRemotePreamble. Un retour a withRemotePreamble non applique, ou une
+    // preference posee dans les seuls scripts d'etape, ferait tomber ce test.
+    const script = "sc.exe stop 'ApolloService'";
+    const encoded = encodePowerShell(withRemotePreamble(script));
+    const decoded = Buffer.from(encoded, "base64").toString("utf16le");
+    expect(decoded).toContain("$ProgressPreference = 'SilentlyContinue'");
+    expect(decoded).toContain("UTF8Encoding");
+    expect(decoded.endsWith(script)).toBe(true);
   });
 });
 

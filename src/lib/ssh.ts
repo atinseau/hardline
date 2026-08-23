@@ -32,13 +32,31 @@ export function encodePowerShell(script: string): string {
 const OUTPUT_UTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()";
 
 /**
+ * Sans console attachee, PowerShell ne DESSINE pas ses barres de progression :
+ * il SERIALISE chaque enregistrement de progression en CLIXML sur la sortie
+ * d'erreur. « Preparation des modules a la premiere utilisation. » arrive ainsi
+ * en plusieurs centaines d'octets de XML autour du seul message qui compte, et
+ * RemoteError n'affiche que le debut de stderr : le message utile est noye.
+ *
+ * On coupe la cause plutot que de nettoyer la consequence. Un filtre CLIXML
+ * cote Mac devrait desassembler du XML pour distinguer un enregistrement de
+ * progression d'un enregistrement d'ERREUR, serialises dans la meme enveloppe :
+ * un filtre trop large avalerait les erreurs qu'on cherche a lire.
+ */
+const SILENT_PROGRESS = "$ProgressPreference = 'SilentlyContinue'";
+
+/**
+ * Le preambule commun a TOUT script distant, pose ici et nulle part ailleurs :
+ * runRemote est le seul point de passage vers le PC, donc le seul endroit ou
+ * une preference d'execution se regle une fois pour toutes.
+ *
  * -EncodedCommand ne regle que l'ENTREE du script. La sortie de PowerShell part
  * dans la page de code OEM de la console — cp850 sur un Windows francais — ce qui
- * mutile les accents au retour. Ce prefixe force une sortie UTF-8 sans marque
- * d'ordre des octets.
+ * mutile les accents au retour. Le prefixe force une sortie UTF-8 sans marque
+ * d'ordre des octets, et fait taire la progression (cf. SILENT_PROGRESS).
  */
-export function withOutputEncoding(script: string): string {
-  return `${OUTPUT_UTF8}\n${script}`;
+export function withRemotePreamble(script: string): string {
+  return `${OUTPUT_UTF8}\n${SILENT_PROGRESS}\n${script}`;
 }
 
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
@@ -64,7 +82,7 @@ export async function runRemote(
   script: string,
   timeoutMs = 120_000,
 ): Promise<RemoteResult> {
-  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(withOutputEncoding(script))}`;
+  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(withRemotePreamble(script))}`;
 
   const proc = Bun.spawn(buildSSHArgs(target, remoteCommand), {
     stdout: "pipe",
