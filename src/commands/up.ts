@@ -80,8 +80,28 @@ async function pcReachable(config: Config): Promise<boolean> {
   }
 }
 
-async function wakePC(_config: Config): Promise<void> {
-  throw new Error("non implemente a ce cycle");
+/**
+ * Le paquet magique part sur l'adresse de diffusion du lien direct, calculee
+ * a partir de l'adresse du Mac : le poser sur celle d'un routeur ne le ferait
+ * jamais atteindre une carte reseau qui dort.
+ */
+async function wakePC(config: Config): Promise<void> {
+  const mac = await lookupMac(config.windows.ip);
+  if (!mac) {
+    throw new Error(
+      `Adresse matérielle introuvable dans la table ARP pour ${config.windows.ip}\u00a0: ` +
+        "le PC a-t-il déjà répondu au moins une fois sur ce lien\u00a0?",
+    );
+  }
+  const broadcast = broadcastAddress(config.mac.ip, config.mac.subnetMask);
+  await sendMagicPacket(mac, broadcast);
+
+  const woke = await waitForRemote(config, WAKE_DEADLINE_MS);
+  if (!woke) {
+    throw new Error(
+      `Le PC n'a pas répondu dans les ${Math.round(WAKE_DEADLINE_MS / 60_000)} minutes suivant le réveil.`,
+    );
+  }
 }
 
 const APOLLO_STATUS = (name: string) => `

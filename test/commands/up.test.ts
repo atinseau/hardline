@@ -318,3 +318,40 @@ describe("runUp, PC deja joignable", () => {
     expect(passedDisplay.widthPx).toBe(3456);
   });
 });
+
+describe("runUp, PC injoignable au depart", () => {
+  beforeEach(() => {
+    reachable = false;
+  });
+
+  test("lit l'adresse materielle dans la table ARP avant d'emettre le paquet magique", async () => {
+    await runUp(CONFIG, NO_OPTIONS);
+    expect(lookupMac).toHaveBeenCalledWith("10.10.10.1");
+    expect(sendMagicPacket).toHaveBeenCalledWith("e8:9c:25:2a:70:e1", "10.10.10.255");
+  });
+
+  test("attend le lien apres avoir envoye le paquet magique", async () => {
+    await runUp(CONFIG, NO_OPTIONS);
+    const sent = order.indexOf("sendMagicPacket");
+    const waited = order.indexOf("waitForRemote");
+    expect(sent).toBeGreaterThanOrEqual(0);
+    expect(waited).toBeGreaterThan(sent);
+  });
+
+  test("echoue explicitement si aucune adresse materielle n'est connue", async () => {
+    arpMac = null;
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/table ARP/);
+    expect(sendMagicPacket).not.toHaveBeenCalled();
+  });
+
+  test("echoue si le PC ne repond pas apres le reveil", async () => {
+    wakeSucceeds = false;
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/n'a pas répondu/);
+    expect(mountShare).not.toHaveBeenCalled();
+  });
+
+  test("poursuit normalement une fois le lien de retour", async () => {
+    await runUp(CONFIG, NO_OPTIONS);
+    expect(runStream).toHaveBeenCalledTimes(1);
+  });
+});
