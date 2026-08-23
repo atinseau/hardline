@@ -11,3 +11,17 @@ test("le programme expose les quatre sous-commandes attendues", () => {
 test("le programme porte un numero de version", () => {
   expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
 });
+
+test("la commande up expose --fullscreen, --resolution et --fps", () => {
+  const up = buildProgram().commands.find((c) => c.name() === "up");
+  const optionNames = up?.options.map((o) => o.long) ?? [];
+  expect(optionNames).toEqual(
+    expect.arrayContaining(["--fullscreen", "--resolution", "--fps"]),
+  );
+});
+
+test("la commande install expose --yes", () => {
+  const install = buildProgram().commands.find((c) => c.name() === "install");
+  const optionNames = install?.options.map((o) => o.long) ?? [];
+  expect(optionNames).toEqual(expect.arrayContaining(["--yes"]));
+});

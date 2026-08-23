@@ -1,17 +1,13 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import { installCommand } from "./commands/install";
+import { upCommand } from "./commands/up";
 import { uninstallCommand } from "./commands/uninstall";
 import { doctorCommand } from "./commands/doctor";
 import { CancelledError, ui } from "./lib/ui";
 import { errorMessage } from "./lib/errors";
 
 export const VERSION = "0.1.0";
-
-const NOT_IMPLEMENTED = (name: string) => async () => {
-  console.error(`hardline ${name}\u00a0: pas encore implémenté`);
-  process.exitCode = 1;
-};
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -24,6 +20,7 @@ export function buildProgram(): Command {
   program
     .command("install")
     .description("Converge les deux machines vers l'état cible")
+    .option("-y, --yes", "ne pas demander de confirmation", false)
     .action(installCommand);
 
   program
@@ -35,7 +32,10 @@ export function buildProgram(): Command {
   program
     .command("up")
     .description("Ouvre la session de travail sur le PC")
-    .action(NOT_IMPLEMENTED("up"));
+    .option("--fullscreen", "plein écran plutôt que fenêtré", false)
+    .option("--resolution <WxH>", "impose une définition, ex. 1920x1080")
+    .option("--fps <n>", "impose une fréquence en images par seconde")
+    .action(upCommand);
 
   program
     .command("doctor")
