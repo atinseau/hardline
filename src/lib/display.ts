@@ -85,7 +85,7 @@ export async function listDisplays(): Promise<Display[]> {
     if (result.exitCode !== 0) {
       const stderrText = result.stderr.toString().trim();
       const detail = stderrText !== "" ? stderrText : `code de sortie ${result.exitCode}`;
-      throw new DisplayProbeError(`La sonde d'écran a échoué : ${detail}`);
+      throw new DisplayProbeError(`La sonde d'écran a échoué\u00a0: ${detail}`);
     }
     return parseDisplays(result.stdout.toString());
   } finally {
