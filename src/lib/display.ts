@@ -51,6 +51,19 @@ export function mainDisplay(displays: Display[]): Display | null {
   return displays.find((display) => display.main) ?? displays[0] ?? null;
 }
 
+/**
+ * Levee quand la sonde s'execute mais echoue (code de sortie non nul). Une
+ * liste vide de listDisplays doit rester la preuve que la sonde a tourne et
+ * n'a rien vu, jamais la consequence silencieuse d'un binaire absent ou
+ * corrompu, ou d'un appel CoreGraphics en echec.
+ */
+export class DisplayProbeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DisplayProbeError";
+  }
+}
+
 // --- Frontiere systeme. Aucune logique ici, seulement l'extraction et l'appel. ---
 
 export async function listDisplays(): Promise<Display[]> {
@@ -68,8 +81,13 @@ export async function listDisplays(): Promise<Display[]> {
   await $`chmod +x ${tmpPath}`.quiet().nothrow();
 
   try {
-    const { stdout } = await $`${tmpPath}`.quiet().nothrow();
-    return parseDisplays(stdout.toString());
+    const result = await $`${tmpPath}`.quiet().nothrow();
+    if (result.exitCode !== 0) {
+      const stderrText = result.stderr.toString().trim();
+      const detail = stderrText !== "" ? stderrText : `code de sortie ${result.exitCode}`;
+      throw new DisplayProbeError(`La sonde d'écran a échoué : ${detail}`);
+    }
+    return parseDisplays(result.stdout.toString());
   } finally {
     await $`rm -f ${tmpPath}`.quiet().nothrow();
   }

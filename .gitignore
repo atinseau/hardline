@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# artefact de construction : compile par `bun run build`, jamais versionne
+src/assets/display-probe.bin
 *.log
 .DS_Store
 .env

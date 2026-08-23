@@ -1,5 +1,60 @@
-import { test, expect, describe } from "bun:test";
-import { parseDisplays, mainDisplay } from "../../src/lib/display";
+import { test, expect, describe, mock, afterAll } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// mock.module("bun", ...) ne peut pas intercepter le `import { $ } from "bun"`
+// statique de src/lib/display.ts : "bun" est un module natif, pas un module
+// utilisateur, et $ y echappe au registre que mock.module patche (verifie
+// empiriquement : le $ reel s'execute quoi qu'on mette dans le mock). La
+// frontiere simulee est donc le binaire de la sonde lui-meme : un petit
+// script shell qu'on ecrit nous-memes, execute reellement en local (aucune
+// machine distante, aucun materiel), dont la sortie et le code de retour sont
+// pilotes par des fichiers de controle que chaque test recrit avant d'appeler
+// listDisplays.
+const controlBase = join(tmpdir(), `hardline-display-probe-test-${randomUUID()}`);
+const stdoutFile = `${controlBase}.stdout`;
+const stderrFile = `${controlBase}.stderr`;
+const exitFile = `${controlBase}.exit`;
+const dispatcherPath = join(tmpdir(), `hardline-display-probe-dispatcher-${randomUUID()}`);
+
+const dispatcherScript = `#!/bin/sh
+cat "${stdoutFile}"
+cat "${stderrFile}" 1>&2
+exit "$(cat "${exitFile}")"
+`;
+
+await Bun.write(dispatcherPath, dispatcherScript);
+await Bun.write(exitFile, "0");
+await Bun.write(stdoutFile, "");
+await Bun.write(stderrFile, "");
+await Bun.$`chmod +x ${dispatcherPath}`.quiet();
+
+async function setProbeOutcome(outcome: {
+  exitCode: number;
+  stdout?: string;
+  stderr?: string;
+}): Promise<void> {
+  await Bun.write(exitFile, String(outcome.exitCode));
+  await Bun.write(stdoutFile, outcome.stdout ?? "");
+  await Bun.write(stderrFile, outcome.stderr ?? "");
+}
+
+afterAll(async () => {
+  await Bun.$`rm -f ${dispatcherPath} ${stdoutFile} ${stderrFile} ${exitFile}`
+    .quiet()
+    .nothrow();
+});
+
+// Le module ne depend jamais de src/assets/display-probe.bin lui-meme : il
+// pointe vers le script ci-dessus, donc le test ne depend pas non plus de
+// `bun run build`.
+mock.module("../../src/assets/display-probe.bin", () => ({
+  default: dispatcherPath,
+}));
+
+const { parseDisplays, mainDisplay, listDisplays, DisplayProbeError } =
+  await import("../../src/lib/display");
 
 const TWO_SCREENS =
   "3456\t2234\t120.0\t1728\t1117\t1\n2560\t1440\t144.0\t2560\t1440\t0\n";
@@ -68,5 +123,25 @@ describe("mainDisplay", () => {
 
   test("rend null pour un tableau vide", () => {
     expect(mainDisplay([])).toBeNull();
+  });
+});
+
+describe("listDisplays", () => {
+  test("sonde en échec (code de sortie non nul) lève, avec le stderr repris dans le message", async () => {
+    await setProbeOutcome({
+      exitCode: 1,
+      stderr: "display-probe: CGGetActiveDisplayList a echoue\n",
+    });
+
+    await expect(listDisplays()).rejects.toThrow(DisplayProbeError);
+    await expect(listDisplays()).rejects.toThrow(
+      /CGGetActiveDisplayList a echoue/,
+    );
+  });
+
+  test("sonde en succès avec sortie vide rend un tableau vide, sans lever", async () => {
+    await setProbeOutcome({ exitCode: 0, stdout: "" });
+
+    await expect(listDisplays()).resolves.toEqual([]);
   });
 });
