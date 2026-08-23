@@ -522,3 +522,16 @@ describe("upCommand, le secret ne s'affiche jamais", () => {
     );
   });
 });
+
+describe("upCommand, drapeaux tels que commander les rend", () => {
+  test("une option non passee vaut undefined et non null", async () => {
+    // commander ne pose jamais null : sans ce cas, le type mentirait sur ce
+    // que la ligne de commande transmet reellement.
+    await upCommand({ fullscreen: false });
+    expect((runStream.mock.calls[0] as unknown[])[2]).toEqual({
+      fullscreen: false,
+      resolution: null,
+      fps: null,
+    });
+  });
+});

@@ -33,10 +33,15 @@ export function parseFps(value: string): number {
   return fps;
 }
 
+/**
+ * Les drapeaux tels que commander les rend : une option non passee vaut
+ * `undefined`, pas `null`. Le type le dit plutot que de laisser le seul
+ * appelant de test decrire la forme reelle.
+ */
 export type UpCliOptions = {
   fullscreen: boolean;
-  resolution: string | null;
-  fps: string | null;
+  resolution?: string | null;
+  fps?: string | null;
 };
 
 /** Fonction pure. Les drapeaux de la ligne de commande, vers les options de flux. */
