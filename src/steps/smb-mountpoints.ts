@@ -17,19 +17,24 @@ async function survey(config: Config): Promise<MountPointState[]> {
 }
 
 /**
- * Les points de montage sous /Volumes, crees a l'INSTALLATION et non au
- * montage.
+ * Les points de montage, dans le dossier personnel de l'utilisateur.
  *
- * /Volumes appartient a root:wheel en drwxr-xr-x : un mkdir lance par
- * l'utilisateur y echoue en EACCES. Faire creer ces repertoires par `up`
- * exigerait donc le mot de passe administrateur a chaque session, alors
- * qu'install le demande deja une fois pour `sudo networksetup`
- * (src/lib/shell.ts). C'est aussi ce qui garde `up` sans privilege, ce que
- * l'exigence de transparence du projet demande.
+ * Ils vivaient sous /Volumes, et c'etait un cul-de-sac mesure sur la machine :
+ * /Volumes appartient a root:wheel en drwxr-xr-x, donc un mkdir lance par
+ * l'utilisateur y echoue en EACCES — mais surtout macOS y EFFACE les
+ * repertoires vides, diskarbitrationd s'en chargeant au demontage comme au
+ * redemarrage. Les repertoires crees a l'installation disparaissaient donc a
+ * la premiere fermeture de session, et `up` echouait ensuite sur EACCES sans
+ * pouvoir les recreer : une installation qui se defaisait toute seule.
+ *
+ * Sous le dossier personnel, mkdir n'a besoin d'aucun privilege, personne
+ * n'efface rien, et `up` reste sans mot de passe — ce que l'exigence de
+ * transparence du projet demande. Le prix est que le Finder les montre comme
+ * des dossiers et non comme des volumes.
  */
 export const smbMountPointsStep: Step<MountPointState[]> = {
   name: "smb-mountpoints",
-  label: "Points de montage sous /Volumes (Mac)",
+  label: "Points de montage dans le dossier personnel (Mac)",
 
   async inspect(config: Config) {
     const current = await survey(config);

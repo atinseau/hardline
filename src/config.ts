@@ -101,9 +101,9 @@ export const CONFIG: Config = {
   smb: {
     user: "arthur",
     shares: [
-      { name: "arthur", path: null, mountPoint: "/Volumes/pc-arthur" },
-      { name: "hardline-d", path: "D:\\", mountPoint: "/Volumes/pc-d" },
-      { name: "hardline-e", path: "E:\\", mountPoint: "/Volumes/pc-e" },
+      { name: "arthur", path: null, mountPoint: join(homedir(), "PC", "arthur") },
+      { name: "hardline-d", path: "D:\\", mountPoint: join(homedir(), "PC", "d") },
+      { name: "hardline-e", path: "E:\\", mountPoint: join(homedir(), "PC", "e") },
     ],
   },
 };

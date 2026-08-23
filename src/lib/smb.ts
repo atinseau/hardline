@@ -1,4 +1,4 @@
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, rmdir, stat } from "node:fs/promises";
 import type { Config, SMBShare } from "../config";
 
 /** Fonction pure. Compose l'URL smb://utilisateur:motdepasse@hote/partage. */
@@ -89,49 +89,23 @@ export async function mountPointExists(mountPoint: string): Promise<boolean> {
   }
 }
 
-/** L'utilisateur courant, sous la forme que chown attend. */
-function currentOwner(): string {
-  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-  const gid = typeof process.getgid === "function" ? process.getgid() : -1;
-  return `${uid}:${gid}`;
-}
-
-async function sudo(command: string[], quoi: string): Promise<void> {
-  const proc = Bun.spawn(["sudo", ...command], {
-    stdout: "ignore",
-    stderr: "pipe",
-  });
-
-  const [stderr, exitCode] = await Promise.all([
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-
-  if (exitCode !== 0) {
-    throw new Error(`${quoi} (code ${exitCode})\u00a0: ${stderr.trim()}`);
-  }
-}
-
 /**
- * Cree les points de montage manquants, puis les donne a l'utilisateur
- * courant. Sous sudo : /Volumes appartient a root:wheel en drwxr-xr-x, et un
- * mkdir sans privilege y echoue en EACCES.
+ * Cree les points de montage. Aucun privilege : ils vivent dans le dossier
+ * personnel de l'utilisateur, pas sous /Volumes.
  *
- * Un seul appel pour tous les repertoires : sudo ne redemande pas le mot de
- * passe a chaque invocation, mais rien ne justifie d'en multiplier les
- * occasions.
+ * /Volumes appartient a root:wheel en drwxr-xr-x — un mkdir y echoue en
+ * EACCES pour l'utilisateur — et, surtout, macOS y EFFACE les repertoires
+ * vides : diskarbitrationd s'en charge au demontage comme au redemarrage. Les
+ * points crees a l'installation ne survivaient donc pas a la premiere
+ * fermeture de session, et `up` echouait ensuite sur ce meme EACCES sans
+ * pouvoir les recreer. Sous le dossier personnel, ils se creent sans mot de
+ * passe, personne ne les efface, et `up` reste sans privilege — ce que
+ * l'exigence de transparence du projet demande.
  */
 export async function createMountPoints(mountPoints: string[]): Promise<void> {
-  if (mountPoints.length === 0) return;
-
-  await sudo(
-    ["/bin/mkdir", "-p", ...mountPoints],
-    "impossible de créer les points de montage",
-  );
-  await sudo(
-    ["/usr/sbin/chown", currentOwner(), ...mountPoints],
-    "impossible de donner les points de montage à l'utilisateur courant",
-  );
+  for (const mountPoint of mountPoints) {
+    await mkdir(mountPoint, { recursive: true });
+  }
 }
 
 /**
@@ -140,10 +114,17 @@ export async function createMountPoints(mountPoints: string[]): Promise<void> {
  * exactement ce qu'une restauration ne doit pas faire.
  */
 export async function removeMountPoints(mountPoints: string[]): Promise<void> {
-  if (mountPoints.length === 0) return;
-
-  await sudo(
-    ["/bin/rmdir", ...mountPoints],
-    "impossible de retirer les points de montage",
-  );
+  for (const mountPoint of mountPoints) {
+    try {
+      await rmdir(mountPoint);
+    } catch (error) {
+      // Un repertoire deja absent n'est pas un echec de restauration : c'est
+      // son but, atteint sans nous. Le cas est reel — les anciens points sous
+      // /Volumes que macOS a effaces figurent encore au manifeste, et une
+      // desinstallation buterait dessus alors qu'il n'y a plus rien a rendre.
+      // Tout le reste se dit : un montage encore actif, un fichier depose
+      // dans le repertoire, ce sont des refus qui doivent remonter.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
+  }
 }
