@@ -69,6 +69,106 @@ export function broadcastAddress(ip: string, subnetMask: string): string {
   return ipParts.map((octet, i) => (octet | (~maskParts[i]! & 0xff)) & 0xff).join(".");
 }
 
+// --- Frontiere systeme. ---
+
+async function pcReachable(config: Config): Promise<boolean> {
+  try {
+    await runRemoteJson(config.ssh, "[pscustomobject]@{ ok = $true }");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function wakePC(_config: Config): Promise<void> {
+  throw new Error("non implemente a ce cycle");
+}
+
+const APOLLO_STATUS = (name: string) => `
+$svc = Get-Service -Name '${name}' -ErrorAction SilentlyContinue
+[pscustomobject]@{ status = if ($svc) { [string]$svc.Status } else { $null } }`;
+
+/**
+ * Apollo doit tourner avant que le flux ne parte : un serveur arrete rend une
+ * erreur de connexion que rien ne distingue d'un PC absent.
+ */
+async function ensureApolloRunning(config: Config): Promise<void> {
+  const rows = await runRemoteJson<{ status: string | null }>(
+    config.ssh,
+    APOLLO_STATUS(config.apollo.serviceName),
+  );
+  if (rows[0]?.status === "Running") return;
+
+  await runRemoteChecked(
+    config.ssh,
+    `Start-Service -Name '${config.apollo.serviceName}'`,
+  );
+
+  const recheck = await runRemoteJson<{ status: string | null }>(
+    config.ssh,
+    APOLLO_STATUS(config.apollo.serviceName),
+  );
+  if (recheck[0]?.status !== "Running") {
+    throw new Error(
+      `Le service «\u00a0${config.apollo.serviceName}\u00a0» n'a pas démarré ` +
+        `(état\u00a0: ${recheck[0]?.status ?? "inconnu"}).`,
+    );
+  }
+}
+
+/**
+ * L'enchainement complet d'une session. Le demontage et l'appel a `moonlight
+ * quit` sont dans un `finally` qui englobe le montage ET le flux : une
+ * interruption a n'importe quel point apres le premier montage doit encore
+ * defaire ce qui a ete monte et fermer la session cote serveur, sans quoi
+ * l'ecran virtuel reste sur le PC. unmountShare ne leve jamais pour un
+ * partage jamais monte (voir src/lib/smb.ts), ce qui rend sur d'appeler ce
+ * nettoyage sur TOUS les partages, meme ceux qu'un montage partiel n'a
+ * jamais atteints.
+ */
+export async function runUp(config: Config, options: StreamOptions): Promise<number> {
+  if (!(await pcReachable(config))) {
+    await wakePC(config);
+  }
+
+  const display = mainDisplay(await listDisplays());
+  await ensureApolloRunning(config);
+
+  // Le mot de passe ne quitte jamais cette portee : il part dans mountShare,
+  // qui compose l'URL SMB lui-meme et retire le secret de ses propres messages
+  // d'erreur. Il n'est ni journalise, ni passe en argument de commande, ni
+  // repris dans une erreur d'ici.
+  const password = await getSecret("windows-account");
+  if (password === null) {
+    throw new Error(
+      "Aucun mot de passe Windows au trousseau\u00a0: lancer «\u00a0hardline install\u00a0» d'abord.",
+    );
+  }
+
+  try {
+    for (const share of config.smb.shares) {
+      await mountShare(share, config, password);
+    }
+    return await runStream(config, display, options);
+  } finally {
+    for (const share of config.smb.shares) {
+      try {
+        await unmountShare(share);
+      } catch {
+        // Demontage en best effort a la fermeture : un partage qui refuse de
+        // se demonter ne doit ni empecher les autres ni empecher la fermeture
+        // cote serveur.
+      }
+    }
+    try {
+      await runQuit(config);
+    } catch {
+      // La session doit se fermer cote client quoi qu'il arrive : une erreur
+      // ici ne doit pas masquer celle, plus importante, du flux lui-meme.
+    }
+  }
+}
+
 export async function upCommand(_cliOptions: UpCliOptions): Promise<void> {
   throw new Error("non implemente a ce cycle");
 }
