@@ -89,6 +89,10 @@ beforeEach(() => {
   plistHosts = [];
   killCalls = 0;
   forgetHostResult = true;
+  listClients.mockImplementation(async () => {
+    order.push("listClients");
+    return clientListAfterPin ?? clientList;
+  });
   remoteState = null;
   remoteWrites.length = 0;
   runRemoteJson.mockClear();
@@ -141,16 +145,53 @@ describe("apply, sequence nominale", () => {
     expect(pinPasseAMoonlight).toMatch(/^\d{4}$/);
   });
 
+  /**
+   * La sequence de la spec est intacte : pair, puis pin, puis relecture. Elle
+   * est seulement precedee d'une sonde, qui attend qu'Apollo reponde apres le
+   * redemarrage que vient de lui infliger apollo-config. La sonde LIT, elle
+   * n'appaire pas — l'ordre impose commence a spawnPair.
+   */
   test("respecte l'ordre impose par la spec : pair, puis pin, puis relecture", async () => {
     clientListAfterPin = [{ name: "hardline-mac", uuid: "u-3" }];
     await pairingStep.apply(CONFIG);
-    expect(order).toEqual(["spawnPair", "sendPin", "listClients"]);
+    expect(order).toEqual(["listClients", "spawnPair", "sendPin", "listClients"]);
+    expect(order.slice(order.indexOf("spawnPair"))).toEqual([
+      "spawnPair",
+      "sendPin",
+      "listClients",
+    ]);
   });
 
-  test("relit la liste une seule fois, apres l'envoi du code", async () => {
+  test("ne relit la liste qu'une fois passe l'envoi du code, la sonde mise a part", async () => {
     clientListAfterPin = [{ name: "hardline-mac", uuid: "u-3" }];
     await pairingStep.apply(CONFIG);
-    expect(listClients).toHaveBeenCalledTimes(1);
+    const apresPin = order.slice(order.indexOf("sendPin"));
+    expect(apresPin.filter((e) => e === "listClients")).toHaveLength(1);
+  });
+
+  /**
+   * Un serveur muet au premier essai ne doit pas faire echouer l'etape : c'est
+   * le cas nominal juste apres un redemarrage du service.
+   */
+  test("attend qu'Apollo reponde avant d'ouvrir une session d'appairage", async () => {
+    // Un seul refus : chaque refus coute une vraie attente de sonde, et un
+    // suffit a prouver que l'etape reessaie au lieu d'abandonner.
+    let refus = 1;
+    listClients.mockImplementation(async () => {
+      order.push("listClients");
+      if (refus-- > 0) throw new Error("Unable to connect");
+      return clientListAfterPin ?? clientList;
+    });
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-3" }];
+
+    await pairingStep.apply(CONFIG);
+
+    expect(order.indexOf("spawnPair")).toBeGreaterThan(1);
+    expect(order.slice(order.indexOf("spawnPair"))).toEqual([
+      "spawnPair",
+      "sendPin",
+      "listClients",
+    ]);
   });
 
   test("rejette explicitement si Apollo n'a pas encore d'identifiants web", async () => {

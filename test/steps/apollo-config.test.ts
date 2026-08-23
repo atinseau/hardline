@@ -4,8 +4,18 @@ import { CONFIG } from "../../src/config";
 let jsonQueue: unknown[][] = [];
 /** Les scripts envoyes a runRemoteJson, dans l'ordre reel des appels. */
 let jsonScripts: string[] = [];
+/**
+ * Le releve du desamorcage (src/lib/apollo-state.ts) suit toute pose
+ * d'identifiants, puisque sunshine.exe --creds reecrit le fichier d'etat et y
+ * remet les trois booleens en chaines. Il se reconnait a son script et se
+ * sert tout seul : le faire consommer la file obligerait chaque test a
+ * empiler un relevé dont il ne parle pas.
+ */
 const runRemoteJson = mock(async (_target: unknown, script: string) => {
   jsonScripts.push(script);
+  if (script.includes("[pscustomobject]@{ state = $state }")) {
+    return [{ state: null }];
+  }
   const next = jsonQueue.shift();
   if (!next) throw new Error("file d'attente JSON vide dans le test");
   return next;
@@ -317,30 +327,32 @@ describe("restore", () => {
  * (onze tests verts), puis a remplace tout le releve par un appel HTTP a
  * l'API d'Apollo - exactement ce que le brief interdit (onze tests verts).
  * Ces tests capturent le script REEL envoye et verifient qu'il lit bien
- * sunshine_state.json / root.username, et qu'il ne contient AUCUN appel
- * HTTP. Les deux scripts (inspect et apply) sont couverts separement : ils
+ * sunshine_state.json / $state.username, et qu'il ne contient AUCUN appel
+ * HTTP. Le champ est celui de la RACINE : c'est la forme que sunshine.exe
+ * --creds ecrit, verifiee sur la machine. Le chercher sous root ne trouvait
+ * jamais rien, et l'etape regenerait un mot de passe a chaque installation. Les deux scripts (inspect et apply) sont couverts separement : ils
  * se ressemblent mais ne partagent aucune logique (voir la decision de
  * conception dans le brief), donc rien ne garantit qu'une mutation posee
  * dans l'un soit posee dans l'autre.
  */
 describe("scripts de releve envoyes au PC", () => {
-  test("inspect lit sunshine_state.json et root.username, sans appel HTTP", async () => {
+  test("inspect lit sunshine_state.json et le champ username de la racine, sans appel HTTP", async () => {
     jsonQueue.push([{ conf: null, hadCredentials: false }]);
     await apolloConfigStep.inspect(CONFIG);
     const script = jsonScripts[0]!;
     expect(script).toContain("sunshine_state.json");
-    expect(script).toContain("root.username");
+    expect(script).toContain("$state.username");
     expect(script).not.toContain("Invoke-WebRequest");
     expect(script).not.toContain("Invoke-RestMethod");
     expect(script).not.toContain(String(CONFIG.apollo.apiPort));
   });
 
-  test("apply lit sunshine_state.json et root.username, sans appel HTTP", async () => {
+  test("apply lit sunshine_state.json et le champ username de la racine, sans appel HTTP", async () => {
     jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
     await apolloConfigStep.apply(CONFIG);
     const script = jsonScripts[0]!;
     expect(script).toContain("sunshine_state.json");
-    expect(script).toContain("root.username");
+    expect(script).toContain("$state.username");
     expect(script).not.toContain("Invoke-WebRequest");
     expect(script).not.toContain("Invoke-RestMethod");
     expect(script).not.toContain(String(CONFIG.apollo.apiPort));
@@ -434,5 +446,55 @@ describe("releve malforme cote PC : conf n'est ni une chaine ni null", () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toContain("apollo-config");
     expect((caught as Error).message).not.toContain("split is not a function");
+  });
+});
+
+/**
+ * Les deux defauts trouves sur la machine, chacun tenu par son test.
+ */
+describe("identifiants existants et désamorçage de l'état", () => {
+  /**
+   * sunshine.exe --creds ecrit `username` A LA RACINE. L'etape le cherchait
+   * sous root, ne le trouvait jamais, se croyait eternellement non conforme,
+   * et remplacait au trousseau un mot de passe qui fonctionnait.
+   */
+  test("un username à la racine suffit à reconnaître des identifiants posés", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: true }]);
+    const state = await apolloConfigStep.inspect(CONFIG);
+    expect(state.current.hadCredentials).toBe(true);
+    expect(state.detail).not.toContain("identifiants web absents");
+  });
+
+  test("le relevé accepte le username de la racine ET celui sous root", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false }]);
+    await apolloConfigStep.inspect(CONFIG);
+    const script = jsonScripts[0]!;
+    expect(script).toContain("$state.username -or");
+    expect(script).toContain("$state.root.username");
+  });
+
+  test("des identifiants déjà posés ne sont jamais régénérés", async () => {
+    jsonQueue.push([{ conf: "", hadCredentials: true, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    expect(generatePassword).not.toHaveBeenCalled();
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  /**
+   * --creds ne se contente pas d'ajouter les identifiants : il REECRIT le
+   * fichier d'etat en entier et y remet en chaines les trois booleens du
+   * client appaire. Sans desamorcage ici, apollo-service demarre ensuite un
+   * Apollo qui meurt, et l'appairage echoue sur un serveur mort.
+   */
+  test("pose des identifiants ⇒ l'état est relu pour être désamorcé", async () => {
+    jsonQueue.push([{ conf: "", hadCredentials: false, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    expect(jsonScripts.some((s) => s.includes("[pscustomobject]@{ state = $state }"))).toBe(true);
+  });
+
+  test("sans pose d'identifiants, l'état n'est pas relu", async () => {
+    jsonQueue.push([{ conf: "", hadCredentials: true, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    expect(jsonScripts.some((s) => s.includes("[pscustomobject]@{ state = $state }"))).toBe(false);
   });
 });

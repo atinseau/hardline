@@ -37,6 +37,10 @@
  * puisque son absence plante aussi.
  */
 
+import { psDoubleQuote, psQuote } from "./powershell";
+import { runRemoteChecked, runRemoteJson } from "./ssh";
+import type { Config } from "../config";
+
 /** Les trois champs mesures coupables. Rien d'autre n'est touche. */
 export const BOOLEAN_DEVICE_FIELDS = [
   "allow_client_commands",
@@ -102,4 +106,65 @@ export function normalizeState(text: string): string | null {
   }
 
   return changed ? JSON.stringify(parsed, null, 4) : null;
+}
+
+/**
+ * Le releve PowerShell du fichier d'etat, et sa reecriture desamorcee.
+ *
+ * Ces deux-la vivent ici et non dans une etape parce que DEUX etapes
+ * empoisonnent ce fichier, chacune a sa maniere : apollo-config quand
+ * sunshine.exe --creds le REECRIT ENTIEREMENT (mesure : les trois champs y
+ * repassent en chaines, meme quand ils venaient d'etre corriges), et pairing
+ * quand Apollo y ajoute le client appaire. Un desamorcage pose au seul
+ * appairage laisserait apollo-config tuer Apollo juste avant, et l'appairage
+ * suivant echouerait sur un serveur mort — c'est exactement ce qui s'est
+ * produit sur la machine.
+ */
+const STATE_PATH_EXPR = (installDirQ: string) =>
+  `(Join-Path ${installDirQ} (Join-Path 'config' 'sunshine_state.json'))`;
+
+/**
+ * Le fichier tel qu'il est sur le PC, ou null s'il n'existe pas.
+ *
+ * Se lit par SSH et non par l'API : quand cet etat est toxique, Apollo est
+ * mort et l'API ne repond plus du tout. Un diagnostic qui passerait par elle
+ * ne pourrait jamais nommer la cause de sa propre panne. Le cast [string]
+ * reste DANS la branche Test-Path, pour la meme raison que dans
+ * src/steps/apollo-config.ts : [string]$null vaut "" et confondrait « fichier
+ * absent » avec « fichier vide ».
+ */
+export async function readRemoteState(config: Config): Promise<string | null> {
+  const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
+  const rows = await runRemoteJson<{ state: string | null }>(
+    config.ssh,
+    `
+$statePath = ${STATE_PATH_EXPR(installDirQ)}
+$state = if (Test-Path $statePath) { [string](Get-Content -Path $statePath -Raw) } else { $null }
+[pscustomobject]@{ state = $state }`,
+  );
+  const value = rows[0]?.state ?? null;
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Desamorce le fichier d'etat. Rend true quand une correction a ete posee,
+ * false quand il n'y avait rien a corriger.
+ *
+ * Ne redemarre PAS le service : Apollo tourne deja avec cet etat en memoire,
+ * et c'est SON PROCHAIN demarrage que la correction sauve. Le relancer ici
+ * lui offrirait au contraire l'occasion de reecrire le fichier.
+ */
+export async function normalizeRemoteState(config: Config): Promise<boolean> {
+  const text = await readRemoteState(config);
+  if (text === null) return false;
+
+  const patched = normalizeState(text);
+  if (patched === null) return false;
+
+  const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
+  await runRemoteChecked(
+    config.ssh,
+    `[System.IO.File]::WriteAllText(${STATE_PATH_EXPR(installDirQ)}, ${psDoubleQuote(patched)}, (New-Object System.Text.UTF8Encoding($false)))`,
+  );
+  return true;
 }

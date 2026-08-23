@@ -8,9 +8,11 @@ import { spawnPair } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
 import { containsHost, forgetHost, readHosts } from "../lib/moonlight-plist";
 import { generatePin, getSecret } from "../lib/keychain";
-import { normalizeState } from "../lib/apollo-state";
-import { psDoubleQuote, psQuote } from "../lib/powershell";
-import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
+import {
+  normalizeRemoteState,
+  normalizeState,
+  readRemoteState,
+} from "../lib/apollo-state";
 import type { Config } from "../config";
 import type { RestoreContext, Step } from "./types";
 
@@ -35,53 +37,43 @@ async function credentials(config: Config): Promise<ApolloCredentials> {
   return { user: config.apollo.webUser, password };
 }
 
-const STATE_PATH_EXPR = (installDirQ: string) =>
-  `(Join-Path ${installDirQ} (Join-Path 'config' 'sunshine_state.json'))`;
-
 /**
- * Le fichier d'etat tel qu'il est sur le PC, ou null s'il n'existe pas.
+ * Attend qu'Apollo reponde a son API avant d'ouvrir une session d'appairage.
  *
- * Se lit par SSH et non par l'API : quand cet etat est toxique, Apollo est
- * mort et l'API ne repond plus du tout. Un diagnostic qui passerait par elle
- * ne pourrait jamais nommer la cause de sa propre panne. Le cast [string]
- * reste DANS la branche Test-Path, pour la meme raison que dans
- * src/steps/apollo-config.ts : [string]$null vaut "" et confondrait « fichier
- * absent » avec « fichier vide ».
+ * apollo-config relance le service juste avant cette etape, et Apollo met une
+ * vingtaine de secondes a detecter ses encodeurs puis a ouvrir ses ports. Se
+ * lancer aussitot, c'est un « Unable to connect » de Moonlight sur un serveur
+ * qui allait repondre — mesure sur la machine. Le delai plafond est genereux
+ * parce qu'il ne coute rien quand tout va bien : on sort a la premiere reponse.
  */
-async function readRemoteState(config: Config): Promise<string | null> {
-  const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
-  const rows = await runRemoteJson<{ state: string | null }>(
-    config.ssh,
-    `
-$statePath = ${STATE_PATH_EXPR(installDirQ)}
-$state = if (Test-Path $statePath) { [string](Get-Content -Path $statePath -Raw) } else { $null }
-[pscustomobject]@{ state = $state }`,
-  );
-  const value = rows[0]?.state ?? null;
-  return typeof value === "string" ? value : null;
-}
+async function waitForApollo(
+  config: Config,
+  creds: ApolloCredentials,
+  deadlineMs = 90_000,
+  pollMs = 2_000,
+  now: () => number = Date.now,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<void> {
+  const limit = now() + deadlineMs;
+  let last = "";
 
-/**
- * Desamorce le fichier d'etat qu'Apollo vient d'ecrire. Rend true quand une
- * correction a ete posee, false quand il n'y avait rien a corriger.
- *
- * Aucun redemarrage du service : Apollo tourne deja avec cet etat en memoire,
- * et c'est SON PROCHAIN demarrage que la correction sauve. Le relancer ici
- * lui offrirait au contraire l'occasion de reecrire le fichier.
- */
-async function normalizeRemoteState(config: Config): Promise<boolean> {
-  const text = await readRemoteState(config);
-  if (text === null) return false;
+  for (;;) {
+    try {
+      await listClients(config, creds);
+      return;
+    } catch (error) {
+      last = errorMessage(error);
+    }
 
-  const patched = normalizeState(text);
-  if (patched === null) return false;
-
-  const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
-  await runRemoteChecked(
-    config.ssh,
-    `[System.IO.File]::WriteAllText(${STATE_PATH_EXPR(installDirQ)}, ${psDoubleQuote(patched)}, (New-Object System.Text.UTF8Encoding($false)))`,
-  );
-  return true;
+    if (now() >= limit) {
+      throw new Error(
+        `Apollo n'a pas répondu dans les ${Math.round(deadlineMs / 1000)}\u00a0s ` +
+          `qui ont suivi son démarrage\u00a0: ${last}`,
+      );
+    }
+    await sleep(pollMs);
+  }
 }
 
 export const pairingStep: Step<PairingState> = {
@@ -141,8 +133,9 @@ export const pairingStep: Step<PairingState> = {
    */
   async apply(config: Config) {
     const creds = await credentials(config);
-    const pin = generatePin();
+    await waitForApollo(config, creds);
 
+    const pin = generatePin();
     const pairing = spawnPair(config, pin);
     try {
       await sendPin(config, creds, pin, config.moonlight.clientName);

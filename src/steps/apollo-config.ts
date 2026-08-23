@@ -2,6 +2,7 @@ import { psDoubleQuote, psQuote } from "../lib/powershell";
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import { deleteSecret, generatePassword, setSecret } from "../lib/keychain";
 import { REQUIRED_CONF, confConforms, patchConf } from "../lib/apollo-conf";
+import { normalizeRemoteState } from "../lib/apollo-state";
 import type { Config } from "../config";
 import type { RestoreContext, Step } from "./types";
 
@@ -18,10 +19,17 @@ const STATE_PATH_EXPR = (installDirQ: string) =>
   `(Join-Path ${installDirQ} (Join-Path 'config' 'sunshine_state.json'))`;
 
 /**
- * hadCredentials est lu dans sunshine_state.json, champ root.username : le
- * meme fichier qu'apollo-install.ts utilise pour pairedClients, mais lu ici
+ * hadCredentials est lu dans sunshine_state.json : le meme fichier
+ * qu'apollo-install.ts utilise pour pairedClients, mais lu ici
  * independamment, comme network-windows.ts et bootstrap-windows.ts
  * n'utilisent jamais le meme script d'inspection malgre leur ressemblance.
+ *
+ * Le champ est `username` A LA RACINE, pas `root.username` : c'est la forme
+ * que sunshine.exe --creds ecrit, verifiee sur la machine. Chercher dans root
+ * ne trouvait JAMAIS rien — l'etape se croyait donc eternellement non
+ * conforme, regenerait un mot de passe a chaque `hardline install`, et
+ * remplacait au trousseau un secret qui fonctionnait. root.username reste
+ * accepte en second, au cas ou une autre version d'Apollo le rangerait la.
  */
 const READ_STATE = (installDir: string) => {
   const installDirQ = psQuote(installDir, "répertoire d'installation");
@@ -40,7 +48,7 @@ $hadCredentials = $false
 if (Test-Path $statePath) {
   try {
     $state = Get-Content -Path $statePath -Raw | ConvertFrom-Json
-    if ($state.root -and $state.root.username) { $hadCredentials = $true }
+    if ($state.username -or ($state.root -and $state.root.username)) { $hadCredentials = $true }
   } catch {}
 }
 [pscustomobject]@{ conf = $conf; hadCredentials = [bool]$hadCredentials }`;
@@ -65,7 +73,7 @@ $hadCredentials = $false
 if (Test-Path $statePath) {
   try {
     $state = Get-Content -Path $statePath -Raw | ConvertFrom-Json
-    if ($state.root -and $state.root.username) { $hadCredentials = $true }
+    if ($state.username -or ($state.root -and $state.root.username)) { $hadCredentials = $true }
   } catch {}
 }
 $service = Get-Service -Name ${serviceNameQ} -ErrorAction SilentlyContinue
@@ -199,6 +207,16 @@ export const apolloConfigStep: Step<ApolloConfState> = {
       config.ssh,
       buildApplyScript(config, password, patched, current.serviceRunning),
     );
+
+    // sunshine.exe --creds ne se contente pas d'ajouter les identifiants : il
+    // REECRIT le fichier d'etat en entier, et y remet en chaines les trois
+    // booleens du client appaire — meme quand ils venaient d'etre corriges.
+    // Sans ce desamorcage, l'etape suivante demarre un Apollo qui meurt aux
+    // premieres secondes, et l'appairage echoue sur un serveur qui ne repond
+    // plus. Voir src/lib/apollo-state.ts pour le defaut contourne.
+    if (password !== null) {
+      await normalizeRemoteState(config);
+    }
   },
 
   /**
