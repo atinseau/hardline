@@ -28,6 +28,7 @@ let waitCalls = 0;
 
 const finishes: string[] = [];
 const failures: string[] = [];
+const reports: string[][] = [];
 let applyThrowsOn: string | null = null;
 let publicKey: string | null = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 const appliedGroups: string[][] = [];
@@ -72,6 +73,33 @@ function manifestOf(order: string[]): Manifest {
   };
 }
 
+// L'Apollo etranger : la vraie classe d'erreur, jamais une copie structurelle.
+// Un bouchon qui s'ecarte du vrai type est un test qui passe contre une
+// interface qui n'existe pas.
+const realApolloInstall = await import("../../src/steps/apollo-install");
+const { ForeignApolloError } = realApolloInstall;
+
+let applyThrowsForeign = false;
+let foreignRemoved = false;
+const BACKUP_PATH = "C:\\ProgramData\\hardline\\apollo-backup-20260823-101500.conf";
+const backupApolloConfig = mock(async () => {
+  trace.push("backup");
+  return BACKUP_PATH;
+});
+const uninstallApollo = mock(async () => {
+  trace.push("uninstall");
+  foreignRemoved = true;
+});
+
+mock.module("../../src/steps/apollo-install", () => ({
+  ...realApolloInstall,
+  backupApolloConfig,
+  uninstallApollo,
+}));
+
+let confirmForeignAnswer = true;
+const askConfirmation = mock(async (..._args: unknown[]) => confirmForeignAnswer);
+
 mock.module("../../src/lib/orchestrator", () => ({
   applySteps: async (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,6 +110,23 @@ mock.module("../../src/lib/orchestrator", () => ({
     const names = steps.map((s) => s.name);
     trace.push(`apply:${names.join("+")}`);
     if (applyThrowsOn === names.join("+")) throw new Error("boum");
+    if (
+      names.join("+") === REMOTE_GROUP.join("+") &&
+      applyThrowsForeign &&
+      !foreignRemoved
+    ) {
+      throw new ForeignApolloError(
+        "Apollo etranger trouve (version 0.4.5, 2 client(s) appaire(s)).",
+        {
+          installed: true,
+          version: "0.4.5",
+          ours: false,
+          backupPath: null,
+          pairedClients: 2,
+        },
+        true,
+      );
+    }
     appliedGroups.push(names);
     manifestPaths.push(manifestPath);
     for (const name of names) {
@@ -108,6 +153,8 @@ mock.module("../../src/lib/bootstrap-server", () => ({
 mock.module("../../src/lib/ui", () => ({
   configureOutput: () => {},
   withSpinner: async <T>(_label: string, run: () => Promise<T>) => run(),
+  askConfirmation,
+  askSecret: async () => "mot-de-passe-test",
   ui: {
     start: () => {},
     finish: (message: string) => finishes.push(message),
@@ -120,7 +167,7 @@ mock.module("../../src/lib/ui", () => ({
       failures.push(`${label} — ${detail}`),
     info: () => {},
     warn: () => {},
-    report: () => {},
+    report: (title: string, lines: string[]) => reports.push([title, ...lines]),
   },
 }));
 
@@ -189,7 +236,14 @@ beforeEach(() => {
   trace.length = 0;
   finishes.length = 0;
   failures.length = 0;
+  reports.length = 0;
   applyThrowsOn = null;
+  applyThrowsForeign = false;
+  foreignRemoved = false;
+  confirmForeignAnswer = true;
+  backupApolloConfig.mockClear();
+  uninstallApollo.mockClear();
+  askConfirmation.mockClear();
   publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
   appliedGroups.length = 0;
   manifestPaths.length = 0;
@@ -431,5 +485,80 @@ describe("installCommand", () => {
     await installCommand();
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
     expect(process.exitCode).toBe(0);
+  });
+});
+
+describe("installCommand, Apollo etranger detecte sur le PC", () => {
+  test("demande confirmation, nomme ce qui a ete trouve, puis relance et reussit", async () => {
+    applyThrowsForeign = true;
+    confirmForeignAnswer = true;
+    await installCommand({ yes: false });
+
+    expect(askConfirmation).toHaveBeenCalledTimes(1);
+    // Ce qui a ete trouve est nomme avant qu'on ne demande quoi que ce soit.
+    const rapport = reports.flat().join("\n");
+    expect(rapport).toContain("0.4.5");
+    expect(rapport).toContain("2");
+    expect(backupApolloConfig).toHaveBeenCalledTimes(1);
+    expect(uninstallApollo).toHaveBeenCalledTimes(1);
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("la sauvegarde precede la desinstallation dans le journal d'appels", async () => {
+    // L'ordre est la substance, et le journal partage est la seule preuve qui
+    // le montre : desinstaller avant de sauvegarder perd definitivement la
+    // configuration d'un tiers.
+    applyThrowsForeign = true;
+    confirmForeignAnswer = true;
+    await installCommand({ yes: false });
+
+    const sauvegarde = trace.indexOf("backup");
+    const desinstallation = trace.indexOf("uninstall");
+    expect(sauvegarde).toBeGreaterThanOrEqual(0);
+    expect(desinstallation).toBeGreaterThanOrEqual(0);
+    expect(sauvegarde).toBeLessThan(desinstallation);
+    // Et les deux tiennent entre la convergence qui a leve et celle qui reprend.
+    const premiere = trace.indexOf(`apply:${REMOTE_GROUP.join("+")}`);
+    const reprise = trace.lastIndexOf(`apply:${REMOTE_GROUP.join("+")}`);
+    expect(premiere).toBeLessThan(sauvegarde);
+    expect(desinstallation).toBeLessThan(reprise);
+    expect(premiere).toBeLessThan(reprise);
+  });
+
+  test("le chemin de la sauvegarde est dit a l'utilisateur", async () => {
+    applyThrowsForeign = true;
+    await installCommand({ yes: true });
+    expect(failures.concat(finishes).join("\n")).not.toContain("undefined");
+  });
+
+  test("s'arrete sans rien modifier sur le PC si l'utilisateur refuse", async () => {
+    applyThrowsForeign = true;
+    confirmForeignAnswer = false;
+    await installCommand({ yes: false });
+
+    expect(uninstallApollo).not.toHaveBeenCalled();
+    expect(backupApolloConfig).not.toHaveBeenCalled();
+    expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
+    expect(process.exitCode).toBe(1);
+    expect(finishes.join("\n")).toContain("Apollo étranger conservé");
+  });
+
+  test("--yes leve la question", async () => {
+    applyThrowsForeign = true;
+    await installCommand({ yes: true });
+
+    expect(askConfirmation).toHaveBeenCalledTimes(1);
+    const options = askConfirmation.mock.calls[0]?.[1] as { assumeYes: boolean };
+    expect(options.assumeYes).toBe(true);
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("une reprise qui echoue a son tour dit comment reprendre", async () => {
+    applyThrowsForeign = true;
+    applyThrowsOn = REMOTE_GROUP.join("+");
+    await installCommand({ yes: true });
+    expect(failures.join("\n")).toContain("Convergence du PC — boum");
+    expect(process.exitCode).toBe(1);
   });
 });

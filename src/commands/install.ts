@@ -22,8 +22,13 @@ import {
 } from "../lib/preflight";
 import { localBootstrapUrl, serveBootstrap } from "../lib/bootstrap-server";
 import { errorMessage } from "../lib/errors";
+import {
+  backupApolloConfig,
+  ForeignApolloError,
+  uninstallApollo,
+} from "../steps/apollo-install";
 import type { Step } from "../steps/types";
-import { configureOutput, ui, withSpinner } from "../lib/ui";
+import { askConfirmation, configureOutput, ui, withSpinner } from "../lib/ui";
 
 const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
 
@@ -104,13 +109,89 @@ async function converge(
     return await applySteps(steps, CONFIG, manifestPath, ui);
   } catch (error) {
     ui.failed({ label, detail: errorMessage(error) });
-    ui.finish(
-      "Installation interrompue\u00a0: l'état antérieur de chaque étape touchée est " +
-        "sur disque. Corriger, puis «\u00a0hardline install\u00a0» pour reprendre " +
-        "ou «\u00a0hardline uninstall\u00a0» pour tout rendre.",
-    );
+    ui.finish(REPRENDRE);
     process.exitCode = 1;
     return null;
+  }
+}
+
+const REPRENDRE =
+  "Installation interrompue\u00a0: l'état antérieur de chaque étape touchée est " +
+  "sur disque. Corriger, puis «\u00a0hardline install\u00a0» pour reprendre " +
+  "ou «\u00a0hardline uninstall\u00a0» pour tout rendre.";
+
+/**
+ * La convergence distante peut buter sur un Apollo etranger : l'installation
+ * s'arrete et demande, plutot que d'effacer en silence le travail de
+ * quelqu'un. --yes leve la question.
+ */
+async function convergeRemote(
+  manifestPath: string,
+  options: { yes: boolean },
+): Promise<boolean> {
+  try {
+    await applySteps(REMOTE_STEPS, CONFIG, manifestPath, ui);
+    return true;
+  } catch (error) {
+    if (error instanceof ForeignApolloError) {
+      return await handleForeignApollo(error, manifestPath, options);
+    }
+    ui.failed({ label: "Convergence du PC", detail: errorMessage(error) });
+    ui.finish(REPRENDRE);
+    process.exitCode = 1;
+    return false;
+  }
+}
+
+/**
+ * L'etape leve et n'agit pas ; c'est la COMMANDE qui obtient le consentement,
+ * puis qui efface. Aucun consentement ne transite par un drapeau global : le
+ * contrat Step n'a pas de canal pour cela, et lui en inventer un pour un seul
+ * cas deformerait le contrat de toutes les autres etapes.
+ */
+async function handleForeignApollo(
+  error: ForeignApolloError,
+  manifestPath: string,
+  options: { yes: boolean },
+): Promise<boolean> {
+  const { state, hasConfig } = error;
+  ui.report("Apollo étranger détecté sur le PC", [
+    `Version\u00a0: ${state.version ?? "inconnue"}`,
+    `Clients déjà appairés\u00a0: ${state.pairedClients}`,
+    hasConfig
+      ? "Sa configuration sera sauvegardée sur le PC avant d'être remplacée."
+      : "Aucune configuration existante à sauvegarder.",
+  ]);
+
+  const confirmed = await askConfirmation(
+    "Remplacer cette installation d'Apollo par celle de hardline\u00a0?",
+    { assumeYes: options.yes },
+  );
+  if (!confirmed) {
+    ui.finish(
+      "Installation interrompue\u00a0: Apollo étranger conservé, rien n'a été modifié sur le PC.",
+    );
+    process.exitCode = 1;
+    return false;
+  }
+
+  // La sauvegarde precede TOUJOURS la desinstallation : l'inverse perd
+  // definitivement la configuration d'un tiers, et aucun message ne la
+  // rendrait.
+  const backupPath = await backupApolloConfig(CONFIG);
+  if (backupPath !== null) {
+    ui.info(`Configuration de l'Apollo étranger sauvegardée dans ${backupPath}`);
+  }
+  await uninstallApollo(CONFIG);
+
+  try {
+    await applySteps(REMOTE_STEPS, CONFIG, manifestPath, ui);
+    return true;
+  } catch (retryError) {
+    ui.failed({ label: "Convergence du PC", detail: errorMessage(retryError) });
+    ui.finish(REPRENDRE);
+    process.exitCode = 1;
+    return false;
   }
 }
 
@@ -119,7 +200,7 @@ async function converge(
  * le manifeste trois fois, et trois verrous successifs laisseraient entre eux
  * exactement les fenetres qu'un verrou existe pour fermer.
  */
-export async function installCommand(): Promise<void> {
+export async function installCommand(options: { yes?: boolean } = {}): Promise<void> {
   configureOutput();
   ui.start("hardline — installation");
 
@@ -136,13 +217,13 @@ export async function installCommand(): Promise<void> {
   }
 
   try {
-    await install(manifestPath);
+    await install(manifestPath, { yes: options.yes ?? false });
   } finally {
     await lock.release();
   }
 }
 
-async function install(manifestPath: string): Promise<void> {
+async function install(manifestPath: string, options: { yes: boolean }): Promise<void> {
   // Phase 1 - preconditions locales. Rien n'est encore modifie.
   const local = await withSpinner("Vérification du Mac", () =>
     runLocalPreflight(CONFIG),
@@ -249,6 +330,6 @@ async function install(manifestPath: string): Promise<void> {
   }
 
   // Phase 4 - convergence distante.
-  if (!(await converge(REMOTE_STEPS, "Convergence du PC", manifestPath))) return;
+  if (!(await convergeRemote(manifestPath, options))) return;
   ui.finish("Liaison établie. Vérifier avec «\u00a0hardline doctor\u00a0».");
 }
