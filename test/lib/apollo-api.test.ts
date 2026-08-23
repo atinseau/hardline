@@ -6,6 +6,9 @@ import {
   listClients,
   unpairClient,
   apiReachable,
+  login,
+  parseAuthCookie,
+  resetSessions,
 } from "../../src/lib/apollo-api";
 
 const CONFIG: Config = {
@@ -46,7 +49,21 @@ let calls: FetchCall[];
 let responses: Response[];
 let originalFetch: typeof fetch;
 
+/**
+ * Apollo 0.4.6 n'accepte pas le Basic auth : toute requete est precedee d'un
+ * POST /api/login qui pose un cookie. Chaque cas empile donc sa reponse de
+ * connexion avant celles qu'il attend vraiment.
+ */
+const COOKIE = "auth=oMDEbr5FVE!kCrpVQd4Z)NMiAa&6L=hsiLg";
+
+function pushLogin(): void {
+  responses.push(
+    new Response(null, { status: 200, headers: { "set-cookie": `${COOKIE}; Secure; SameSite=Strict; Max-Age=2592000; Path=/` } }),
+  );
+}
+
 beforeEach(() => {
+  resetSessions();
   calls = [];
   responses = [];
   originalFetch = globalThis.fetch;
@@ -92,22 +109,34 @@ describe("parseClientList", () => {
 
 describe("sendPin et listClients", () => {
   test("sendPin envoie le PIN et le nom en JSON, authentifie et TLS relache", async () => {
+    pushLogin();
     responses.push(new Response(JSON.stringify({ status: true }), { status: 200 }));
 
     const result = await sendPin(CONFIG, CREDS, "4821", "hardline-mac");
 
     expect(result).toBe(true);
-    expect(calls).toHaveLength(1);
-    const call = calls[0]!;
+    expect(calls).toHaveLength(2);
+
+    const auth = calls[0]!;
+    expect(auth.url).toBe("https://10.10.10.1:47990/api/login");
+    expect(JSON.parse(String(auth.init.body))).toEqual({
+      username: CREDS.user,
+      password: CREDS.password,
+    });
+
+    const call = calls[1]!;
     expect(call.url).toBe("https://10.10.10.1:47990/api/pin");
     expect(JSON.parse(String(call.init.body))).toEqual({ pin: "4821", name: "hardline-mac" });
 
-    const expectedAuth = `Basic ${Buffer.from(`${CREDS.user}:${CREDS.password}`).toString("base64")}`;
-    expect((call.init.headers as Record<string, string>).Authorization).toBe(expectedAuth);
+    // Le cookie remplace l'en-tete Basic, qu'Apollo ignore purement et
+    // simplement : il ne repond meme pas de WWW-Authenticate.
+    expect((call.init.headers as Record<string, string>).cookie).toBe(COOKIE);
+    expect((call.init.headers as Record<string, string>).Authorization).toBeUndefined();
     expect(call.init.tls?.rejectUnauthorized).toBe(false);
   });
 
   test("sendPin rend ce que le serveur pretend sans qu'aucun appairage ne soit reellement en cours : c'est listClients qui fait foi", async () => {
+    pushLogin();
     responses.push(new Response(JSON.stringify({ status: true }), { status: 200 }));
     responses.push(
       new Response(JSON.stringify({ status: true, named_certs: [] }), { status: 200 }),
@@ -138,6 +167,7 @@ describe("sendPin et listClients", () => {
   });
 
   test("listClients confirme un appairage reussi via named_certs", async () => {
+    pushLogin();
     responses.push(
       new Response(
         JSON.stringify({ status: true, named_certs: [{ name: "hardline-mac", uuid: "uuid-9" }] }),
@@ -151,20 +181,30 @@ describe("sendPin et listClients", () => {
 
 describe("unpairClient", () => {
   test("poste l'uuid et n'echoue pas quand le serveur confirme", async () => {
+    pushLogin();
     responses.push(new Response(JSON.stringify({ status: true }), { status: 200 }));
     await expect(unpairClient(CONFIG, CREDS, "uuid-9")).resolves.toBeUndefined();
-    expect(calls[0]!.url).toBe("https://10.10.10.1:47990/api/clients/unpair");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ uuid: "uuid-9" });
+    expect(calls[1]!.url).toBe("https://10.10.10.1:47990/api/clients/unpair");
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ uuid: "uuid-9" });
   });
 
+  /**
+   * Sans pushLogin(), le 404 serait consomme par la CONNEXION et le test
+   * passerait pour la mauvaise raison : « Connexion refusee (code 404) »
+   * contient « 404 » lui aussi. La connexion reussit donc ici, et c'est bien
+   * le depairage qui echoue.
+   */
   test("leve quand le depairage echoue", async () => {
+    pushLogin();
     responses.push(new Response("", { status: 404 }));
     await expect(unpairClient(CONFIG, CREDS, "uuid-inconnu")).rejects.toThrow("404");
+    expect(calls[1]!.url).toContain("/api/clients/unpair");
   });
 });
 
 describe("apiReachable", () => {
   test("rend true quand /api/config repond", async () => {
+    pushLogin();
     responses.push(new Response(JSON.stringify({}), { status: 200 }));
     expect(await apiReachable(CONFIG, CREDS)).toBe(true);
   });
@@ -174,5 +214,81 @@ describe("apiReachable", () => {
       throw new Error("certificat refuse");
     }) as unknown as typeof fetch;
     await expect(apiReachable(CONFIG, CREDS)).resolves.toBe(false);
+  });
+});
+
+/**
+ * Le protocole reel d'Apollo 0.4.6, releve sur la machine : `/` repond 307
+ * vers `/login?redir=./`, `/api/clients/list` rend 401 avec ou sans en-tete
+ * Authorization et sans jamais emettre de WWW-Authenticate, et
+ * POST /api/login pose un cookie `auth`.
+ */
+describe("session par cookie", () => {
+  test("parseAuthCookie garde la valeur entière, séparateurs compris", () => {
+    // Valeur reelle emise par le serveur : elle contient ! % & ( ) =
+    const brut =
+      "auth=oMDEbr5FVE!kCrpVQd4ZtX2MzTmLh%ekDUJVXI1)NMiAa&6L)BkRuXJNoT=hsiLg; Secure; SameSite=Strict; Max-Age=2592000; Path=/";
+    expect(parseAuthCookie(brut)).toBe(
+      "auth=oMDEbr5FVE!kCrpVQd4ZtX2MzTmLh%ekDUJVXI1)NMiAa&6L)BkRuXJNoT=hsiLg",
+    );
+  });
+
+  test("parseAuthCookie ignore les autres cookies et l'absence de cookie", () => {
+    expect(parseAuthCookie("session=abc; Path=/")).toBeNull();
+    expect(parseAuthCookie(null)).toBeNull();
+    expect(parseAuthCookie("auth=; Path=/")).toBeNull();
+  });
+
+  test("login poste les identifiants en JSON et rend le cookie", async () => {
+    pushLogin();
+    const cookie = await login(CONFIG, CREDS);
+    expect(cookie).toBe(COOKIE);
+    expect(calls[0]!.url).toBe("https://10.10.10.1:47990/api/login");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      username: CREDS.user,
+      password: CREDS.password,
+    });
+  });
+
+  test("un identifiant refusé lève à la connexion, pas plus loin", async () => {
+    responses.push(new Response("", { status: 401 }));
+    await expect(listClients(CONFIG, CREDS)).rejects.toThrow(/Connexion à l'interface Apollo refusée/);
+  });
+
+  test("une connexion acceptée sans cookie est signalée", async () => {
+    responses.push(new Response(null, { status: 200 }));
+    await expect(login(CONFIG, CREDS)).rejects.toThrow(/sans poser de cookie/);
+  });
+
+  test("la session est réutilisée : une seule connexion pour deux appels", async () => {
+    pushLogin();
+    responses.push(new Response(JSON.stringify({ status: true, named_certs: [] }), { status: 200 }));
+    responses.push(new Response(JSON.stringify({ status: true, named_certs: [] }), { status: 200 }));
+
+    await listClients(CONFIG, CREDS);
+    await listClients(CONFIG, CREDS);
+
+    expect(calls.filter((c) => c.url.endsWith("/api/login"))).toHaveLength(1);
+  });
+
+  /**
+   * Une session expire au bout de 30 jours, et le mot de passe peut changer
+   * sous nos pieds. Sans cette reprise, un cookie caduc ferait echouer
+   * l'etape sur un 401 que personne ne saurait relier a l'age du cookie.
+   */
+  test("un cookie devenu caduc déclenche une reconnexion et un seul rejeu", async () => {
+    pushLogin();
+    responses.push(new Response(JSON.stringify({ status: true, named_certs: [] }), { status: 200 }));
+    await listClients(CONFIG, CREDS);
+
+    responses.push(new Response("", { status: 401 }));
+    pushLogin();
+    responses.push(
+      new Response(JSON.stringify({ status: true, named_certs: [{ name: "Mac", uuid: "u" }] }), { status: 200 }),
+    );
+
+    expect(await listClients(CONFIG, CREDS)).toEqual([{ name: "Mac", uuid: "u" }]);
+    expect(calls.filter((c) => c.url.endsWith("/api/login"))).toHaveLength(2);
   });
 });
