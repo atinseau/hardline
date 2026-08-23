@@ -355,3 +355,54 @@ describe("runUp, PC injoignable au depart", () => {
     expect(runStream).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("runUp, nettoyage garanti par le finally", () => {
+  test("demonte tous les partages et clot la session MEME QUAND le flux echoue", async () => {
+    streamThrows = new Error("moonlight a planté");
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow("moonlight a planté");
+    expect(unmountShare).toHaveBeenCalledTimes(3);
+    expect(runQuit).toHaveBeenCalledTimes(1);
+    // Ce qui est monte est demonte, nommement, et la fermeture vient apres.
+    const demontes = order.filter((e) => e.startsWith("unmount:"));
+    expect(demontes).toEqual(["unmount:arthur", "unmount:hardline-d", "unmount:hardline-e"]);
+    expect(order.indexOf("runQuit")).toBeGreaterThan(order.lastIndexOf("unmount:hardline-e"));
+  });
+
+  test("demonte et clot meme quand un montage echoue en cours de route", async () => {
+    mountThrowsOn = "hardline-e";
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/hardline-e/);
+    // Le flux n'a jamais demarre, mais le nettoyage porte quand meme sur les
+    // trois partages : unmountShare ne leve jamais pour un partage jamais
+    // monte, et l'appeler sur tous est donc sans risque.
+    expect(runStream).not.toHaveBeenCalled();
+    expect(unmountShare).toHaveBeenCalledTimes(3);
+    expect(runQuit).toHaveBeenCalledTimes(1);
+  });
+
+  test("le demontage d'un partage qui echoue n'empeche pas les autres ni la fermeture", async () => {
+    unmountShare.mockImplementationOnce(async () => {
+      throw new Error("demontage refuse");
+    });
+    streamThrows = new Error("moonlight a planté");
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow("moonlight a planté");
+    expect(unmountShare).toHaveBeenCalledTimes(3);
+    expect(runQuit).toHaveBeenCalledTimes(1);
+  });
+
+  test("une fermeture de session en echec ne masque pas l'erreur du flux", async () => {
+    runQuit.mockImplementationOnce(async () => {
+      throw new Error("quit refuse");
+    });
+    streamThrows = new Error("moonlight a planté");
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow("moonlight a planté");
+  });
+
+  test("ne monte rien et ne nettoie rien si le PC ne se reveille jamais", async () => {
+    reachable = false;
+    wakeSucceeds = false;
+    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/n'a pas répondu/);
+    expect(mountShare).not.toHaveBeenCalled();
+    expect(unmountShare).not.toHaveBeenCalled();
+    expect(runQuit).not.toHaveBeenCalled();
+  });
+});
