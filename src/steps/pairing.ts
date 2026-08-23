@@ -100,9 +100,19 @@ export const pairingStep: Step<PairingState> = {
     }
 
     // Un hote deja connu du plist avant hardline n'est jamais le notre a
-    // effacer.
+    // effacer. forgetHost() rend false quand l'hote y figurait encore et que
+    // la suppression a echoue : ce cas ne doit jamais etre pris pour un
+    // succes silencieux, donc on le dit plutot que de laisser croire que le
+    // Mac a tout oublie.
     if (!previous.hostKnown) {
-      await forgetHost(config.ssh.host);
+      const forgotten = await forgetHost(config.ssh.host);
+      if (!forgotten) {
+        return {
+          yielded:
+            "Hôte encore connu de Moonlight sur ce Mac\u00a0: la suppression via " +
+            "PlistBuddy n'a pas pu être confirmée.",
+        };
+      }
     }
   },
 };

@@ -10,6 +10,7 @@ let clientListAfterPin: Array<{ name: string; uuid: string }> | null = null;
 let sendPinResult = true;
 let plistHosts: Array<{ address: string }> = [];
 let killCalls = 0;
+let forgetHostResult = true;
 
 const spawnPair = mock((..._args: unknown[]) => {
   order.push("spawnPair");
@@ -28,7 +29,7 @@ const unpairClient = mock(async (..._args: unknown[]) => {});
 mock.module("../../src/lib/apollo-api", () => ({ listClients, sendPin, unpairClient }));
 mock.module("../../src/lib/moonlight", () => ({ spawnPair }));
 
-const forgetHost = mock(async (..._args: unknown[]) => {});
+const forgetHost = mock(async (..._args: unknown[]) => forgetHostResult);
 mock.module("../../src/lib/moonlight-plist", () => ({
   readHosts: async () => plistHosts,
   containsHost: (hosts: Array<{ address: string }>, host: string) =>
@@ -51,6 +52,7 @@ beforeEach(() => {
   sendPinResult = true;
   plistHosts = [];
   killCalls = 0;
+  forgetHostResult = true;
   spawnPair.mockClear();
   sendPin.mockClear();
   listClients.mockClear();
@@ -177,6 +179,22 @@ describe("restore", () => {
   test("retire l'entree du plist quand elle n'existait pas avant hardline", async () => {
     await pairingStep.restore(CONFIG, { clients: [], hostKnown: false }, NO_PENDING);
     expect(forgetHost).toHaveBeenCalledWith("10.10.10.1");
+  });
+
+  test("ne rend rien (restauration vue) quand la suppression du plist est confirmee", async () => {
+    forgetHostResult = true;
+    const outcome = await pairingStep.restore(CONFIG, { clients: [], hostKnown: false }, NO_PENDING);
+    expect(outcome).toBeUndefined();
+  });
+
+  test("rend un yielded explicite, jamais un succes silencieux, quand la suppression du plist echoue", async () => {
+    // Le coeur de la garantie : forgetHost() peut echouer sans lever (elle
+    // rend false). Un restore() qui ignorerait cette valeur et rendrait
+    // quand meme undefined mentirait sur l'etat reel du Mac.
+    forgetHostResult = false;
+    const outcome = await pairingStep.restore(CONFIG, { clients: [], hostKnown: false }, NO_PENDING);
+    expect(outcome).not.toBeUndefined();
+    expect((outcome as { yielded: string }).yielded).toMatch(/Moonlight/);
   });
 
   test("ne touche pas au plist si l'hote y figurait deja avant hardline", async () => {
