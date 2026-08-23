@@ -5,6 +5,7 @@ import {
   log,
   spinner,
   confirm,
+  password,
   isCancel,
   cancel,
 } from "@clack/prompts";
@@ -132,6 +133,35 @@ export async function askConfirmation(
   if (options.assumeYes || !interactive) return true;
 
   const answer = await confirm({ message });
+  if (isCancel(answer)) {
+    cancel("Interrompu.");
+    throw new CancelledError();
+  }
+  return answer;
+}
+
+export type AskSecretOptions = {
+  /** Injectable pour les tests ; par defaut, detection du terminal. */
+  interactive?: boolean;
+};
+
+/**
+ * Demande une valeur secrete au clavier, masquee a l'affichage. Contrairement
+ * a askConfirmation, il n'existe pas de reponse par defaut sensee pour un
+ * secret : hors terminal, la fonction leve plutot que d'inventer une valeur.
+ */
+export async function askSecret(
+  message: string,
+  options: AskSecretOptions = {},
+): Promise<string> {
+  const interactive = options.interactive ?? isInteractive();
+  if (!interactive) {
+    throw new Error(
+      `Un terminal interactif est nécessaire pour demander\u00a0: ${message}`,
+    );
+  }
+
+  const answer = await password({ message });
   if (isCancel(answer)) {
     cancel("Interrompu.");
     throw new CancelledError();

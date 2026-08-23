@@ -12,6 +12,7 @@ mock.module("@clack/prompts", () => ({
   cancel: (m: string) => calls.push(`cancel:${m}`),
   isCancel: (v: unknown) => typeof v === "symbol",
   confirm: async () => (cancelNext ? Symbol("cancel") : true),
+  password: async () => (cancelNext ? Symbol("cancel") : "s3cr3t"),
   log: {
     step: (m: string) => calls.push(`step:${m}`),
     success: (m: string) => calls.push(`success:${m}`),
@@ -27,7 +28,7 @@ mock.module("@clack/prompts", () => ({
   }),
 }));
 
-const { configureOutput, ui, withSpinner, askConfirmation, CancelledError } =
+const { configureOutput, ui, withSpinner, askConfirmation, askSecret, CancelledError } =
   await import("../../src/lib/ui");
 
 const savedCI = process.env.CI;
@@ -153,5 +154,39 @@ describe("report", () => {
     expect(calls[0]).toContain("note:Diagnostic:");
     expect(calls[0]).toContain("Latence");
     expect(calls[0]).toContain("Adresse PC");
+  });
+});
+
+describe("askSecret", () => {
+  test("leve une erreur explicite hors terminal, sans jamais bloquer", async () => {
+    await expect(
+      askSecret("Mot de passe Windows", { interactive: false }),
+    ).rejects.toThrow(/terminal interactif/);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("rend la valeur saisie en mode interactif", async () => {
+    expect(await askSecret("Mot de passe Windows", { interactive: true })).toBe(
+      "s3cr3t",
+    );
+  });
+
+  test("leve CancelledError sur annulation", async () => {
+    cancelNext = true;
+    const attempt = askSecret("Mot de passe Windows", { interactive: true });
+    await expect(attempt).rejects.toBeInstanceOf(CancelledError);
+    await attempt.catch(() => {});
+    cancelNext = false;
+  });
+
+  test("ne fait jamais echo de la valeur saisie sur aucun canal de sortie", async () => {
+    // password() est le seul point d'entree clack utilise ici : le mock ne
+    // pousse la valeur saisie dans `calls` (le journal de tout ce qui est
+    // affiche) sous aucun pretexte. Si askSecret venait a logger la reponse
+    // (ui.info, console.log, etc.), ce test le verrait.
+    calls.length = 0;
+    const value = await askSecret("Mot de passe Windows", { interactive: true });
+    expect(value).toBe("s3cr3t");
+    expect(calls.some((c) => c.includes("s3cr3t"))).toBe(false);
   });
 });
