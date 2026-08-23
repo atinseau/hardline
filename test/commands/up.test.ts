@@ -406,3 +406,119 @@ describe("runUp, nettoyage garanti par le finally", () => {
     expect(runQuit).not.toHaveBeenCalled();
   });
 });
+
+describe("upCommand", () => {
+  test("rapporte la fin de session au succes", async () => {
+    streamExitCode = 0;
+    await upCommand({ fullscreen: false, resolution: null, fps: null });
+    expect(finishes.join("\n")).toContain("Session terminée.");
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("rejette des options invalides avant toute action sur les machines", async () => {
+    await upCommand({ fullscreen: false, resolution: "pas-une-resolution", fps: null });
+    expect(mountShare).not.toHaveBeenCalled();
+    expect(runRemoteJson).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(failures.join("\n")).toContain("Résolution invalide");
+  });
+
+  test("rapporte l'echec et sort en 1 quand runUp leve", async () => {
+    streamThrows = new Error("moonlight a planté");
+    await upCommand({ fullscreen: false, resolution: null, fps: null });
+    expect(process.exitCode).toBe(1);
+    expect(failures.join("\n")).toContain("moonlight a planté");
+    expect(finishes.join("\n")).toContain("Échec de l'ouverture de la session");
+  });
+
+  test("dit le code de sortie quand le flux ne sort pas en zero", async () => {
+    streamExitCode = 7;
+    await upCommand({ fullscreen: false, resolution: null, fps: null });
+    expect(finishes.join("\n")).toContain("code 7");
+  });
+
+  test("transmet le plein ecran et les options imposees jusqu'a runStream", async () => {
+    await upCommand({ fullscreen: true, resolution: "2560x1440", fps: "144" });
+    const passedOptions = (runStream.mock.calls[0] as unknown[])[2];
+    expect(passedOptions).toEqual({
+      fullscreen: true,
+      resolution: { width: 2560, height: 1440 },
+      fps: 144,
+    });
+  });
+});
+
+describe("upCommand, le secret ne s'affiche jamais", () => {
+  /**
+   * Sous Bun, console.log ne passe PAS par process.stdout.write : intercepter
+   * le seul flux laisserait passer tout ce que console ecrit. Les deux voies
+   * sont donc capturees.
+   */
+  async function captureSortie(run: () => Promise<void>): Promise<string> {
+    const capture: string[] = [];
+    const methodes = ["log", "info", "warn", "error", "debug", "trace"] as const;
+    const consoleOriginal = new Map<string, unknown>();
+    for (const nom of methodes) {
+      consoleOriginal.set(nom, console[nom]);
+      console[nom] = (...args: unknown[]) => capture.push(args.map(String).join(" "));
+    }
+    const stdoutOriginal = process.stdout.write.bind(process.stdout);
+    const stderrOriginal = process.stderr.write.bind(process.stderr);
+    const intercepte = (chunk: unknown): boolean => {
+      capture.push(String(chunk));
+      return true;
+    };
+    process.stdout.write = intercepte as typeof process.stdout.write;
+    process.stderr.write = intercepte as typeof process.stderr.write;
+
+    try {
+      await run();
+    } finally {
+      for (const nom of methodes) {
+        (console as unknown as Record<string, unknown>)[nom] = consoleOriginal.get(nom);
+      }
+      process.stdout.write = stdoutOriginal;
+      process.stderr.write = stderrOriginal;
+    }
+
+    return [...capture, ...finishes, ...failures, ...infos, ...warns].join("\n");
+  }
+
+  test("aucune trace ne porte le mot de passe, session reussie", async () => {
+    windowsPassword = "correct-horse-battery-staple";
+    const sortie = await captureSortie(() =>
+      upCommand({ fullscreen: false, resolution: null, fps: null }),
+    );
+    expect(sortie).not.toContain("correct-horse-battery-staple");
+  });
+
+  test("aucune trace ne porte le mot de passe quand un montage echoue", async () => {
+    windowsPassword = "correct-horse-battery-staple";
+    mountThrowsOn = "hardline-d";
+    const sortie = await captureSortie(() =>
+      upCommand({ fullscreen: false, resolution: null, fps: null }),
+    );
+    expect(failures.join("\n")).toContain("hardline-d");
+    expect(sortie).not.toContain("correct-horse-battery-staple");
+  });
+
+  test("le mot de passe n'est jamais un argument de commande visible", async () => {
+    windowsPassword = "correct-horse-battery-staple";
+    await runUp(CONFIG, NO_OPTIONS);
+    // Tout ce qui part vers le PC ou vers Moonlight, mis a plat.
+    const argumentsVisibles = [
+      ...runRemoteJson.mock.calls,
+      ...runRemoteChecked.mock.calls,
+      ...runStream.mock.calls,
+      ...runQuit.mock.calls,
+    ]
+      .flat()
+      .map((a) => JSON.stringify(a))
+      .join("\n");
+    expect(argumentsVisibles).not.toContain("correct-horse-battery-staple");
+    // Il n'est passe qu'a mountShare, qui compose l'URL SMB lui-meme.
+    expect(mountShare.mock.calls.every((c) => c[2] === "correct-horse-battery-staple")).toBe(
+      true,
+    );
+  });
+});

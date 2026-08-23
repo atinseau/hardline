@@ -189,6 +189,34 @@ export async function runUp(config: Config, options: StreamOptions): Promise<num
   }
 }
 
-export async function upCommand(_cliOptions: UpCliOptions): Promise<void> {
-  throw new Error("non implemente a ce cycle");
+/**
+ * Les options sont validees AVANT la moindre action sur les machines : une
+ * definition mal ecrite ne doit pas reveiller un PC pour rien.
+ */
+export async function upCommand(cliOptions: UpCliOptions): Promise<void> {
+  configureOutput();
+  ui.start("hardline — up");
+
+  let options: StreamOptions;
+  try {
+    options = buildStreamOptions(cliOptions);
+  } catch (error) {
+    ui.failed({ label: "Options", detail: errorMessage(error) });
+    ui.finish("Options invalides.");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const exitCode = await withSpinner("Ouverture de la session", () =>
+      runUp(CONFIG, options),
+    );
+    ui.finish(
+      exitCode === 0 ? "Session terminée." : `Session terminée avec le code ${exitCode}.`,
+    );
+  } catch (error) {
+    ui.failed({ label: "up", detail: errorMessage(error) });
+    ui.finish("Échec de l'ouverture de la session.");
+    process.exitCode = 1;
+  }
 }
