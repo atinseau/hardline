@@ -5,6 +5,7 @@ import {
   rawHostIndex,
   forgetHostArgs,
   forgetHostAtIndex,
+  forgetHostFromJson,
 } from "../../src/lib/moonlight-plist";
 
 const WITH_HOST = JSON.stringify({
@@ -139,5 +140,61 @@ describe("forgetHostAtIndex, frontiere systeme", () => {
     exitCodes = [1];
     await expect(forgetHostAtIndex(0)).resolves.toBe(false);
     expect(spawnCalls).toHaveLength(1);
+  });
+});
+
+describe("forgetHostFromJson, integration bout en bout", () => {
+  // Le point precis que la revue signale : rawHostIndex est juste en
+  // isolation, mais rien ne prouvait que forgetHost() -- celle que
+  // restore() appelle reellement -- s'en sert correctement. Ces tests
+  // passent par forgetHostFromJson, qui EST le corps de forgetHost() prive
+  // du seul appel non simulable ($ de Bun) : le chemin exerce ici est
+  // exactement celui que restore() emprunte en production.
+  type SpawnCall = { cmd: string[] };
+
+  let spawnCalls: SpawnCall[];
+  let originalSpawn: typeof Bun.spawn;
+
+  beforeEach(() => {
+    spawnCalls = [];
+    originalSpawn = Bun.spawn;
+    Bun.spawn = ((cmd: string[]) => {
+      spawnCalls.push({ cmd });
+      return { exited: Promise.resolve(0) };
+    }) as unknown as typeof Bun.spawn;
+  });
+
+  afterEach(() => {
+    Bun.spawn = originalSpawn;
+  });
+
+  test("vise l'index brut du JSON quand une entree mal formee precede l'hote", async () => {
+    // Les deux index DOIVENT differer : filtre, notre hote serait le
+    // premier element (index 0) puisque parseHosts retire l'entree cassee ;
+    // brut, il est le second (index 1). Le contraste est le test.
+    const withGapBefore = JSON.stringify({
+      hosts: [{ name: "sans adresse" }, { address: "10.10.10.1" }],
+    });
+    const filteredIndex = parseHosts(withGapBefore).findIndex(
+      (h) => h.address === "10.10.10.1",
+    );
+    const rawIndex = rawHostIndex(withGapBefore, "10.10.10.1");
+    expect(rawIndex).not.toBe(filteredIndex);
+    expect(rawIndex).toBe(1);
+    expect(filteredIndex).toBe(0);
+
+    await forgetHostFromJson(withGapBefore, "10.10.10.1");
+
+    expect(spawnCalls[0]!.cmd).toEqual(forgetHostArgs(1));
+    expect(spawnCalls[0]!.cmd).not.toEqual(forgetHostArgs(0));
+  });
+
+  test("n'emet aucune commande de suppression quand l'hote est absent du plist", async () => {
+    const withoutOurHost = JSON.stringify({ hosts: [{ address: "10.10.10.99" }] });
+
+    const forgotten = await forgetHostFromJson(withoutOurHost, "10.10.10.1");
+
+    expect(spawnCalls).toHaveLength(0);
+    expect(forgotten).toBe(true);
   });
 });

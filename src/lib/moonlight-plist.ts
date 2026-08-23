@@ -123,19 +123,30 @@ export async function forgetHostAtIndex(index: number): Promise<boolean> {
 }
 
 /**
- * Retire l'entree d'hote du plist. L'index vise le tableau BRUT du JSON
- * (rawHostIndex), jamais une liste filtree par parseHosts.
+ * Le corps entier de forgetHost, prive du seul appel que rien ne peut
+ * intercepter en test : le `$` de Bun echappe a mock.module (verifie
+ * empiriquement, voir test/lib/display.test.ts), donc cette fonction recoit
+ * le JSON en parametre plutot que de le lire elle-meme. C'est elle qui
+ * calcule l'index -- via rawHostIndex, jamais une liste filtree par
+ * parseHosts -- et la transmet a forgetHostAtIndex. forgetHost() ci-dessous
+ * n'est qu'un branchement sur la lecture reelle : tester cette fonction,
+ * c'est tester exactement le chemin que restore() emprunte.
  *
- * Rend true si l'hote est absent apres l'appel : soit il ne s'y trouvait
- * pas, soit la suppression a ete confirmee. Rend false s'il y figurait et
- * que la suppression a echoue -- ce cas ne doit jamais etre pris pour un
- * succes silencieux par l'appelant.
+ * Rend true si l'hote est absent apres l'appel : soit il ne figurait pas
+ * dans le JSON, soit la suppression a ete confirmee. Rend false s'il y
+ * figurait et que la suppression a echoue -- ce cas ne doit jamais etre pris
+ * pour un succes silencieux par l'appelant.
  */
+export async function forgetHostFromJson(json: string, host: string): Promise<boolean> {
+  const index = rawHostIndex(json, host);
+  if (index === null) return true;
+  return forgetHostAtIndex(index);
+}
+
+/** Retire l'entree d'hote du plist. Voir forgetHostFromJson pour la logique. */
 export async function forgetHost(host: string): Promise<boolean> {
   const { stdout } = await $`defaults export ${DOMAIN} - | plutil -convert json -o - -`
     .quiet()
     .nothrow();
-  const index = rawHostIndex(stdout.toString(), host);
-  if (index === null) return true;
-  return forgetHostAtIndex(index);
+  return forgetHostFromJson(stdout.toString(), host);
 }
