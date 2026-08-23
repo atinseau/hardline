@@ -87,7 +87,14 @@ export const CONFIG: Config = {
   },
   moonlight: {
     cask: "moonlight",
-    binary: "/opt/homebrew/bin/moonlight",
+    // L'executable DANS le bundle, jamais le lien que Homebrew pose dans
+    // /opt/homebrew/bin. Qt resout ses greffons relativement au chemin par
+    // lequel le programme est lance : appele par le lien, il les cherche
+    // dans /opt/homebrew/PlugIns, ne les trouve pas, et l'interface ne se
+    // charge jamais — « module "QtQuick.Controls" plugin
+    // "qtquickcontrols2plugin" not found », mesure sur le Mac. Le programme
+    // reste alors muet, et l'appairage echoue sans que rien ne le dise.
+    binary: "/Applications/Moonlight.app/Contents/MacOS/Moonlight",
     clientName: "hardline-mac",
     app: "Desktop",
   },
