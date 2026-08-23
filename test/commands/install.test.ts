@@ -173,9 +173,17 @@ const ko = (name: string, blocking = true): CheckResult => ({
 const MAC_OK = [ok("service-mac")];
 const PC_OK = [ok("ssh"), ok("windows-version"), ok("gpu"), ok("lien-windows")];
 
-const LOCAL_GROUP = ["network-mac"];
+const LOCAL_GROUP = ["network-mac", "moonlight-install", "smb-credentials"];
 const CAPTURE_GROUP = ["bootstrap-windows"];
-const REMOTE_GROUP = ["network-windows", "network-profile-task"];
+const REMOTE_GROUP = [
+  "network-windows",
+  "network-profile-task",
+  "apollo-install",
+  "apollo-config",
+  "apollo-service",
+  "smb-shares",
+  "pairing",
+];
 
 beforeEach(() => {
   trace.length = 0;
@@ -211,10 +219,10 @@ describe("installCommand", () => {
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
-      "apply:network-mac",
+      "apply:network-mac+moonlight-install+smb-credentials",
       "preflight-remote",
       "apply:bootstrap-windows",
-      "apply:network-windows+network-profile-task",
+      "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
     ]);
     expect(process.exitCode).toBe(0);
   });
@@ -243,14 +251,14 @@ describe("installCommand", () => {
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
-      "apply:network-mac",
+      "apply:network-mac+moonlight-install+smb-credentials",
       "preflight-remote",
       "serve",
       "wait",
       "stop",
       "preflight-remote",
       "apply:bootstrap-windows",
-      "apply:network-windows+network-profile-task",
+      "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
     ]);
     expect(finishes.join("\n")).toContain("Liaison établie");
     expect(finishes.join("\n")).not.toContain("Relancer");
@@ -263,7 +271,7 @@ describe("installCommand", () => {
     await installCommand();
     expect(remoteCalls).toBe(1);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
-    expect(trace).not.toContain("apply:network-windows+network-profile-task");
+    expect(trace).not.toContain("apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing");
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
@@ -294,7 +302,7 @@ describe("installCommand", () => {
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
     expect(trace).toEqual([
       "preflight-local",
-      "apply:network-mac",
+      "apply:network-mac+moonlight-install+smb-credentials",
       "preflight-remote",
       "serve",
       "wait",
@@ -367,7 +375,7 @@ describe("installCommand", () => {
     remoteRounds = [[ko("ssh")]];
     publicKey = null;
     await installCommand();
-    expect(trace).toEqual(["preflight-local", "apply:network-mac", "preflight-remote"]);
+    expect(trace).toEqual(["preflight-local", "apply:network-mac+moonlight-install+smb-credentials", "preflight-remote"]);
     expect(serveCalls).toBe(0);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
     expect(failures.join("\n")).toContain("ssh-keygen -t ed25519");
@@ -378,15 +386,16 @@ describe("installCommand", () => {
   });
 
   test("un echec de la convergence du Mac n'envoie pas sonder le PC", async () => {
-    applyThrowsOn = "network-mac";
+    applyThrowsOn = "network-mac+moonlight-install+smb-credentials";
     await installCommand();
-    expect(trace).toEqual(["preflight-local", "apply:network-mac"]);
+    expect(trace).toEqual(["preflight-local", "apply:network-mac+moonlight-install+smb-credentials"]);
     expect(failures.join("\n")).toContain("Convergence du Mac — boum");
     expect(process.exitCode).toBe(1);
   });
 
   test("un echec de la convergence du PC dit comment reprendre", async () => {
-    applyThrowsOn = "network-windows+network-profile-task";
+    applyThrowsOn =
+      "network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing";
     await installCommand();
     expect(failures.join("\n")).toContain("Convergence du PC — boum");
     const message = finishes.join("\n");

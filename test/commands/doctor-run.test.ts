@@ -1,9 +1,14 @@
 import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
 import type { CheckResult } from "../../src/lib/preflight";
 import type { ThroughputStats } from "../../src/lib/throughput";
+import { REQUIRED_CONF } from "../../src/lib/apollo-conf";
 
 const realShell = await import("../../src/lib/shell");
 const realSsh = await import("../../src/lib/ssh");
+const realPlist = await import("../../src/lib/moonlight-plist");
+const realKeychain = await import("../../src/lib/keychain");
+const realBrew = await import("../../src/lib/brew");
+const realApolloApi = await import("../../src/lib/apollo-api");
 
 const trace: string[] = [];
 let localChecks: CheckResult[] = [];
@@ -56,6 +61,11 @@ mock.module("../../src/lib/shell", () => ({
         },
 }));
 
+/** Une configuration Apollo qui porte exactement les six cles imposees. */
+const CONF_CONFORME = Object.entries(REQUIRED_CONF)
+  .map(([key, value]) => `${key} = ${value}`)
+  .join("\n");
+
 // Le PC repond quand la liaison est saine : sans cela, les etapes distantes
 // echouent toutes et le diagnostic ne peut JAMAIS conclure a une liaison
 // operationnelle, le seul cas ou le code de sortie est en jeu.
@@ -67,6 +77,29 @@ mock.module("../../src/lib/ssh", () => ({
     if (script.includes("bootstrap-state.json")) {
       // Aucun releve : l'etape se declare conforme et ne promet rien.
       return [{ capture: null, acknowledged: false, unreadable: false }];
+    }
+    if (script.includes("'sunshine.exe'")) {
+      return [
+        {
+          installed: true,
+          version: "0.4.6",
+          ours: true,
+          pairedClients: 1,
+          hasConfig: true,
+        },
+      ];
+    }
+    if (script.includes("hadCredentials")) {
+      return [{ conf: CONF_CONFORME, hadCredentials: true }];
+    }
+    if (script.includes("startType")) {
+      return [{ startType: "Automatic", status: "Running" }];
+    }
+    if (script.includes("Get-SmbShare")) {
+      return [
+        { name: "hardline-d", existed: true },
+        { name: "hardline-e", existed: true },
+      ];
     }
     return [
       {
@@ -82,6 +115,30 @@ mock.module("../../src/lib/ssh", () => ({
   runRemoteChecked: async () => {
     throw new Error("PC injoignable");
   },
+}));
+
+// Les etapes du Mac interrogent Homebrew, le trousseau, l'API d'Apollo et le
+// plist de Moonlight. Un diagnostic simule ne doit toucher aucun des quatre :
+// les laisser passer ferait dependre le resultat de la machine qui execute la
+// suite.
+mock.module("../../src/lib/brew", () => ({
+  ...realBrew,
+  caskInfo: async () => ({ installed: true, version: "6.1.0" }),
+}));
+
+mock.module("../../src/lib/keychain", () => ({
+  ...realKeychain,
+  getSecret: async () => "secret-de-test",
+}));
+
+mock.module("../../src/lib/apollo-api", () => ({
+  ...realApolloApi,
+  listClients: async () => [{ name: "hardline-mac", uuid: "uuid-du-mac" }],
+}));
+
+mock.module("../../src/lib/moonlight-plist", () => ({
+  ...realPlist,
+  readHosts: async () => [{ address: "10.10.10.1" }],
 }));
 
 /**

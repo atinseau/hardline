@@ -2,14 +2,26 @@ import { bootstrapWindowsStep } from "./bootstrap-windows";
 import { macNetworkStep } from "./network-mac";
 import { windowsNetworkStep } from "./network-windows";
 import { windowsProfileTaskStep } from "./network-profile-task";
+import { apolloInstallStep } from "./apollo-install";
+import { apolloConfigStep } from "./apollo-config";
+import { apolloServiceStep } from "./apollo-service";
+import { smbSharesStep } from "./smb-shares";
+import { moonlightInstallStep } from "./moonlight-install";
+import { pairingStep } from "./pairing";
+import { smbCredentialsStep } from "./smb-credentials";
 import type { Step } from "./types";
 
 /**
  * Etapes cote Mac. Elles convergent sans qu'aucune precondition distante ne
- * soit observable : ce sont elles qui rendent le lien routable.
+ * soit observable : ce sont elles qui rendent le lien routable, posent le
+ * client de streaming, et deposent au trousseau le mot de passe des partages.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const LOCAL_STEPS: Step<any>[] = [macNetworkStep];
+export const LOCAL_STEPS: Step<any>[] = [
+  macNetworkStep,
+  moonlightInstallStep,
+  smbCredentialsStep,
+];
 
 /**
  * Ce qui doit entrer au manifeste des que la session SSH repond, AVANT toute
@@ -22,11 +34,26 @@ export const LOCAL_STEPS: Step<any>[] = [macNetworkStep];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const CAPTURE_STEPS: Step<any>[] = [bootstrapWindowsStep];
 
-/** Etapes de convergence cote PC, une fois toutes les preconditions passees. */
+/**
+ * Convergence cote PC, une fois toutes les preconditions passees. L'ordre
+ * porte des dependances reelles : apollo-config ecrit dans un repertoire que
+ * seul apollo-install cree, apollo-service demarre un service qui doit lire
+ * une conf deja ecrite, et smb-shares suppose le compte Windows joignable.
+ *
+ * pairing est en DERNIER bien qu'elle agisse aussi cote Mac : elle exige
+ * qu'Apollo tourne, donc elle ne peut pas passer avant apolloServiceStep. A la
+ * restauration, qui se fait en ordre inverse, elle se defait donc EN PREMIER —
+ * ce qui est egalement correct : on depaire tant que le serveur repond.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const REMOTE_STEPS: Step<any>[] = [
   windowsNetworkStep,
   windowsProfileTaskStep,
+  apolloInstallStep,
+  apolloConfigStep,
+  apolloServiceStep,
+  smbSharesStep,
+  pairingStep,
 ];
 
 /**
