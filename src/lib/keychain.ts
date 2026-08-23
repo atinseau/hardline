@@ -35,6 +35,16 @@ const SECURITY = "/usr/bin/security";
  * Un appel a security. `input`, quand il est fourni, part sur l'entree
  * standard : c'est le seul chemin par lequel un secret atteint l'outil sans
  * apparaitre dans la liste des processus de la machine.
+ *
+ * `detached: true` n'est pas un detail d'ordonnancement, c'est ce qui empeche
+ * « password data for new item: » et « retype password for new item: » de
+ * s'afficher en anglais au milieu de l'interface. security demande le secret
+ * par getpass(3), qui ecrit ses invites sur /dev/tty et non sur la sortie
+ * standard ni sur la sortie d'erreur : AUCUNE redirection de flux ne les
+ * supprime. Un processus detache perd son terminal de controle, /dev/tty ne
+ * s'ouvre plus, et getpass bascule sur l'entree standard - celle qu'on lui
+ * fournit deja. Le mode interactif de security a ete ecarte : il TRONQUE le
+ * secret a la premiere espace.
  */
 async function security(
   args: string[],
@@ -44,6 +54,7 @@ async function security(
     stdin: input === undefined ? "ignore" : new Response(input),
     stdout: "pipe",
     stderr: "ignore",
+    detached: true,
   });
 
   const [stdout, exitCode] = await Promise.all([

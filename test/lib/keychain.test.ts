@@ -63,7 +63,7 @@ describe("generatePin", () => {
 
 // --- setSecret : le secret passe par l'entree standard, et la relecture fait foi. ---
 
-type SpawnCall = { cmd: string[]; stdin: unknown };
+type SpawnCall = { cmd: string[]; stdin: unknown; detached: boolean | undefined };
 
 let spawnCalls: SpawnCall[];
 let lastInput: string;
@@ -85,8 +85,8 @@ beforeEach(() => {
   avaleLaConfirmation = false;
   originalSpawn = Bun.spawn;
 
-  Bun.spawn = ((cmd: string[], options?: { stdin?: unknown }) => {
-    spawnCalls.push({ cmd, stdin: options?.stdin });
+  Bun.spawn = ((cmd: string[], options?: { stdin?: unknown; detached?: boolean }) => {
+    spawnCalls.push({ cmd, stdin: options?.stdin, detached: options?.detached });
 
     if (cmd[1] === "add-generic-password") {
       const input = options?.stdin;
@@ -168,6 +168,42 @@ describe("setSecret", () => {
     }
     expect(caught).not.toBeNull();
     expect(caught?.message).not.toContain(SECRET);
+  });
+});
+
+/**
+ * Les invites de security - « password data for new item: » et « retype
+ * password for new item: » - sont ecrites par getpass(3) sur /dev/tty, jamais
+ * sur la sortie standard ni sur la sortie d'erreur : les rediriger ne les
+ * supprime pas, et l'utilisateur les a vues s'afficher en anglais au milieu de
+ * l'interface. Un processus DETACHE perd son terminal de controle, /dev/tty ne
+ * s'ouvre plus, et getpass bascule sur l'entree standard - celle qu'on lui
+ * fournit deja. Retirer `detached` fait tomber ces trois controles.
+ */
+describe("security : aucune invite sur le terminal", () => {
+  test("chaque appel a security est detache de son terminal de controle", async () => {
+    await setSecret("apollo-web", "-aZ b!@#$%^&*-_=+9");
+    expect(spawnCalls.length).toBeGreaterThan(0);
+    for (const call of spawnCalls) {
+      expect(call.detached).toBe(true);
+    }
+  });
+
+  test("l'ecriture du secret, seul appel qui reclame une saisie, est detachee", async () => {
+    await setSecret("windows-account", "hunter 2");
+    const add = spawnCalls.find((c) => c.cmd[1] === "add-generic-password");
+    expect(add?.detached).toBe(true);
+  });
+
+  /**
+   * Le mode interactif de security a ete ecarte : il TRONQUE le secret a la
+   * premiere espace. L'aller-retour reste donc exact sur un mot de passe qui
+   * porte une espace, un tiret initial et des caracteres speciaux.
+   */
+  test("l'aller-retour reste exact sur un secret a espaces et tiret initial", async () => {
+    const piege = "-mot de passe --avec espaces $ ' `!";
+    await setSecret("apollo-web", piege);
+    expect(await getSecret("apollo-web")).toBe(piege);
   });
 });
 
