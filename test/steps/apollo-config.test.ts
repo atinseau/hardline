@@ -203,6 +203,23 @@ describe("apply", () => {
   });
 
   /**
+   * Preuve par mutation (ronde 2) : le test precedent fabrique lui-meme le
+   * message d'erreur simule en extrayant la ligne du script - il ne verifie
+   * jamais que la redirection y figure REELLEMENT. C'est 2>$null qui empeche
+   * sunshine.exe d'ecrire sur son propre flux d'erreur un texte que
+   * runRemoteChecked (src/lib/ssh.ts) recopierait ensuite dans l'erreur
+   * remontee : sans cette assertion sur le script capture, retirer la
+   * redirection de la production laissait tous les tests verts.
+   */
+  test("la ligne d'appel a --creds redirige son flux d'erreur vers le neant", async () => {
+    jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
+    await apolloConfigStep.apply(CONFIG);
+    const script = checkedScript(0);
+    const credsLine = script.split("\n").find((l) => l.includes("--creds"));
+    expect(credsLine).toContain("2>$null");
+  });
+
+  /**
    * Preuve par mutation (ronde 1) : le contenu ecrit passe par psDoubleQuote,
    * qui echappe accent grave, dollar et guillemet. Une interpolation nue
    * (par exemple un template `"${patchedConf}"` a la main) laisserait `$` et
@@ -274,6 +291,22 @@ describe("restore", () => {
     expect(script).not.toContain("Set-Content");
     expect(script).toContain("commentaire français");
     expect(script).toContain("café de l'étage");
+  });
+
+  /**
+   * Preuve par mutation (ronde 2) : symetrique du test d'echappement cote
+   * apply. restore() ecrit le meme genre de contenu par le meme mecanisme
+   * (psDoubleQuote), mais rien ne lie les deux scripts entre eux - le trou
+   * signale au point 3 de la ronde 1 pour le releve valait aussi ici, pour
+   * l'ecriture. Une configuration anterieure portant `$` et `"` doit
+   * ressortir echappee du script de restore.
+   */
+  test("le contenu restaure est echappe par psDoubleQuote : dollar et guillemet survivent cites", async () => {
+    const conf = 'sunshine_name = "valeur $HOME"';
+    await apolloConfigStep.restore(CONFIG, { conf, hadCredentials: true }, { pending: [] });
+    const script = checkedScript(0);
+    expect(script).toContain("`$HOME");
+    expect(script).toContain('`"valeur');
   });
 });
 
