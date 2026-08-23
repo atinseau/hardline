@@ -103,12 +103,11 @@ describe("mountShare", () => {
     expect(call?.cmd[2]).toBe(SHARE_D.mountPoint);
   });
 
-  test("ne laisse jamais le mot de passe fuir dans le message d'erreur", async () => {
-    const password = "S3cretMotDePasse!";
+  test("ne laisse jamais fuir la forme brute du mot de passe", async () => {
+    const password = "S3cret Pass@Word/2026";
+    const anchor = "authentification refusee pour le compte arthur";
     mountSmbfsExit = 68;
-    mountSmbfsStderr =
-      `mount_smbfs: server rejected the connection: Authentication error ` +
-      `url=smb://arthur:${password}@10.10.10.1/hardline-d`;
+    mountSmbfsStderr = `mount_smbfs: ${anchor} avec le mot de passe ${password}`;
 
     let caught: Error | null = null;
     try {
@@ -120,6 +119,27 @@ describe("mountShare", () => {
     expect(caught).not.toBeNull();
     expect(caught?.message).not.toContain(password);
     expect(caught?.message).not.toContain(encodeURIComponent(password));
+    expect(caught?.message).toContain(anchor);
+  });
+
+  test("ne laisse jamais fuir la forme encodee du mot de passe", async () => {
+    const password = "S3cret Pass@Word/2026";
+    const anchor = "url rejetee par le serveur";
+    mountSmbfsExit = 68;
+    mountSmbfsStderr =
+      `mount_smbfs: ${anchor} url=smb://arthur:${encodeURIComponent(password)}@10.10.10.1/hardline-d`;
+
+    let caught: Error | null = null;
+    try {
+      await mountShare(SHARE_D, CONFIG, password);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught?.message).not.toContain(password);
+    expect(caught?.message).not.toContain(encodeURIComponent(password));
+    expect(caught?.message).toContain(anchor);
   });
 });
 

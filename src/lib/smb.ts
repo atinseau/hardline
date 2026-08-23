@@ -44,8 +44,8 @@ export async function mountShare(
 
   if (exitCode !== 0) {
     throw new Error(
-      `impossible de monter le partage « ${share.name} » sur ${share.mountPoint} ` +
-        `(code ${exitCode}) : ${stripSecret(stderr.trim(), password)}`,
+      `impossible de monter le partage «\u00a0${share.name}\u00a0» sur ${share.mountPoint} ` +
+        `(code ${exitCode})\u00a0: ${stripSecret(stderr.trim(), password)}`,
     );
   }
 }
