@@ -1,5 +1,3 @@
-import { $ } from "bun";
-
 export const KEYCHAIN_SERVICE = "hardline";
 
 export type SecretName = "apollo-web" | "windows-account";
@@ -31,28 +29,85 @@ export function generatePin(): string {
 
 // --- Frontiere systeme. Aucune logique ici, seulement l'appel a /usr/bin/security. ---
 
-/** Range un secret. Ecrase silencieusement s'il existe deja. */
+const SECURITY = "/usr/bin/security";
+
+/**
+ * Un appel a security. `input`, quand il est fourni, part sur l'entree
+ * standard : c'est le seul chemin par lequel un secret atteint l'outil sans
+ * apparaitre dans la liste des processus de la machine.
+ */
+async function security(
+  args: string[],
+  input?: string,
+): Promise<{ exitCode: number; stdout: string }> {
+  const proc = Bun.spawn([SECURITY, ...args], {
+    stdin: input === undefined ? "ignore" : new Response(input),
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+
+  const [stdout, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  return { exitCode, stdout };
+}
+
+/**
+ * Range un secret. Ecrase silencieusement s'il existe deja.
+ *
+ * Le mot de passe part sur l'ENTREE STANDARD : `-w` place en derniere position
+ * et sans valeur fait lire le secret la, y compris quand l'entree n'est pas un
+ * terminal. Passe en argument, il serait lisible par n'importe quel processus
+ * de la machine le temps de l'appel.
+ *
+ * security attend DEUX lignes, saisie et confirmation. Une seule ligne, ou
+ * deux lignes differentes, rangent un mot de passe VIDE et sortent en code 0 :
+ * le code de retour ne prouve donc rien. Seule la relecture fait foi, et c'est
+ * elle qui porte le contrat de cette fonction, la seule du module qui leve.
+ */
 export async function setSecret(name: SecretName, value: string): Promise<void> {
-  await $`/usr/bin/security add-generic-password -a ${name} -s ${KEYCHAIN_SERVICE} -w ${value} -U`
-    .quiet();
+  const { exitCode } = await security(
+    ["add-generic-password", "-a", name, "-s", KEYCHAIN_SERVICE, "-U", "-w"],
+    `${value}\n${value}\n`,
+  );
+  if (exitCode !== 0) {
+    throw new Error(
+      `Le trousseau a refusé le secret «\u00a0${name}\u00a0» (code ${exitCode}).`,
+    );
+  }
+
+  if ((await getSecret(name)) !== value) {
+    throw new Error(
+      `Le secret «\u00a0${name}\u00a0» n'a pas été rangé tel quel au trousseau\u00a0: ` +
+        "la relecture ne rend pas la valeur écrite.",
+    );
+  }
 }
 
 /** Relit un secret. `null` s'il n'existe pas. Ne leve jamais pour une absence. */
 export async function getSecret(name: SecretName): Promise<string | null> {
-  const { stdout, exitCode } =
-    await $`/usr/bin/security find-generic-password -a ${name} -s ${KEYCHAIN_SERVICE} -w`
-      .quiet()
-      .nothrow();
+  const { stdout, exitCode } = await security([
+    "find-generic-password",
+    "-a",
+    name,
+    "-s",
+    KEYCHAIN_SERVICE,
+    "-w",
+  ]);
   if (exitCode !== 0) return null;
-  const value = stdout.toString().replace(/\n$/, "");
+  const value = stdout.replace(/\n$/, "");
   return value === "" ? null : value;
 }
 
 /** Retire un secret. Rend `true` s'il existait. */
 export async function deleteSecret(name: SecretName): Promise<boolean> {
-  const { exitCode } =
-    await $`/usr/bin/security delete-generic-password -a ${name} -s ${KEYCHAIN_SERVICE}`
-      .quiet()
-      .nothrow();
+  const { exitCode } = await security([
+    "delete-generic-password",
+    "-a",
+    name,
+    "-s",
+    KEYCHAIN_SERVICE,
+  ]);
   return exitCode === 0;
 }
