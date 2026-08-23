@@ -120,6 +120,29 @@ describe("apply, sequence nominale", () => {
   });
 });
 
+describe("apply, le processus Moonlight est toujours arrete", () => {
+  test("arrete le processus de pairage quand l'appairage reussit", async () => {
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-4" }];
+    await pairingStep.apply(CONFIG);
+    expect(killCalls).toBe(1);
+  });
+
+  test("arrete le processus de pairage meme quand la relecture ne confirme rien", async () => {
+    clientListAfterPin = [];
+    await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/Appairage non confirmé/);
+    expect(killCalls).toBe(1);
+  });
+
+  test("arrete le processus de pairage meme quand sendPin leve", async () => {
+    sendPin.mockImplementationOnce(async () => {
+      order.push("sendPin");
+      throw new Error("panne reseau");
+    });
+    await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/panne reseau/);
+    expect(killCalls).toBe(1);
+  });
+});
+
 describe("apply, la relecture fait foi et non la reponse de sendPin", () => {
   test("echoue si sendPin rend true mais que la liste relue reste vide", async () => {
     // Le coeur de la garantie : /api/pin est documente comme repondant
@@ -164,6 +187,12 @@ describe("restore", () => {
   test("ne depaire rien si notre client n'apparait plus dans la liste", async () => {
     clientList = [];
     await pairingStep.restore(CONFIG, { clients: [], hostKnown: false }, NO_PENDING);
+    expect(unpairClient).not.toHaveBeenCalled();
+  });
+
+  test("ne depaire pas un client different du notre, meme quand la liste n'est pas vide", async () => {
+    clientList = [{ name: "autre-appareil", uuid: "u-6" }];
+    await pairingStep.restore(CONFIG, { clients: [], hostKnown: true }, NO_PENDING);
     expect(unpairClient).not.toHaveBeenCalled();
   });
 });
