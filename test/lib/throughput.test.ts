@@ -36,6 +36,31 @@ const CONFIG: Config = {
   windows: { interfaceAlias: "Ethernet", ip: "10.10.10.1", prefixLength: 24 },
   ssh: { host: "10.10.10.1", user: "arthur", identityFile: "/dev/null", connectTimeoutSec: 8 },
   bootstrapPort: 8080,
+  apollo: {
+    version: "0.4.6",
+    installerUrl:
+      "https://github.com/ClassicOldSong/Apollo/releases/download/v0.4.6/Apollo-0.4.6.exe",
+    installerSha256:
+      "42b2aefaacb3474511517a56b96ee9f0517f30ac38b5dd2fda9fd5b478f5021a",
+    installDir: "C:\\Program Files\\Apollo",
+    serviceName: "ApolloService",
+    apiPort: 47990,
+    webUser: "hardline",
+  },
+  moonlight: {
+    cask: "moonlight",
+    binary: "/opt/homebrew/bin/moonlight",
+    clientName: "hardline-mac",
+    app: "Desktop",
+  },
+  smb: {
+    user: "arthur",
+    shares: [
+      { name: "arthur", path: null, mountPoint: "/Volumes/pc-arthur" },
+      { name: "hardline-d", path: "D:\\", mountPoint: "/Volumes/pc-d" },
+      { name: "hardline-e", path: "E:\\", mountPoint: "/Volumes/pc-e" },
+    ],
+  },
 };
 
 beforeEach(() => {
