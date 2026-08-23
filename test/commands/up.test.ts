@@ -454,6 +454,14 @@ describe("upCommand", () => {
     expect(finishes.join("\n")).toContain("code 7");
   });
 
+  test("sort en 1 quand Moonlight lui-meme sort en erreur", async () => {
+    // Le code de sortie rapporte ce qui a ete observe, ici un flux vu echouer.
+    // Un script qui enchaine sur « hardline up » n'a que ce code a lire.
+    streamExitCode = 7;
+    await upCommand({ fullscreen: false, resolution: null, fps: null });
+    expect(process.exitCode).toBe(1);
+  });
+
   test("transmet le plein ecran et les options imposees jusqu'a runStream", async () => {
     await upCommand({ fullscreen: true, resolution: "2560x1440", fps: "144" });
     const passedOptions = (runStream.mock.calls[0] as unknown[])[2];

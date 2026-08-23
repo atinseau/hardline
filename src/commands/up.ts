@@ -284,9 +284,16 @@ export async function upCommand(cliOptions: UpCliOptions): Promise<void> {
           "Session ouverte\u00a0: Moonlight prend le terminal jusqu'à sa fermeture.",
         ),
     });
-    ui.finish(
-      exitCode === 0 ? "Session terminée." : `Session terminée avec le code ${exitCode}.`,
-    );
+    // Meme contrat que partout ailleurs dans le programme : le code de sortie
+    // rapporte ce qui a ete OBSERVE. Un flux qui se termine en erreur a ete vu
+    // echouer ; le taire sous un code 0 rendrait « hardline up » inutilisable
+    // dans un script, qui ne peut lire que ce code.
+    if (exitCode === 0) {
+      ui.finish("Session terminée.");
+      return;
+    }
+    ui.finish(`Session terminée avec le code ${exitCode}.`);
+    process.exitCode = 1;
   } catch (error) {
     ui.failed({ label: "up", detail: errorMessage(error) });
     ui.finish("Échec de l'ouverture de la session.");
