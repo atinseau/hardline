@@ -5,6 +5,57 @@ let cancelNext = false;
 const spinnerStop = mock((m?: string) => calls.push(`stop:${m}`));
 const spinnerError = mock((m?: string) => calls.push(`error:${m}`));
 
+/**
+ * Intercepte tout ce qui part sur stdout et stderr, en plus du mock de
+ * @clack/prompts (`calls`). Le mock ne voit qu'un echo passant par clack
+ * lui-meme ; un ecrit direct sur ces flux le contourne completement et
+ * resterait invisible sans cet espion.
+ *
+ * console.log/console.error ne passent PAS par process.stdout.write /
+ * process.stderr.write sous Bun : reassigner ces deux seules methodes laisse
+ * passer console.log sans le voir (verifie : un console.log insere apres
+ * password() imprime bien le secret dans la sortie du test, sans faire
+ * echouer une assertion qui ne surveillerait que process.stdout.write). Les
+ * quatre methodes de console sont donc interceptees ici en plus des deux flux
+ * bas niveau, pour que le mutant decrit par la revue soit reellement vu.
+ * Toujours restaurer dans un `finally`, y compris quand l'appel espionne leve.
+ */
+function captureStdio(): { text(): string; restore(): void } {
+  let buffer = "";
+  const originalOut = process.stdout.write.bind(process.stdout);
+  const originalErr = process.stderr.write.bind(process.stderr);
+  const originalConsole = {
+    log: console.log,
+    error: console.error,
+    warn: console.warn,
+    info: console.info,
+  };
+  const writeSpy = ((chunk: string | Uint8Array) => {
+    buffer += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+    return true;
+  }) as unknown as typeof process.stdout.write;
+  const consoleSpy = ((...args: unknown[]) => {
+    buffer += args.map(String).join(" ") + "\n";
+  }) as unknown as typeof console.log;
+  process.stdout.write = writeSpy;
+  process.stderr.write = writeSpy;
+  console.log = consoleSpy;
+  console.error = consoleSpy;
+  console.warn = consoleSpy;
+  console.info = consoleSpy;
+  return {
+    text: () => buffer,
+    restore: () => {
+      process.stdout.write = originalOut;
+      process.stderr.write = originalErr;
+      console.log = originalConsole.log;
+      console.error = originalConsole.error;
+      console.warn = originalConsole.warn;
+      console.info = originalConsole.info;
+    },
+  };
+}
+
 mock.module("@clack/prompts", () => ({
   intro: (m: string) => calls.push(`intro:${m}`),
   outro: (m: string) => calls.push(`outro:${m}`),
@@ -158,35 +209,54 @@ describe("report", () => {
 });
 
 describe("askSecret", () => {
-  test("leve une erreur explicite hors terminal, sans jamais bloquer", async () => {
-    await expect(
-      askSecret("Mot de passe Windows", { interactive: false }),
-    ).rejects.toThrow(/terminal interactif/);
+  test("leve une erreur explicite hors terminal, sans jamais bloquer, ni ecrire quoi que ce soit", async () => {
+    // password() n'est jamais appele sur ce chemin : rien ne devrait jamais
+    // partir sur stdout ni stderr, quel que soit le message demande.
+    const capture = captureStdio();
+    try {
+      await expect(
+        askSecret("Mot de passe Windows", { interactive: false }),
+      ).rejects.toThrow(/terminal interactif/);
+    } finally {
+      capture.restore();
+    }
     expect(calls).toHaveLength(0);
+    expect(capture.text()).toBe("");
   });
 
-  test("rend la valeur saisie en mode interactif", async () => {
-    expect(await askSecret("Mot de passe Windows", { interactive: true })).toBe(
-      "s3cr3t",
-    );
-  });
-
-  test("leve CancelledError sur annulation", async () => {
-    cancelNext = true;
-    const attempt = askSecret("Mot de passe Windows", { interactive: true });
-    await expect(attempt).rejects.toBeInstanceOf(CancelledError);
-    await attempt.catch(() => {});
-    cancelNext = false;
-  });
-
-  test("ne fait jamais echo de la valeur saisie sur aucun canal de sortie", async () => {
+  test("rend la valeur saisie en mode interactif, sans echo sur aucun canal de sortie", async () => {
     // password() est le seul point d'entree clack utilise ici : le mock ne
     // pousse la valeur saisie dans `calls` (le journal de tout ce qui est
-    // affiche) sous aucun pretexte. Si askSecret venait a logger la reponse
-    // (ui.info, console.log, etc.), ce test le verrait.
+    // affiche par clack) sous aucun pretexte. Mais un `console.log` ou une
+    // ecriture directe sur stdout/stderr contournerait entierement clack et
+    // resterait invisible a `calls` seul : de la l'espion sur les deux flux
+    // reels, restaure dans un `finally` meme si l'appel espionne leve.
     calls.length = 0;
-    const value = await askSecret("Mot de passe Windows", { interactive: true });
+    const capture = captureStdio();
+    let value: string;
+    try {
+      value = await askSecret("Mot de passe Windows", { interactive: true });
+    } finally {
+      capture.restore();
+    }
     expect(value).toBe("s3cr3t");
     expect(calls.some((c) => c.includes("s3cr3t"))).toBe(false);
+    expect(capture.text()).not.toContain("s3cr3t");
+    expect(capture.text()).toBe("");
+  });
+
+  test("leve CancelledError sur annulation, sans rien ecrire sur stdout ni stderr", async () => {
+    cancelNext = true;
+    const capture = captureStdio();
+    try {
+      const attempt = askSecret("Mot de passe Windows", { interactive: true });
+      await expect(attempt).rejects.toBeInstanceOf(CancelledError);
+      await attempt.catch(() => {});
+    } finally {
+      capture.restore();
+      cancelNext = false;
+    }
+    expect(capture.text()).not.toContain("s3cr3t");
+    expect(capture.text()).toBe("");
   });
 });
