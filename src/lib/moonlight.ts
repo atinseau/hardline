@@ -39,7 +39,7 @@ export function streamArgs(
     args.push("--resolution", `${resolution.width}x${resolution.height}`);
   }
 
-  const fps = options.fps ?? (display ? display.refreshHz : null);
+  const fps = options.fps ?? (display && display.refreshHz > 0 ? display.refreshHz : null);
   if (fps !== null) {
     args.push("--fps", String(fps));
   }

@@ -113,6 +113,34 @@ describe("streamArgs", () => {
     expect(args).not.toContain("--resolution");
     expect(args).not.toContain("--fps");
   });
+
+  test("ecran avec refreshHz: 0 ne passe pas de --fps, mais la resolution oui", () => {
+    const displayWithZeroRefresh: Display = {
+      widthPx: 3456,
+      heightPx: 2234,
+      refreshHz: 0,
+      widthPt: 1728,
+      heightPt: 1117,
+      main: true,
+    };
+
+    const args = streamArgs(CONFIG, displayWithZeroRefresh, {
+      fullscreen: false,
+      resolution: null,
+      fps: null,
+    });
+
+    expect(args).toEqual([
+      "stream",
+      "10.10.10.1",
+      "Desktop",
+      "--display-mode",
+      "windowed",
+      "--resolution",
+      "3456x2234",
+    ]);
+    expect(args).not.toContain("--fps");
+  });
 });
 
 describe("frontiere systeme", () => {
