@@ -92,9 +92,16 @@ const backupApolloConfig = mock(async () => {
   trace.push("backup");
   return BACKUP_PATH;
 });
+/**
+ * Ce que le demontage n'a PAS pu faire. Le nettoyage tolere l'absence de ses
+ * cibles ; ce qui manque doit malgre tout remonter jusqu'a l'ecran, et c'est ce
+ * que cette file permet de prouver.
+ */
+let uninstallCedes: string[] = [];
 const uninstallApollo = mock(async () => {
   trace.push("uninstall");
   foreignRemoved = true;
+  return uninstallCedes;
 });
 
 mock.module("../../src/steps/apollo-install", () => ({
@@ -289,6 +296,7 @@ beforeEach(() => {
   applyThrowsOn = null;
   applyThrowsForeign = false;
   foreignRemoved = false;
+  uninstallCedes = [];
   confirmForeignAnswer = true;
   backupApolloConfig.mockClear();
   uninstallApollo.mockClear();
@@ -578,6 +586,28 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
     expect(uninstallApollo).toHaveBeenCalledTimes(1);
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
     expect(process.exitCode).toBe(0);
+  });
+
+  /**
+   * Le demontage tolere l'absence de ses cibles - une installation a demi
+   * demontee doit pouvoir etre nettoyee jusqu'au bout - mais la tolerance ne
+   * doit jamais devenir du silence. Ce que le PC dit n'avoir pas pu faire
+   * arrive a l'ecran, sans quoi la commande annoncerait un remplacement propre
+   * sur une machine ou un pilote ou un certificat est reste.
+   */
+  test("ce que le demontage n'a pas pu faire est dit a l'operateur", async () => {
+    applyThrowsForeign = true;
+    confirmForeignAnswer = true;
+    uninstallCedes = [
+      "Pilote SudoVDA introuvable\u00a0: rien à retirer.",
+      "update-path.bat absent\u00a0: le PATH du PC peut garder l'entrée d'Apollo.",
+    ];
+
+    await installCommand({ yes: false });
+
+    for (const cede of uninstallCedes) {
+      expect(warns).toContain(cede);
+    }
   });
 
   test("la sauvegarde precede la desinstallation dans le journal d'appels", async () => {

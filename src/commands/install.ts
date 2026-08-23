@@ -220,7 +220,11 @@ async function handleForeignApollo(
   if (backupPath !== null) {
     ui.info(`Configuration de l'Apollo étranger sauvegardée dans ${backupPath}`);
   }
-  await uninstallApollo(CONFIG);
+  // Le demontage tolere l'absence de ses cibles, mais ce qu'il n'a pas pu
+  // faire ne se perd pas : c'est la seule occasion de le dire a l'operateur.
+  for (const cede of await uninstallApollo(CONFIG)) {
+    ui.warn(cede);
+  }
 
   try {
     await applySteps(REMOTE_STEPS, CONFIG, manifestPath, ui);
