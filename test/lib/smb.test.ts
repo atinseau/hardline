@@ -51,6 +51,7 @@ let spawnCalls: SpawnCall[];
 let mountSmbfsExit: number;
 let mountSmbfsStderr: string;
 let mountOutput: string;
+let lsExit: number;
 let originalSpawn: typeof Bun.spawn;
 
 beforeEach(() => {
@@ -59,6 +60,7 @@ beforeEach(() => {
   mountSmbfsExit = 0;
   mountSmbfsStderr = "";
   mountOutput = "";
+  lsExit = 0;
   originalSpawn = Bun.spawn;
   Bun.spawn = ((cmd: string[]) => {
     spawnCalls.push({ cmd });
@@ -75,6 +77,9 @@ beforeEach(() => {
         stderr: "",
         exited: Promise.resolve(0),
       };
+    }
+    if (cmd[0] === "/bin/ls") {
+      return { stdout: "", stderr: "", exited: Promise.resolve(lsExit) };
     }
     return { stdout: "", stderr: "", exited: Promise.resolve(0) };
   }) as unknown as typeof Bun.spawn;
@@ -119,7 +124,7 @@ describe("mountShare", () => {
     expect(caught).not.toBeNull();
     expect(caught?.message).not.toContain(password);
     expect(caught?.message).not.toContain(encodeURIComponent(password));
-    expect(caught?.message).toContain(anchor);
+    expect(caught?.message).not.toContain(anchor);
   });
 
   test("ne laisse jamais fuir la forme encodee du mot de passe", async () => {
@@ -139,7 +144,7 @@ describe("mountShare", () => {
     expect(caught).not.toBeNull();
     expect(caught?.message).not.toContain(password);
     expect(caught?.message).not.toContain(encodeURIComponent(password));
-    expect(caught?.message).toContain(anchor);
+    expect(caught?.message).not.toContain(anchor);
   });
 
   test("ne remonte pas un partage deja monte", async () => {
@@ -152,6 +157,21 @@ describe("mountShare", () => {
 
     expect(spawnCalls.some((c) => c.cmd[0] === "mount_smbfs")).toBe(false);
     expect(mkdirCalls).toEqual([]);
+  });
+
+  test("recycle un montage existant qui ne repond plus", async () => {
+    mountOutput = `//arthur@10.10.10.1/hardline-d on ${SHARE_D.mountPoint} (smbfs, nodev, nosuid, mounted by arthur)`;
+    lsExit = 137;
+
+    await mountShare(SHARE_D, CONFIG, "s3cret!");
+
+    expect(spawnCalls.map((call) => call.cmd[0])).toEqual([
+      "mount",
+      "/bin/ls",
+      "umount",
+      "mount_smbfs",
+    ]);
+    expect(spawnCalls[2]!.cmd).toEqual(["umount", "-f", SHARE_D.mountPoint]);
   });
 });
 
@@ -185,4 +205,3 @@ describe("isMounted", () => {
     expect(await isMounted(SHARE_D)).toBe(false);
   });
 });
-

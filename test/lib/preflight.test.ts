@@ -155,7 +155,7 @@ describe("runLocalPreflight", () => {
     const check = (await runLocalPreflight(CONFIG)).find((r) => r.name === "service-mac");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
-    expect(check?.detail).toContain("désactivé");
+    expect(check?.detail).toContain("disabled");
   });
 
 });
@@ -217,7 +217,7 @@ describe("runRemotePreflight", () => {
     const check = (await runRemotePreflight(CONFIG)).find((r) => r.name === "lien-windows");
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
-    expect(check?.detail).toContain("câble");
+    expect(check?.detail).toContain("cable");
   });
 });
 

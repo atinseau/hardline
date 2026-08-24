@@ -53,14 +53,16 @@ mock.module("../../src/assets/display-probe.bin", () => ({
   default: dispatcherPath,
 }));
 
-const { parseDisplays, mainDisplay, listDisplays, DisplayProbeError } =
+const { parseDisplays, mainDisplay, colorProfileIssue, listDisplays, DisplayProbeError } =
   await import("../../src/lib/display");
 
 const TWO_SCREENS =
-  "3456\t2234\t120.0\t1728\t1117\t1\n2560\t1440\t144.0\t2560\t1440\t0\n";
+  "3456\t2234\t120.0\t1728\t1117\t1\tColor LCD\t1\n" +
+  "2560\t1440\t144.0\t2560\t1440\t0\tASUS PG329\t1\n";
 
 const NO_MAIN_FLAGGED =
-  "3456\t2234\t120.0\t1728\t1117\t0\n2560\t1440\t144.0\t2560\t1440\t0\n";
+  "3456\t2234\t120.0\t1728\t1117\t0\tColor LCD\t1\n" +
+  "2560\t1440\t144.0\t2560\t1440\t0\tASUS PG329\t1\n";
 
 describe("parseDisplays", () => {
   test("lit les deux écrans de la machine de référence", () => {
@@ -72,6 +74,8 @@ describe("parseDisplays", () => {
         widthPt: 1728,
         heightPt: 1117,
         main: true,
+        colorProfile: "Color LCD",
+        colorProfileValid: true,
       },
       {
         widthPx: 2560,
@@ -80,6 +84,8 @@ describe("parseDisplays", () => {
         widthPt: 2560,
         heightPt: 1440,
         main: false,
+        colorProfile: "ASUS PG329",
+        colorProfileValid: true,
       },
     ]);
   });
@@ -90,7 +96,8 @@ describe("parseDisplays", () => {
 
   test("ignore une ligne à qui il manque un champ, sans lever", () => {
     const malformed =
-      "3456\t2234\t120.0\t1728\t1117\n2560\t1440\t144.0\t2560\t1440\t0\n";
+      "3456\t2234\t120.0\t1728\t1117\t1\n" +
+      "2560\t1440\t144.0\t2560\t1440\t0\tASUS PG329\t1\n";
     expect(parseDisplays(malformed)).toEqual([
       {
         widthPx: 2560,
@@ -99,6 +106,8 @@ describe("parseDisplays", () => {
         widthPt: 2560,
         heightPt: 1440,
         main: false,
+        colorProfile: "ASUS PG329",
+        colorProfileValid: true,
       },
     ]);
   });
@@ -126,6 +135,22 @@ describe("mainDisplay", () => {
   });
 });
 
+describe("colorProfileIssue", () => {
+  test("valide le profil RGB de l'ecran choisi", () => {
+    expect(colorProfileIssue(parseDisplays(TWO_SCREENS)[1]!)).toBeNull();
+  });
+
+  test("signale un profil absent", () => {
+    const display = parseDisplays(TWO_SCREENS)[1]!;
+    expect(colorProfileIssue({ ...display, colorProfile: null })).toMatch(/no active color profile/i);
+  });
+
+  test("signale un profil qui n'est pas un profil RGB d'ecran", () => {
+    const display = parseDisplays(TWO_SCREENS)[1]!;
+    expect(colorProfileIssue({ ...display, colorProfileValid: false })).toContain("unsuitable");
+  });
+});
+
 describe("listDisplays", () => {
   test("sonde en échec (code de sortie non nul) lève, avec le stderr repris dans le message", async () => {
     await setProbeOutcome({
@@ -134,9 +159,7 @@ describe("listDisplays", () => {
     });
 
     await expect(listDisplays()).rejects.toThrow(DisplayProbeError);
-    await expect(listDisplays()).rejects.toThrow(
-      /CGGetActiveDisplayList a echoue/,
-    );
+    await expect(listDisplays()).rejects.toThrow(/Display probe failed with exit code 1/);
   });
 
   test("sonde en succès avec sortie vide rend un tableau vide, sans lever", async () => {

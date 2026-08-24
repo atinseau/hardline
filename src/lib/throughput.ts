@@ -27,7 +27,7 @@ function unavailableOn(machine: "Mac" | "PC"): ThroughputStats {
   return {
     mbitsPerSecond: null,
     seconds: null,
-    error: `non mesuré : iperf3 absent sur le ${machine}`,
+    error: `not measured: iperf3 is missing on the ${machine}`,
     unavailable: true,
   };
 }
@@ -40,18 +40,18 @@ function measurementFailed(message: string): ThroughputStats {
 export function parseIperf3Json(stdout: string): ThroughputStats {
   const trimmed = stdout.trim();
   if (trimmed === "") {
-    return measurementFailed("sortie iperf3 vide");
+    return measurementFailed("iperf3 output was empty");
   }
 
   let data: unknown;
   try {
     data = JSON.parse(trimmed);
   } catch {
-    return measurementFailed("sortie iperf3 illisible, JSON attendu");
+    return measurementFailed("iperf3 output was unreadable; expected JSON");
   }
 
   if (typeof data !== "object" || data === null) {
-    return measurementFailed("sortie iperf3 illisible, JSON attendu");
+    return measurementFailed("iperf3 output was unreadable; expected JSON");
   }
 
   const record = data as Record<string, unknown>;
@@ -60,7 +60,7 @@ export function parseIperf3Json(stdout: string): ThroughputStats {
   // dans ce champ plutot que par un code de sortie exploitable : son message
   // est deja lisible, on le transmet tel quel.
   if (typeof record.error === "string") {
-    return measurementFailed(record.error);
+    return measurementFailed("iperf3 reported a measurement failure");
   }
 
   const end = record.end as Record<string, unknown> | undefined;
@@ -70,7 +70,7 @@ export function parseIperf3Json(stdout: string): ThroughputStats {
 
   if (typeof bitsPerSecond !== "number" || typeof seconds !== "number") {
     return measurementFailed(
-      "mesure incomplète : iperf3 n'a renvoyé ni débit ni erreur exploitables",
+      "incomplete measurement: iperf3 returned neither throughput nor a usable error",
     );
   }
 
@@ -104,11 +104,7 @@ export async function measureThroughput(config: Config): Promise<ThroughputStats
       "(Get-Command iperf3 -ErrorAction SilentlyContinue).Source",
     );
     if (presence.exitCode !== 0) {
-      throw new Error(
-        `impossible de vérifier iperf3 sur le PC (code ${presence.exitCode}) : ${
-          presence.stderr || presence.stdout
-        }`,
-      );
+      throw new Error(`could not check iperf3 on the PC (code ${presence.exitCode}).`);
     }
     if (presence.stdout.trim() === "") {
       return unavailableOn("PC");

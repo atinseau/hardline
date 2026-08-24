@@ -95,7 +95,7 @@ describe("parseIperf3Json", () => {
     expect(result.mbitsPerSecond).toBeNull();
     expect(result.seconds).toBeNull();
     expect(result.unavailable).toBe(false);
-    expect(result.error).toContain("unable to connect");
+    expect(result.error).toBe("iperf3 reported a measurement failure");
   });
 
   test("ne leve pas d'exception sur une sortie vide", () => {
@@ -116,7 +116,7 @@ describe("parseIperf3Json", () => {
     const result = parseIperf3Json(JSON.stringify({ start: {}, intervals: [], end: {} }));
     expect(result.mbitsPerSecond).toBeNull();
     expect(result.unavailable).toBe(false);
-    expect(result.error).toContain("mesure incomplète");
+    expect(result.error).toContain("incomplete measurement");
   });
 });
 
@@ -170,6 +170,6 @@ describe("measureThroughput", () => {
     const result = await measureThroughput(CONFIG);
     expect(result.unavailable).toBe(false);
     expect(result.mbitsPerSecond).toBeNull();
-    expect(result.error).toContain("unable to connect");
+    expect(result.error).toBe("iperf3 reported a measurement failure");
   });
 });

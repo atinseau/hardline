@@ -1,6 +1,8 @@
 import { mkdir, rmdir, stat } from "node:fs/promises";
 import type { Config, SMBShare } from "../config";
 
+const SHARE_PROBE_DEADLINE_MS = 3_000;
+
 /** Fonction pure. Compose l'URL smb://utilisateur:motdepasse@hote/partage. */
 export function smbUrl(
   host: string,
@@ -35,7 +37,20 @@ export async function mountShare(
   config: Config,
   password: string,
 ): Promise<void> {
-  if (await isMounted(share)) return;
+  if (await isMounted(share)) {
+    if (await isResponsive(share)) return;
+
+    const unmount = Bun.spawn(["umount", "-f", share.mountPoint], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const exitCode = await unmount.exited;
+    if (exitCode !== 0) {
+      throw new Error(
+        `could not recycle unresponsive SMB share '${share.name}' at ${share.mountPoint}`,
+      );
+    }
+  }
 
   await mkdir(share.mountPoint, { recursive: true });
 
@@ -45,17 +60,27 @@ export async function mountShare(
     stderr: "pipe",
   });
 
-  const [stderr, exitCode] = await Promise.all([
+  const [_stderr, exitCode] = await Promise.all([
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
 
   if (exitCode !== 0) {
     throw new Error(
-      `impossible de monter le partage «\u00a0${share.name}\u00a0» sur ${share.mountPoint} ` +
-        `(code ${exitCode})\u00a0: ${stripSecret(stderr.trim(), password)}`,
+      `could not mount share '${share.name}' at ${share.mountPoint} (code ${exitCode}).`,
     );
   }
+}
+
+/** Une enumeration bornee distingue un volume utilisable d'un montage SMB fige. */
+async function isResponsive(share: SMBShare): Promise<boolean> {
+  const proc = Bun.spawn(["/bin/ls", "-1f", share.mountPoint], {
+    stdout: "ignore",
+    stderr: "ignore",
+    timeout: SHARE_PROBE_DEADLINE_MS,
+    killSignal: "SIGKILL",
+  });
+  return (await proc.exited) === 0;
 }
 
 /** Vrai si le point de montage porte un volume SMB. */

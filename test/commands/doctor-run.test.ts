@@ -2,6 +2,8 @@ import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
 import type { CheckResult } from "../../src/lib/preflight";
 import type { ThroughputStats } from "../../src/lib/throughput";
 import { REQUIRED_CONF } from "../../src/lib/apollo-conf";
+import { CONFIG } from "../../src/config";
+import { exitCodeFor, type CommandOutput } from "../../src/command-run";
 
 const realShell = await import("../../src/lib/shell");
 const realSsh = await import("../../src/lib/ssh");
@@ -165,25 +167,27 @@ mock.module("../../src/lib/throughput", () => ({
   measureThroughput: async () => throughputResult,
 }));
 
-mock.module("../../src/lib/ui", () => ({
-  configureOutput: () => {},
-  withSpinner: async <T>(_label: string, run: () => Promise<T>) => run(),
-  ui: {
-    start: () => {},
-    finish: (message: string) => finishes.push(message),
-    skipped: () => {},
-    applied: () => {},
-    restored: () => {},
-    yielded: () => {},
-    detached: () => {},
-    failed: () => {},
-    info: () => {},
-    warn: () => {},
-    report: (_title: string, lines: string[]) => reports.push(lines),
-  },
-}));
+const { doctorCommand: executeDoctorCommand } = await import("../../src/commands/doctor");
 
-const { doctorCommand } = await import("../../src/commands/doctor");
+const output: CommandOutput = {
+  interactive: true,
+  start: () => {},
+  phaseStart: () => {},
+  phaseActivity: () => {},
+  phaseDetail: (message) => (reports[0] ??= []).push(message),
+  phaseEnd: () => {},
+  warning: (message) => (reports[0] ??= []).push(message),
+  report: (_title, lines) => reports.push(lines),
+  confirm: async () => "accepted",
+  choice: async (_message, _choices, initialValue) => ({ status: "selected", value: initialValue }),
+  secret: async () => ({ status: "unavailable" }),
+  finish: (message) => finishes.push(message),
+};
+
+async function doctorCommand(): Promise<void> {
+  const result = await executeDoctorCommand({ config: CONFIG, output });
+  process.exitCode = exitCodeFor(result);
+}
 
 const ok = (name: string): CheckResult => ({
   name,
@@ -238,8 +242,8 @@ describe("doctorCommand", () => {
     // sa ligne, et le diagnostic sort en anomalie.
     expect(trace).toEqual(["preflight-local", "preflight-remote"]);
     const rendered = (reports[0] ?? []).join("\n");
-    expect(rendered).toMatch(/^KO\s+ssh\s*:/m);
-    expect(rendered).toMatch(/injoignable/);
+    expect(rendered).toMatch(/^FAILED: SSH connectivity:/m);
+    expect(rendered).toMatch(/unreachable/);
     expect(rendered).not.toContain("undefined");
     expect(process.exitCode).toBe(1);
   });
@@ -248,7 +252,7 @@ describe("doctorCommand", () => {
     // Le controle de tous les tests qui suivent : sans lui, une conclusion
     // toujours en anomalie les satisferait aussi.
     await doctorCommand();
-    expect(finishes.join("\n")).toBe("Liaison opérationnelle.");
+    expect(finishes.join("\n")).toBe("The link is operational.");
     expect(process.exitCode).toBe(0);
   });
 
@@ -257,7 +261,7 @@ describe("doctorCommand", () => {
     // est ferme et l'etape n'est plus conforme.
     profilPrive = false;
     await doctorCommand();
-    expect(finishes.join("\n")).toContain("Anomalies détectées");
+    expect(finishes.join("\n")).toContain("Problems were detected");
     expect(process.exitCode).toBe(1);
   });
 
@@ -270,12 +274,12 @@ describe("doctorCommand", () => {
 
     expect(process.exitCode).toBe(0);
     const message = finishes.join("\n");
-    expect(message).toContain("Liaison opérationnelle");
-    expect(message).not.toContain("Anomalies détectées");
+    expect(message).toContain("link is operational");
+    expect(message).not.toContain("Problems were detected");
     // Et elle est bien RAPPORTEE : la taire cacherait pourquoi la prochaine
     // installation echouera.
-    expect(message).toContain("cle-publique");
-    expect((reports[0] ?? []).join("\n")).toMatch(/^!!\s+cle-publique\s*:/m);
+    expect(message).toContain("Public key");
+    expect((reports[0] ?? []).join("\n")).toMatch(/^NOTICE: Public key:/m);
   });
 
   test("un echec bloquant qui n'est pas une precondition sort en 1", async () => {
@@ -283,7 +287,7 @@ describe("doctorCommand", () => {
     // difference, pas le simple fait d'echouer en phase locale.
     localChecks = [ko("service-mac")];
     await doctorCommand();
-    expect(finishes.join("\n")).toContain("Anomalies détectées");
+    expect(finishes.join("\n")).toContain("Problems were detected");
     expect(process.exitCode).toBe(1);
   });
 
@@ -292,10 +296,8 @@ describe("doctorCommand", () => {
       throughputResult = { mbitsPerSecond: 1.2, seconds: 3, error: null, unavailable: false };
       await doctorCommand();
       expect(process.exitCode).toBe(0);
-      expect(finishes.join("\n")).toContain("Liaison opérationnelle");
-      expect((reports[0] ?? []).join("\n")).toMatch(
-        /^OK\s+Débit \(PC → Mac\)\s*:\s*1\.2 Mbit\/s/m,
-      );
+      expect(finishes.join("\n")).toContain("link is operational");
+      expect((reports[0] ?? []).join("\n")).toContain("Throughput: 1.2 Mbit/s");
     });
 
     // Le coeur de la correction : iperf3 absent n'est pas une anomalie du
@@ -311,8 +313,8 @@ describe("doctorCommand", () => {
       };
       await doctorCommand();
       expect(process.exitCode).toBe(0);
-      expect(finishes.join("\n")).toContain("Liaison opérationnelle");
-      expect((reports[0] ?? []).join("\n")).toMatch(/^!!\s+Débit \(PC → Mac\)\s*:/m);
+      expect(finishes.join("\n")).toContain("link is operational");
+      expect((reports[0] ?? []).join("\n")).toContain("NOTICE: Throughput was not measured");
     });
 
     test("une mesure de debit en echec rend la liaison malade et sort en 1", async () => {
@@ -324,15 +326,15 @@ describe("doctorCommand", () => {
       };
       await doctorCommand();
       expect(process.exitCode).toBe(1);
-      expect(finishes.join("\n")).toContain("Anomalies détectées");
-      expect((reports[0] ?? []).join("\n")).toMatch(/^KO\s+Débit \(PC → Mac\)\s*:/m);
+      expect(finishes.join("\n")).toContain("Problems were detected");
+      expect((reports[0] ?? []).join("\n")).toContain("FAILED: Throughput measurement");
     });
 
     test("aucune ligne de debit quand le PC ne repond pas au ping", async () => {
       reachable = false;
       remoteChecks = [ko("ssh")];
       await doctorCommand();
-      expect((reports[0] ?? []).join("\n")).not.toContain("Débit");
+      expect((reports[0] ?? []).join("\n")).not.toContain("Throughput");
     });
   });
 });

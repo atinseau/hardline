@@ -70,14 +70,8 @@ function makeContextSpy(name: string, seen: string[][]): Step<{ marker: string }
 }
 
 const reports: string[] = [];
-const fakeUi = {
-  skipped: ({ label }: { label: string }) => reports.push(`skipped:${label}`),
-  applied: ({ label }: { label: string }) => reports.push(`applied:${label}`),
-  restored: ({ label }: { label: string }) => reports.push(`restored:${label}`),
-  yielded: ({ label }: { label: string }) => reports.push(`yielded:${label}`),
-  detached: ({ label }: { label: string }) => reports.push(`detached:${label}`),
-  failed: ({ label }: { label: string }) => reports.push(`failed:${label}`),
-};
+const fakeUi = ({ kind, step }: { kind: string; step: string }) =>
+  reports.push(`${kind === "conforming" ? "skipped" : kind}:${step}`);
 
 let dir: string;
 let manifestPath: string;
@@ -97,14 +91,14 @@ describe("applySteps", () => {
     const trace: Trace = [];
     await applySteps([makeStep("a", true, trace)], CONFIG, manifestPath, fakeUi);
     expect(trace).toEqual(["inspect:a"]);
-    expect(reports).toEqual(["skipped:Etape a"]);
+    expect(reports).toEqual(["skipped:a"]);
   });
 
   test("applique une etape non conforme", async () => {
     const trace: Trace = [];
     await applySteps([makeStep("a", false, trace)], CONFIG, manifestPath, fakeUi);
     expect(trace).toEqual(["inspect:a", "apply:a"]);
-    expect(reports).toEqual(["applied:Etape a"]);
+    expect(reports).toEqual(["applied:a"]);
   });
 
   test("ecrit l'etat anterieur AVANT d'appliquer", async () => {
@@ -142,6 +136,19 @@ describe("applySteps", () => {
     ).rejects.toThrow("refus");
     // L'etape c n'est meme pas inspectee : l'orchestrateur s'arrete net.
     expect(trace).toEqual(["inspect:a", "apply:a", "inspect:b", "apply:b"]);
+    expect(reports).toContain("failed:b");
+  });
+
+  test("rapporte une inspection en echec avant de propager l'erreur", async () => {
+    const step = makeStep("a", false, []);
+    step.inspect = async () => {
+      throw new Error("inspection refused");
+    };
+
+    await expect(applySteps([step], CONFIG, manifestPath, fakeUi)).rejects.toThrow(
+      "inspection refused",
+    );
+    expect(reports).toEqual(["failed:a"]);
   });
 
   test("rejouer applySteps ne reapplique rien", async () => {
@@ -212,7 +219,7 @@ describe("revertSteps", () => {
 
     // b est restauree malgre l'echec de a : une machine qui refuse ne doit pas
     // bloquer l'autre. Et le libelle de l'etape est conserve dans le rapport.
-    expect(reports).toEqual(["restored:Etape b", "failed:Etape a"]);
+    expect(reports).toEqual(["restored:b", "failed:a"]);
     expect(unrestored).toEqual(["a"]);
   });
 
@@ -253,7 +260,7 @@ describe("revertSteps", () => {
     reports.length = 0;
     await revertSteps([yielding], CONFIG, manifestPath, fakeUi);
 
-    expect(reports).toEqual(["yielded:Etape a"]);
+    expect(reports).toEqual(["yielded:a"]);
     // L'enregistrement part quand meme : la couche profonde le supplante.
     expect((await readManifest(manifestPath)).order).toEqual([]);
   });
@@ -274,7 +281,7 @@ describe("revertSteps", () => {
     reports.length = 0;
     const report = await revertSteps([detached], CONFIG, manifestPath, fakeUi);
 
-    expect(reports).toEqual(["detached:Etape a"]);
+    expect(reports).toEqual(["detached:a"]);
     expect(report.unconfirmed).toEqual(["a"]);
     expect(report.unrestored).toEqual([]);
 
@@ -328,7 +335,7 @@ describe("revertSteps", () => {
 
     expect(report.unconfirmed).toEqual(["a"]);
     expect(report.unrestored).toEqual([]);
-    expect(reports).toEqual(["detached:Etape a"]);
+    expect(reports).toEqual(["detached:a"]);
     expect((await readManifest(manifestPath)).order).toEqual(["a"]);
   });
 
@@ -349,7 +356,7 @@ describe("revertSteps", () => {
 
     expect(report.unrestored).toEqual(["a"]);
     expect(report.unconfirmed).toEqual([]);
-    expect(reports).toEqual(["failed:Etape a"]);
+    expect(reports).toEqual(["failed:a"]);
   });
 
   test("reappliquer une etape efface le doute laisse par une desinstallation", async () => {
@@ -384,7 +391,7 @@ describe("revertSteps", () => {
     reports.length = 0;
     const report = await revertSteps([step], CONFIG, manifestPath, fakeUi);
 
-    expect(reports).toEqual(["restored:Etape a"]);
+    expect(reports).toEqual(["restored:a"]);
     expect(report.unconfirmed).toEqual([]);
     expect((await readManifest(manifestPath)).order).toEqual([]);
   });

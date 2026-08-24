@@ -1,21 +1,14 @@
-import { CONFIG } from "../config";
+import type { Config } from "../config";
+import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
+import { runCommand } from "../command-run";
+import { englishCheckName, englishStepLabel } from "../command-run/english";
 import { ALL_STEPS } from "../steps";
 import { pingFrom, type PingStats } from "../lib/shell";
-import {
-  runLocalPreflight,
-  runRemotePreflight,
-  type CheckResult,
-} from "../lib/preflight";
-import { configureOutput, ui, withSpinner } from "../lib/ui";
+import { runLocalPreflight, runRemotePreflight, type CheckResult } from "../lib/preflight";
 import { errorMessage } from "../lib/errors";
 import { measureThroughput, type ThroughputStats } from "../lib/throughput";
 
-export type StepSummary = {
-  label: string;
-  conforming: boolean;
-  detail: string;
-};
-
+export type StepSummary = { name: string; conforming: boolean; detail: string };
 export type Diagnostic = {
   checks: CheckResult[];
   steps: StepSummary[];
@@ -23,177 +16,185 @@ export type Diagnostic = {
   throughput?: ThroughputStats;
 };
 
-// Libelles fixes utilises par les lignes de latence, quelle que soit la
-// branche empruntee : inclus dans le calcul de largeur pour que la colonne
-// reste alignee d'une execution a l'autre, meme si le rapport rendu ne
-// contient qu'une seule de ces lignes.
-const FIXED_LABELS = [
-  "Liaison",
-  "Latence",
-  "Latence moyenne",
-  "Gigue",
-  "Perte de paquets",
-  "Débit (PC → Mac)",
-];
+type DoctorFact = {
+  id:
+    | "title"
+    | "check-machines"
+    | "inspect-configuration"
+    | "measure-link"
+    | "check"
+    | "step"
+    | "latency"
+    | "loss"
+    | "throughput"
+    | "healthy"
+    | "unhealthy"
+    | "unexpected";
+  values?: Record<string, unknown>;
+};
 
-function columnWidth(labels: string[]): number {
-  const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
-  return Math.max(22, longest + 3);
-}
+const fact = (id: DoctorFact["id"], values?: Record<string, unknown>): DoctorFact => ({
+  id,
+  ...(values ? { values } : {}),
+});
 
-function pad(label: string, width: number): string {
-  return `${label} :`.padEnd(width);
-}
-
-/**
- * Trois etats, pas deux. "!!" est un echec qui ne dit rien de la sante de la
- * liaison : une precondition d'installation. Il doit se voir (le taire serait
- * cacher a l'utilisateur pourquoi sa prochaine installation echouera) sans
- * pour autant compter comme une anomalie du lien.
- */
-function marker(check: CheckResult): string {
-  if (check.ok) return "OK  ";
-  return check.installOnly ? "!!  " : "KO  ";
+export function renderDoctorFact(value: DoctorFact): string {
+  const v = value.values ?? {};
+  switch (value.id) {
+    case "title": return "Diagnose Hardline";
+    case "check-machines": return "Check Machines";
+    case "inspect-configuration": return "Inspect Configuration";
+    case "measure-link": return "Measure Link";
+    case "check": return `${v.ok ? "OK" : v.installOnly ? "NOTICE" : "FAILED"}: ${englishCheckName(String(v.name))}: ${v.detail}`;
+    case "step": return `${v.conforming ? "OK" : "FAILED"}: ${englishStepLabel(String(v.name))}.`;
+    case "latency": return v.reachable
+      ? `Latency: ${v.average} ms average, ${v.jitter} ms jitter.`
+      : `FAILED: Link unreachable after ${v.transmitted} packets.`;
+    case "loss": return `${v.ok ? "OK" : "FAILED"}: Packet loss: ${v.percent}%.`;
+    case "throughput": return v.unavailable
+      ? "NOTICE: Throughput was not measured because iperf3 is unavailable."
+      : v.error
+        ? "FAILED: Throughput measurement failed."
+        : `Throughput: ${v.speed} Mbit/s.`;
+    case "healthy": return v.preconditions
+      ? `The link is operational. Installation prerequisites not met: ${v.preconditions}.`
+      : "The link is operational.";
+    case "unhealthy": return "Problems were detected. Run 'hardline install' to reconcile the configuration.";
+    case "unexpected": return "Diagnosis failed safely.";
+  }
 }
 
 export function formatDiagnostic(diagnostic: Diagnostic): string[] {
-  const lines: string[] = [];
-  const width = columnWidth([
-    ...diagnostic.checks.map((c) => c.name),
-    ...diagnostic.steps.map((s) => s.label),
-    ...FIXED_LABELS,
-  ]);
-
-  for (const check of diagnostic.checks) {
-    lines.push(`${marker(check)}${pad(check.name, width)}${check.detail}`);
-  }
-
-  lines.push("");
-
-  for (const step of diagnostic.steps) {
-    lines.push(
-      `${step.conforming ? "OK  " : "KO  "}${pad(step.label, width)}${step.detail}`,
-    );
-  }
-
-  lines.push("");
-
-  const { ping } = diagnostic;
-  if (ping.received === 0) {
-    lines.push(
-      `KO  ${pad("Liaison", width)}injoignable (${ping.transmitted} paquets envoyés)`,
-    );
+  const lines = [
+    ...diagnostic.checks.map((check) => renderDoctorFact(fact("check", check))),
+    ...diagnostic.steps.map((step) => renderDoctorFact(fact("step", step))),
+  ];
+  if (diagnostic.ping.received === 0) {
+    lines.push(renderDoctorFact(fact("latency", {
+      reachable: false,
+      transmitted: diagnostic.ping.transmitted,
+    })));
     return lines;
   }
-
-  if (ping.avgMs === null || ping.stddevMs === null) {
-    lines.push(
-      `KO  ${pad("Latence", width)}${ping.received}/${ping.transmitted} paquets reçus, statistiques indisponibles`,
-    );
-    return lines;
+  lines.push(renderDoctorFact(fact("latency", {
+    reachable: diagnostic.ping.avgMs !== null && diagnostic.ping.stddevMs !== null,
+    transmitted: diagnostic.ping.transmitted,
+    average: diagnostic.ping.avgMs?.toFixed(2),
+    jitter: diagnostic.ping.stddevMs?.toFixed(2),
+  })));
+  lines.push(renderDoctorFact(fact("loss", {
+    ok: diagnostic.ping.lossPercent === 0,
+    percent: diagnostic.ping.lossPercent,
+  })));
+  if (diagnostic.throughput) {
+    lines.push(renderDoctorFact(fact("throughput", {
+      unavailable: diagnostic.throughput.unavailable,
+      error: diagnostic.throughput.error,
+      speed: diagnostic.throughput.mbitsPerSecond,
+    })));
   }
-
-  lines.push(`OK  ${pad("Latence moyenne", width)}${ping.avgMs.toFixed(2)} ms`);
-  lines.push(`    ${pad("Gigue", width)}${ping.stddevMs.toFixed(2)} ms`);
-  lines.push(
-    `${ping.lossPercent === 0 ? "OK  " : "KO  "}${pad("Perte de paquets", width)}${ping.lossPercent} %`,
-  );
-
-  const { throughput } = diagnostic;
-  if (throughput) {
-    // Trois etats, pas deux, comme `marker` plus haut : l'absence d'iperf3
-    // n'est pas une anomalie du lien, une mesure tentee et ratee en est une.
-    if (throughput.unavailable) {
-      lines.push(
-        `!!  ${pad("Débit (PC → Mac)", width)}${throughput.error ?? "non mesuré"}`,
-      );
-    } else if (throughput.error !== null) {
-      lines.push(`KO  ${pad("Débit (PC → Mac)", width)}${throughput.error}`);
-    } else {
-      lines.push(
-        `OK  ${pad("Débit (PC → Mac)", width)}${throughput.mbitsPerSecond} Mbit/s`,
-      );
-    }
-  }
-
   return lines;
 }
 
-export async function doctorCommand(): Promise<void> {
-  configureOutput();
-  ui.start("hardline — diagnostic");
+function publishDiagnostic(run: CommandRun<DoctorFact>, diagnostic: Diagnostic): void {
+  for (const check of diagnostic.checks) {
+    const value = fact("check", check);
+    if (check.ok) run.detail(value);
+    else run.warning(value);
+  }
+  for (const step of diagnostic.steps) {
+    const value = fact("step", step);
+    if (step.conforming) run.detail(value);
+    else run.warning(value);
+  }
+  const ping = diagnostic.ping;
+  const latency = fact("latency", {
+    reachable: ping.received > 0 && ping.avgMs !== null && ping.stddevMs !== null,
+    transmitted: ping.transmitted,
+    average: ping.avgMs?.toFixed(2),
+    jitter: ping.stddevMs?.toFixed(2),
+  });
+  if (ping.received > 0 && ping.avgMs !== null && ping.stddevMs !== null) run.detail(latency);
+  else run.warning(latency);
+  const loss = fact("loss", { ok: ping.lossPercent === 0, percent: ping.lossPercent });
+  if (ping.lossPercent === 0) run.detail(loss);
+  else run.warning(loss);
+  if (diagnostic.throughput) {
+    const throughput = fact("throughput", {
+      unavailable: diagnostic.throughput.unavailable,
+      error: diagnostic.throughput.error,
+      speed: diagnostic.throughput.mbitsPerSecond,
+    });
+    if (diagnostic.throughput.error && !diagnostic.throughput.unavailable) run.warning(throughput);
+    else if (diagnostic.throughput.unavailable) run.warning(throughput);
+    else run.detail(throughput);
+  }
+}
 
-  // Les deux phases, toujours. Le diagnostic doit rester lisible quand le PC
-  // ne repond pas : c'est precisement le cas qu'on vient regarder. La phase
-  // distante rend alors une ligne d'echec, pas une exception.
-  const checks = await withSpinner("Vérification des machines", async () => [
-    ...(await runLocalPreflight(CONFIG)),
-    ...(await runRemotePreflight(CONFIG)),
-  ]);
-
-  const steps: StepSummary[] = [];
-  for (const step of ALL_STEPS) {
-    try {
-      const state = await step.inspect(CONFIG);
-      steps.push({
-        label: step.label,
-        conforming: state.conforming,
-        detail: state.detail,
-      });
-    } catch (error) {
-      steps.push({
-        label: step.label,
-        conforming: false,
-        detail: errorMessage(error),
-      });
+export async function runDoctor(
+  run: CommandRun<DoctorFact>,
+  config: Config,
+): Promise<CommandResult<DoctorFact>> {
+  const checks = await run.phase(fact("check-machines"), async () => {
+    const checks = [
+      ...(await runLocalPreflight(config)),
+      ...(await runRemotePreflight(config)),
+    ];
+    for (const check of checks) {
+      const value = fact("check", check);
+      if (check.ok) run.detail(value);
+      else run.warning(value);
     }
-  }
-
-  const ping = await withSpinner("Mesure de la latence", async () =>
-    pingFrom(CONFIG.mac.ip, CONFIG.windows.ip, 20),
-  );
-
-  // Mesurer un debit sur un lien qui n'a rien recu n'a pas de sens : la ligne
-  // ne serait de toute facon jamais rendue, `formatDiagnostic` sort deja tot
-  // sur "Liaison injoignable".
-  const throughput =
-    ping.received > 0
-      ? await withSpinner("Mesure du débit", async () => measureThroughput(CONFIG))
-      : undefined;
-
-  ui.report("Diagnostic", formatDiagnostic({ checks, steps, ping, throughput }));
-
-  // Le code de sortie de doctor est fait pour etre scripte : il doit dire
-  // "la liaison va bien" ou "elle ne va pas", et rien d'autre. Une
-  // precondition d'installation non satisfaite ne rend pas le lien malade,
-  // elle rend la prochaine installation impossible. Elle se rapporte, elle ne
-  // se compte pas.
-  const preconditions = checks.filter((c) => !c.ok && c.installOnly);
-  // Un debit mesure n'influence jamais le code de sortie, quel que soit le
-  // chiffre : un lien lent n'est pas un lien malade. Une mesure demandee
-  // explicitement et EN ECHEC (pas juste absente d'iperf3) l'est.
-  const throughputFailed =
-    throughput !== undefined && !throughput.unavailable && throughput.error !== null;
+    return checks;
+  });
+  const steps = await run.phase(fact("inspect-configuration"), async () => {
+    const summaries: StepSummary[] = [];
+    for (const step of ALL_STEPS) {
+      try {
+        const state = await step.inspect(config);
+        summaries.push({ name: step.name, conforming: state.conforming, detail: state.detail });
+      } catch (error) {
+        summaries.push({ name: step.name, conforming: false, detail: errorMessage(error) });
+      }
+    }
+    for (const step of summaries) {
+      const value = fact("step", step);
+      if (step.conforming) run.detail(value);
+      else run.warning(value);
+    }
+    return summaries;
+  });
+  const { ping, throughput } = await run.phase(fact("measure-link"), async () => {
+    const ping = await pingFrom(config.mac.ip, config.windows.ip, 20);
+    const throughput = ping.received > 0 ? await measureThroughput(config) : undefined;
+    publishDiagnostic(run, { checks: [], steps: [], ping, ...(throughput ? { throughput } : {}) });
+    return { ping, throughput };
+  });
+  const throughputFailed = throughput !== undefined && !throughput.unavailable && throughput.error !== null;
   const healthy =
-    checks.every((c) => c.ok || !c.blocking || c.installOnly) &&
-    steps.every((s) => s.conforming) &&
-    ping.received > 0 &&
-    ping.avgMs !== null &&
-    ping.stddevMs !== null &&
+    checks.every((check) => check.ok || !check.blocking || check.installOnly) &&
+    steps.every((step) => step.conforming) &&
+    ping.received > 0 && ping.avgMs !== null && ping.stddevMs !== null &&
     !throughputFailed;
+  if (!healthy) return { status: "failed", summary: fact("unhealthy") };
+  const preconditions = checks.filter((check) => !check.ok && check.installOnly);
+  return {
+    status: "succeeded",
+    summary: fact("healthy", {
+      preconditions: preconditions.map((check) => englishCheckName(check.name)).join(", ") || null,
+    }),
+  };
+}
 
-  if (healthy) {
-    ui.finish(
-      preconditions.length === 0
-        ? "Liaison opérationnelle."
-        : `Liaison opérationnelle. ${
-            preconditions.length > 1
-              ? "Préconditions d'installation non satisfaites"
-              : "Précondition d'installation non satisfaite"
-          }\u00a0: ${preconditions.map((c) => c.name).join(", ")}.`,
-    );
-  } else {
-    ui.finish("Anomalies détectées. Relancer «\u00a0hardline install\u00a0».");
-    process.exitCode = 1;
-  }
+export function doctorCommand(options: {
+  config: Config;
+  output: CommandOutput;
+}): Promise<CommandResult<DoctorFact>> {
+  return runCommand({
+    title: fact("title"),
+    render: renderDoctorFact,
+    output: options.output,
+    unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
+    execute: (run) => runDoctor(run, options.config),
+  });
 }

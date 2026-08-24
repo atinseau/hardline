@@ -14,9 +14,12 @@ export type Display = {
   heightPt: number;
   /** L'ecran ou s'ouvre une fenetre neuve. */
   main: boolean;
+  /** Profil ColorSync actif, et conformite minimale display/RGB. */
+  colorProfile: string | null;
+  colorProfileValid: boolean;
 };
 
-const FIELD_COUNT = 6;
+const FIELD_COUNT = 8;
 
 /** Fonction pure. Lit la sortie de la sonde, une ligne par ecran. */
 export function parseDisplays(stdout: string): Display[] {
@@ -31,7 +34,16 @@ export function parseDisplays(stdout: string): Display[] {
     const fields = line.split("\t");
     if (fields.length !== FIELD_COUNT) continue;
 
-    const [widthPx, heightPx, refreshHz, widthPt, heightPt, main] = fields;
+    const [
+      widthPx,
+      heightPx,
+      refreshHz,
+      widthPt,
+      heightPt,
+      main,
+      colorProfile,
+      colorProfileValid,
+    ] = fields;
 
     displays.push({
       widthPx: Number(widthPx),
@@ -40,10 +52,23 @@ export function parseDisplays(stdout: string): Display[] {
       widthPt: Number(widthPt),
       heightPt: Number(heightPt),
       main: main === "1",
+      colorProfile: colorProfile === "-" ? null : colorProfile!,
+      colorProfileValid: colorProfileValid === "1",
     });
   }
 
   return displays;
+}
+
+/** null quand le profil actif convient a un flux SDR RGB. */
+export function colorProfileIssue(display: Display): string | null {
+  if (display.colorProfile === null) {
+    return "No active color profile was detected for this display.";
+  }
+  if (!display.colorProfileValid) {
+    return `Color profile '${display.colorProfile}' may be unsuitable for an RGB display.`;
+  }
+  return null;
 }
 
 /** L'ecran principal, ou le premier a defaut, ou null si aucun. */
@@ -83,9 +108,7 @@ export async function listDisplays(): Promise<Display[]> {
   try {
     const result = await $`${tmpPath}`.quiet().nothrow();
     if (result.exitCode !== 0) {
-      const stderrText = result.stderr.toString().trim();
-      const detail = stderrText !== "" ? stderrText : `code de sortie ${result.exitCode}`;
-      throw new DisplayProbeError(`La sonde d'écran a échoué\u00a0: ${detail}`);
+      throw new DisplayProbeError(`Display probe failed with exit code ${result.exitCode}.`);
     }
     return parseDisplays(result.stdout.toString());
   } finally {

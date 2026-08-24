@@ -1,6 +1,5 @@
 import type { Config } from "../config";
 import type { RestoreOutcome, Step } from "../steps/types";
-import { errorMessage } from "./errors";
 import {
   forgetStep,
   type Manifest,
@@ -11,16 +10,12 @@ import {
   writeManifest,
 } from "./manifest";
 
-export type StepReporter = {
-  skipped(r: { label: string; detail: string }): void;
-  applied(r: { label: string; detail: string }): void;
-  restored(r: { label: string; detail: string }): void;
-  /** Une etape qui a cede sa place. Elle n'a rien restaure : le dire. */
-  yielded(r: { label: string; detail: string }): void;
-  /** Une etape lancee sur le PC, dont la fin n'est pas observable d'ici. */
-  detached(r: { label: string; detail: string }): void;
-  failed(r: { label: string; detail: string }): void;
+export type OrchestratorFact = {
+  kind: "conforming" | "applied" | "restored" | "yielded" | "detached" | "failed";
+  step: string;
 };
+
+export type StepReporter = (fact: OrchestratorFact) => void;
 
 /**
  * Rend le manifeste tel qu'il est apres la convergence. L'appelant y lit ce
@@ -38,10 +33,16 @@ export async function applySteps(
   let manifest = await readManifest(manifestPath);
 
   for (const step of steps) {
-    const state = await step.inspect(config);
+    let state;
+    try {
+      state = await step.inspect(config);
+    } catch (error) {
+      reporter({ kind: "failed", step: step.name });
+      throw error;
+    }
 
     if (state.conforming) {
-      reporter.skipped({ label: step.label, detail: state.detail });
+      reporter({ kind: "conforming", step: step.name });
       continue;
     }
 
@@ -56,8 +57,13 @@ export async function applySteps(
     );
     await writeManifest(manifestPath, manifest);
 
-    await step.apply(config);
-    reporter.applied({ label: step.label, detail: state.detail });
+    try {
+      await step.apply(config);
+    } catch (error) {
+      reporter({ kind: "failed", step: step.name });
+      throw error;
+    }
+    reporter({ kind: "applied", step: step.name });
   }
 
   return manifest;
@@ -118,10 +124,9 @@ export async function revertSteps(
     };
 
     if (!step) {
-      reporter.failed({
-        label: record.step,
-        detail:
-          "étape inconnue de cette version de hardline\u00a0: entrée conservée dans le manifeste",
+      reporter({
+        kind: "failed",
+        step: record.step,
       });
       unrestored.push(record.step);
       continue;
@@ -137,9 +142,9 @@ export async function revertSteps(
       // une panne ici ferait conclure a une restauration incomplete sur un etat
       // final correct. Le doute est le meme qu'avant, ni plus ni moins.
       if (typeof record.launchedAt === "string") {
-        reporter.detached({
-          label: step.label,
-          detail: `déjà lancée le ${record.launchedAt}, et toujours pas confirmable\u00a0: ${errorMessage(error)}`,
+        reporter({
+          kind: "detached",
+          step: step.name,
         });
         unconfirmed.push(record.step);
         continue;
@@ -147,7 +152,7 @@ export async function revertSteps(
 
       // Une machine qui refuse de revenir en arriere ne doit pas empecher
       // l'autre d'etre restauree : on signale, on garde, on continue.
-      reporter.failed({ label: step.label, detail: errorMessage(error) });
+      reporter({ kind: "failed", step: step.name });
       unrestored.push(record.step);
       continue;
     }
@@ -156,7 +161,7 @@ export async function revertSteps(
     // de l'etat d'origine, et on ne l'echange pas contre l'espoir qu'une charge
     // detachee a abouti sur une machine devenue injoignable.
     if (outcome && "detached" in outcome) {
-      reporter.detached({ label: step.label, detail: outcome.detached });
+      reporter({ kind: "detached", step: step.name });
       unconfirmed.push(record.step);
       // Le lancement est date dans le manifeste. L'enregistrement lui-meme ne
       // bouge pas : une desinstallation ulterieure saura seulement que le geste
@@ -170,8 +175,11 @@ export async function revertSteps(
     // Une etape qui a cede n'a rien restaure. Son enregistrement part quand
     // meme (la restauration plus profonde le supplante) mais le rapport doit
     // dire ce qui s'est passe, pas ce qu'on esperait.
-    if (outcome) reporter.yielded({ label: step.label, detail: outcome.yielded });
-    else reporter.restored({ label: step.label, detail: "état antérieur restauré" });
+    if (outcome) {
+      reporter({ kind: "yielded", step: step.name });
+    } else {
+      reporter({ kind: "restored", step: step.name });
+    }
 
     manifest = forgetStep(manifest, record.step);
     await writeManifest(manifestPath, manifest);

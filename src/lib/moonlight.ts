@@ -5,7 +5,45 @@ export type StreamOptions = {
   fullscreen: boolean;
   resolution: { width: number; height: number } | null;
   fps: number | null;
+  monitor?: boolean;
 };
+
+const BITRATE_STEPS = [
+  { pixels: 640 * 360, factor: 1 },
+  { pixels: 854 * 480, factor: 2 },
+  { pixels: 1280 * 720, factor: 5 },
+  { pixels: 1920 * 1080, factor: 10 },
+  { pixels: 2560 * 1440, factor: 20 },
+  { pixels: 3840 * 2160, factor: 40 },
+] as const;
+
+/** Le debit recommande par Moonlight, double pour la chrominance 4:4:4. */
+export function desktopBitrateKbps(width: number, height: number, fps: number): number {
+  const pixels = width * height;
+  let resolutionFactor = BITRATE_STEPS.at(-1)!.factor;
+
+  for (let i = 0; i < BITRATE_STEPS.length; i++) {
+    const upper = BITRATE_STEPS[i]!;
+    if (pixels === upper.pixels || i === 0) {
+      resolutionFactor = upper.factor;
+      if (pixels <= upper.pixels) break;
+      continue;
+    }
+    if (pixels < upper.pixels) {
+      const lower = BITRATE_STEPS[i - 1]!;
+      const position = (pixels - lower.pixels) / (upper.pixels - lower.pixels);
+      resolutionFactor = lower.factor + position * (upper.factor - lower.factor);
+      break;
+    }
+  }
+
+  // Moonlight croit encore etre en 4:2:0 quand il calcule son debit, car son
+  // parseur applique --yuv444 apres ce calcul. Le facteur deux corrige cet
+  // ordre et reprend son propre cout estime pour le 4:4:4.
+  resolutionFactor *= 2;
+  const frameRateFactor = (fps <= 60 ? fps : Math.sqrt(fps / 60) * 60) / 30;
+  return Math.round(resolutionFactor * frameRateFactor) * 1000;
+}
 
 /** Fonction pure. Compose `moonlight pair <hote> --pin <code>`. */
 export function pairArgs(config: Config, pin: string): string[] {
@@ -48,6 +86,10 @@ export function streamArgs(
     "--yuv444",
   ];
 
+  if (options.monitor) {
+    args.push("--performance-overlay");
+  }
+
   const resolution =
     options.resolution ??
     (display ? { width: display.widthPx, height: display.heightPx } : null);
@@ -58,6 +100,10 @@ export function streamArgs(
   const fps = options.fps ?? (display && display.refreshHz > 0 ? display.refreshHz : null);
   if (fps !== null) {
     args.push("--fps", String(fps));
+  }
+
+  if (resolution && fps !== null) {
+    args.push("--bitrate", String(desktopBitrateKbps(resolution.width, resolution.height, fps)));
   }
 
   return args;
@@ -130,7 +176,18 @@ export async function runStream(
 ): Promise<number> {
   const proc = Bun.spawn(
     [config.moonlight.binary, ...streamArgs(config, display, options)],
-    { stdout: "inherit", stderr: "inherit" },
+    {
+      stdout: "inherit",
+      stderr: "inherit",
+      // Le renderer Metal de Moonlight 6.1 annonce sinon Rec.601 limite au
+      // serveur. La capture Windows est RGB complet Rec.709 : demander la meme
+      // conversion evite d'ecraser les noirs et de deplacer les couleurs.
+      env: {
+        ...process.env,
+        COLOR_SPACE_OVERRIDE: "1", // COLORSPACE_REC_709
+        COLOR_RANGE_OVERRIDE: "1", // COLOR_RANGE_FULL
+      },
+    },
   );
   return await proc.exited;
 }

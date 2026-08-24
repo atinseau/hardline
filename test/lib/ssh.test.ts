@@ -134,8 +134,15 @@ describe("parseRemoteJson", () => {
   });
 
   test("sortie illisible lève une Error", () => {
+    const nativeOutput = "token=secret-value ceci n'est pas du JSON valide";
     expect(() => {
-      parseRemoteJson("ceci n'est pas du JSON valide");
-    }).toThrow(Error);
+      parseRemoteJson(nativeOutput);
+    }).toThrow("The remote command returned invalid structured output.");
+
+    try {
+      parseRemoteJson(nativeOutput);
+    } catch (error) {
+      expect(String(error)).not.toContain("secret-value");
+    }
   });
 });

@@ -97,16 +97,17 @@ const PREVIOUS: Record<string, unknown> = {
 /** Ce que la desinstallation a DIT, par opposition a ce qu'elle a envoye. */
 const rapports: string[] = [];
 
-const reporter = {
-  skipped: () => {},
-  applied: () => {},
-  restored: ({ label }: { label: string }) => rapports.push(`restauré:${label}`),
-  yielded: ({ label }: { label: string }) => rapports.push(`cédé:${label}`),
-  detached: ({ label }: { label: string }) => rapports.push(`lancé:${label}`),
-  failed: ({ label }: { label: string }) => rapports.push(`échec:${label}`),
+const reporter = ({ kind, step }: { kind: string; step: string }) => {
+  const prefix = {
+    restored: "restauré",
+    yielded: "cédé",
+    detached: "lancé",
+    failed: "échec",
+  }[kind];
+  if (prefix) rapports.push(`${prefix}:${step}`);
 };
 
-const RESEAU_PC = "Adresse fixe et profil privé sur le lien direct (PC)";
+const RESEAU_PC = "network-windows";
 
 function manifestOf(order: string[]): Manifest {
   const now = "2026-08-22T10:00:00.000Z";
@@ -229,14 +230,14 @@ describe("lancer n'est pas restaurer", () => {
     expect(unrestored).toEqual([]);
     expect(unconfirmed).toEqual(["bootstrap-windows"]);
     expect(rapports).toContain(
-      "lancé:Amorçage du PC\u00a0: OpenSSH, pare-feu, clé et adressage (PC)",
+      "lancé:bootstrap-windows",
     );
     expect(rapports).not.toContain(
-      "restauré:Amorçage du PC\u00a0: OpenSSH, pare-feu, clé et adressage (PC)",
+      "restauré:bootstrap-windows",
     );
     // Et le Mac, lui, est bel et bien restaure : la distinction porte sur ce
     // qui est observable, pas sur l'etape.
-    expect(rapports).toContain("restauré:Adresse fixe sur le lien direct (Mac)");
+    expect(rapports).toContain("restauré:network-mac");
   });
 
   test("l'enregistrement de ce qui n'est pas confirme reste au manifeste", async () => {

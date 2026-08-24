@@ -27,14 +27,7 @@ import { errorMessage } from "../../src/lib/errors";
 /** Un pid qui ne peut correspondre a aucun processus vivant. */
 const PID_MORT = 2_147_483_646;
 
-const reporter = {
-  skipped: () => {},
-  applied: () => {},
-  restored: () => {},
-  yielded: () => {},
-  detached: () => {},
-  failed: () => {},
-};
+const reporter = () => {};
 
 let dir: string;
 let manifestPath: string;
@@ -102,8 +95,8 @@ describe("deux executions concurrentes", () => {
     const refusees = resultats.filter((r): r is string => r !== null);
     expect(refusees).toHaveLength(1);
     // Elle dit clairement qu'une autre execution tient le verrou.
-    expect(refusees[0]).toContain("Une autre exécution de hardline est en cours");
-    expect(refusees[0]).toContain("Rien n'a été modifié");
+    expect(refusees[0]).toContain("Another Command Run is active");
+    expect(refusees[0]).toContain("Nothing was changed");
 
     // Et le manifeste ne porte que l'execution qui a gagne : sans verrou, les
     // deux ecrivaient et la seconde effacait la premiere.
@@ -151,7 +144,7 @@ describe("acquireManifestLock", () => {
     const lock = await acquireManifestLock(manifestPath);
     try {
       const refus = await acquireManifestLock(manifestPath).catch(errorMessage);
-      expect(refus).toContain(`processus ${process.pid}`);
+      expect(refus).toContain(`process ${process.pid}`);
       expect(refus).toContain(lockPath);
     } finally {
       await lock.release();
@@ -192,7 +185,7 @@ describe("acquireManifestLock", () => {
       }),
     );
     const refus = await acquireManifestLock(manifestPath).catch(errorMessage);
-    expect(refus).toContain("antérieur au dernier démarrage");
+    expect(refus).toContain("predates the machine's last boot");
     expect(refus).toContain(lockPath);
   });
 
@@ -202,7 +195,7 @@ describe("acquireManifestLock", () => {
     const lock = await acquireManifestLock(manifestPath);
     try {
       const refus = await acquireManifestLock(manifestPath).catch(errorMessage);
-      expect(refus).not.toContain("antérieur au dernier démarrage");
+      expect(refus).not.toContain("predates the machine's last boot");
       expect(refus).toContain(lockPath);
     } finally {
       await lock.release();

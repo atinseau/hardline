@@ -44,8 +44,8 @@ export function publicKeyPath(config: Config): string {
 /** Le message qui dit comment creer la cle, partage avec la commande install. */
 export function missingPublicKeyMessage(config: Config): string {
   return (
-    `Clé publique introuvable ou vide\u00a0: ${publicKeyPath(config)}. La créer avec ` +
-    `«\u00a0ssh-keygen -t ed25519 -f ${config.ssh.identityFile}\u00a0».`
+    `Public key is missing or empty: ${publicKeyPath(config)}. Create it with ` +
+    `'ssh-keygen -t ed25519 -f ${config.ssh.identityFile}'.`
   );
 }
 
@@ -83,10 +83,10 @@ export async function runLocalPreflight(config: Config): Promise<CheckResult[]> 
     // bien la sante de la liaison qui est en cause.
     installOnly: false,
     detail: !macService
-      ? `aucun service réseau nommé «\u00a0${config.mac.serviceName}\u00a0». Adaptateur USB débranché\u00a0?`
+      ? `no network service named '${config.mac.serviceName}'. Is the USB adapter disconnected?`
       : macService.enabled
-        ? `service «\u00a0${config.mac.serviceName}\u00a0» sur ${macService.device}`
-        : `service «\u00a0${config.mac.serviceName}\u00a0» désactivé dans les Réglages Réseau`,
+        ? `service '${config.mac.serviceName}' on ${macService.device}`
+        : `service '${config.mac.serviceName}' is disabled in Network Settings`,
   });
 
   // L'amorcage depose cette cle sur le PC. Sa presence est une precondition
@@ -109,7 +109,7 @@ export async function runLocalPreflight(config: Config): Promise<CheckResult[]> 
     installOnly: true,
     detail:
       key.length > 0
-        ? `clé publique ${publicKeyPath(config)}`
+        ? `public key ${publicKeyPath(config)}`
         : missingPublicKeyMessage(config),
   });
 
@@ -137,7 +137,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
       ok: Boolean(facts),
       blocking: true,
       installOnly: false,
-      detail: facts ? `PC joignable sur ${config.ssh.host}` : "réponse vide du PC",
+      detail: facts ? `PC reachable at ${config.ssh.host}` : "empty response from PC",
     });
   } catch (error) {
     results.push({
@@ -145,7 +145,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
       ok: false,
       blocking: true,
       installOnly: false,
-      detail: `PC injoignable sur ${config.ssh.host}\u00a0: ${errorMessage(error)}`,
+      detail: `PC unreachable at ${config.ssh.host}: ${errorMessage(error)}`,
     });
   }
 
@@ -159,7 +159,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     blocking: false,
     installOnly: false,
     detail: `${facts.caption} build ${facts.build}${
-      facts.build === EXPECTED_BUILD ? "" : ` (référence\u00a0: ${EXPECTED_BUILD})`
+      facts.build === EXPECTED_BUILD ? "" : ` (expected: ${EXPECTED_BUILD})`
     }`,
   });
 
@@ -169,7 +169,7 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     ok: Boolean(nvidia),
     blocking: true,
     installOnly: false,
-    detail: nvidia ?? `aucun GPU NVIDIA parmi\u00a0: ${facts.gpus.join(", ")}`,
+    detail: nvidia ?? `no NVIDIA GPU among: ${facts.gpus.join(", ")}`,
   });
 
   const linkUp = facts.adapterPresent && facts.adapterStatus === "Up";
@@ -179,8 +179,8 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     blocking: true,
     installOnly: false,
     detail: linkUp
-      ? `interface «\u00a0${config.windows.interfaceAlias}\u00a0» active`
-      : `interface «\u00a0${config.windows.interfaceAlias}\u00a0» en état ${facts.adapterStatus ?? "absent"}. Vérifier le câble.`,
+      ? `interface '${config.windows.interfaceAlias}' is active`
+      : `interface '${config.windows.interfaceAlias}' is ${facts.adapterStatus ?? "absent"}. Check the cable.`,
   });
 
   return results;

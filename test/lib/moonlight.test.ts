@@ -47,6 +47,8 @@ const MAIN_DISPLAY: Display = {
   widthPt: 1728,
   heightPt: 1117,
   main: true,
+  colorProfile: "Color LCD",
+  colorProfileValid: true,
 };
 
 describe("pairArgs", () => {
@@ -62,6 +64,17 @@ describe("quitArgs", () => {
 });
 
 describe("streamArgs", () => {
+  test("active l'overlay de diagnostic a la demande", () => {
+    const args = streamArgs(CONFIG, null, {
+      fullscreen: false,
+      resolution: null,
+      fps: null,
+      monitor: true,
+    });
+
+    expect(args).toContain("--performance-overlay");
+  });
+
   test("les options gagnent sur l'ecran detecte quand elles sont fournies", () => {
     const args = streamArgs(CONFIG, MAIN_DISPLAY, {
       fullscreen: true,
@@ -81,6 +94,8 @@ describe("streamArgs", () => {
       "3840x2160",
       "--fps",
       "60",
+      "--bitrate",
+      "160000",
     ]);
   });
 
@@ -103,6 +118,8 @@ describe("streamArgs", () => {
       "3456x2234",
       "--fps",
       "120",
+      "--bitrate",
+      "212000",
     ]);
   });
 
@@ -126,6 +143,8 @@ describe("streamArgs", () => {
       widthPt: 1728,
       heightPt: 1117,
       main: true,
+      colorProfile: "Color LCD",
+      colorProfileValid: true,
     };
 
     const args = streamArgs(CONFIG, displayWithZeroRefresh, {
@@ -150,7 +169,7 @@ describe("streamArgs", () => {
 });
 
 describe("frontiere systeme", () => {
-  type SpawnCall = { cmd: string[] };
+  type SpawnCall = { cmd: string[]; env?: Record<string, string | undefined> };
 
   let spawnCalls: SpawnCall[];
   let exitCode: number;
@@ -162,8 +181,8 @@ describe("frontiere systeme", () => {
     exitCode = 0;
     killCalls = 0;
     originalSpawn = Bun.spawn;
-    Bun.spawn = ((cmd: string[]) => {
-      spawnCalls.push({ cmd });
+    Bun.spawn = ((cmd: string[], options?: { env?: Record<string, string | undefined> }) => {
+      spawnCalls.push({ cmd, env: options?.env });
       return {
         exited: Promise.resolve(exitCode),
         kill: () => {
@@ -216,7 +235,13 @@ describe("frontiere systeme", () => {
       "3456x2234",
       "--fps",
       "120",
+      "--bitrate",
+      "212000",
     ]);
+    expect(spawnCalls[0]!.env).toMatchObject({
+      COLOR_SPACE_OVERRIDE: "1",
+      COLOR_RANGE_OVERRIDE: "1",
+    });
   });
 
   test("runQuit attend la fin du processus moonlight quit", async () => {

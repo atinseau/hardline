@@ -1,80 +1,118 @@
-import { CONFIG, type Config } from "../config";
+import type { Config } from "../config";
+import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
+import { runCommand } from "../command-run";
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import { lookupMac, sendMagicPacket } from "../lib/wol";
 import { waitForRemote } from "../lib/preflight";
-import { listDisplays, mainDisplay } from "../lib/display";
+import { colorProfileIssue, listDisplays, type Display } from "../lib/display";
 import { getSecret } from "../lib/keychain";
 import { mountShare, unmountShare } from "../lib/smb";
 import { runStream, runQuit, type StreamOptions } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
-import { configureOutput, ui, withSpinner } from "../lib/ui";
 
 const WAKE_DEADLINE_MS = 3 * 60_000;
 
 export type ResolutionOption = { width: number; height: number };
-
-/** Fonction pure. "LARGEURxHAUTEUR" -> les deux entiers, ou leve. */
-export function parseResolution(value: string): ResolutionOption {
-  const match = /^(\d+)x(\d+)$/i.exec(value.trim());
-  if (!match) {
-    throw new Error(
-      `Résolution invalide\u00a0: attendu «\u00a0LARGEURxHAUTEUR\u00a0» (${value})`,
-    );
-  }
-  return { width: Number(match[1]), height: Number(match[2]) };
-}
-
-/** Fonction pure. Une chaine de frequence en entier positif, ou leve. */
-export function parseFps(value: string): number {
-  const fps = Number(value);
-  if (!Number.isInteger(fps) || fps <= 0) {
-    throw new Error(`Fréquence invalide\u00a0: attendu un entier positif (${value})`);
-  }
-  return fps;
-}
-
-/**
- * Les drapeaux tels que commander les rend : une option non passee vaut
- * `undefined`, pas `null`. Le type le dit plutot que de laisser le seul
- * appelant de test decrire la forme reelle.
- */
 export type UpCliOptions = {
   fullscreen: boolean;
   resolution?: string | null;
   fps?: string | null;
+  monitor?: boolean;
 };
 
-/** Fonction pure. Les drapeaux de la ligne de commande, vers les options de flux. */
+type UpFact = {
+  id: "title" | "prepare" | "activity" | "choose-display" | "display-choice" |
+    "color-warning" | "color-ok" | "success" | "stream-failed" | "invalid-options" | "preparation-failed" | "failed" | "cancelled";
+  values?: Record<string, unknown>;
+};
+
+const fact = (id: UpFact["id"], values?: Record<string, unknown>): UpFact => ({
+  id,
+  ...(values ? { values } : {}),
+});
+
+export function renderUpFact(value: UpFact): string {
+  const v = value.values ?? {};
+  switch (value.id) {
+    case "title": return "Open Hardline Session";
+    case "prepare": return "Prepare Session";
+    case "activity": return String(v.message);
+    case "choose-display": return "Which display should open the video stream?";
+    case "display-choice": return String(v.label);
+    case "color-warning": return String(v.message);
+    case "color-ok": return `Color profile validated: ${v.profile}.`;
+    case "success": return "Session ended.";
+    case "stream-failed": return `Session ended with Moonlight exit code ${v.code}.`;
+    case "invalid-options": return `Invalid options: ${v.error}`;
+    case "preparation-failed": return `Could not prepare the session: ${v.error}`;
+    case "failed": return "Could not open the session. No native command output was included.";
+    case "cancelled": return "Session opening cancelled.";
+  }
+}
+
+export function parseResolution(value: string): ResolutionOption {
+  const match = /^(\d+)x(\d+)$/i.exec(value.trim());
+  if (!match) throw new Error(`Invalid resolution: expected WIDTHxHEIGHT (${value})`);
+  return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+export function parseFps(value: string): number {
+  const fps = Number(value);
+  if (!Number.isInteger(fps) || fps <= 0) {
+    throw new Error(`Invalid frame rate: expected a positive integer (${value})`);
+  }
+  return fps;
+}
+
 export function buildStreamOptions(cli: UpCliOptions): StreamOptions {
   return {
     fullscreen: cli.fullscreen,
     resolution: cli.resolution ? parseResolution(cli.resolution) : null,
     fps: cli.fps ? parseFps(cli.fps) : null,
+    ...(cli.monitor ? { monitor: true } : {}),
   };
 }
 
-/**
- * Fonction pure. L'adresse de diffusion IPv4 d'un reseau, a partir d'une
- * adresse et d'un masque. Sert a poser le paquet magique sur le bon domaine
- * de diffusion : celui du Mac sur le lien direct, pas celui d'un routeur.
- */
+export function displayChoiceLabel(display: Display, index: number): string {
+  const refresh = display.refreshHz > 0 ? ` at ${display.refreshHz} Hz` : "";
+  const scaleX = display.widthPt > 0 ? display.widthPx / display.widthPt : 1;
+  const scaleY = display.heightPt > 0 ? display.heightPx / display.heightPt : 1;
+  const scale = Math.abs(scaleX - scaleY) < 0.01 ? scaleX : Math.min(scaleX, scaleY);
+  const roundedScale = Math.round(scale * 100) / 100;
+  const scaleLabel = roundedScale > 1 ? `Retina ${roundedScale}x` : `scale ${roundedScale}x`;
+  const profile = display.colorProfile ? `, profile ${display.colorProfile}` : ", unknown profile";
+  return `Display ${index + 1}: ${display.widthPx}x${display.heightPx} px${refresh}, ${scaleLabel}${profile}${display.main ? ", main" : ""}`;
+}
+
+export async function chooseDisplay(
+  run: CommandRun<UpFact>,
+  displays: readonly Display[],
+): Promise<Display | null> {
+  if (displays.length === 0) return null;
+  if (displays.length === 1) return displays[0]!;
+  const mainIndex = Math.max(0, displays.findIndex((display) => display.main));
+  const selected = await run.choice(
+    fact("choose-display"),
+    displays.map((display, index) => ({
+      value: String(index),
+      label: fact("display-choice", { label: displayChoiceLabel(display, index) }),
+    })),
+    String(mainIndex),
+  );
+  if (selected.status !== "selected") return displays[mainIndex]!;
+  return displays[Number(selected.value)] ?? displays[mainIndex]!;
+}
+
 export function broadcastAddress(ip: string, subnetMask: string): string {
   const ipParts = ip.split(".").map(Number);
   const maskParts = subnetMask.split(".").map(Number);
-  const valid =
-    ipParts.length === 4 &&
-    maskParts.length === 4 &&
+  const valid = ipParts.length === 4 && maskParts.length === 4 &&
     ipParts.every((n) => Number.isInteger(n) && n >= 0 && n <= 255) &&
     maskParts.every((n) => Number.isInteger(n) && n >= 0 && n <= 255);
-  if (!valid) {
-    throw new Error(
-      `Adresse ou masque IPv4 invalide pour le calcul de diffusion\u00a0: ${ip}/${subnetMask}`,
-    );
-  }
-  return ipParts.map((octet, i) => (octet | (~maskParts[i]! & 0xff)) & 0xff).join(".");
+  if (!valid) throw new Error(`Invalid IPv4 address or subnet mask: ${ip}/${subnetMask}`);
+  return ipParts.map((octet, index) =>
+    (octet | (~maskParts[index]! & 0xff)) & 0xff).join(".");
 }
-
-// --- Frontiere systeme. ---
 
 async function pcReachable(config: Config): Promise<boolean> {
   try {
@@ -85,27 +123,14 @@ async function pcReachable(config: Config): Promise<boolean> {
   }
 }
 
-/**
- * Le paquet magique part sur l'adresse de diffusion du lien direct, calculee
- * a partir de l'adresse du Mac : le poser sur celle d'un routeur ne le ferait
- * jamais atteindre une carte reseau qui dort.
- */
 async function wakePC(config: Config): Promise<void> {
   const mac = await lookupMac(config.windows.ip);
   if (!mac) {
-    throw new Error(
-      `Adresse matérielle introuvable dans la table ARP pour ${config.windows.ip}\u00a0: ` +
-        "le PC a-t-il déjà répondu au moins une fois sur ce lien\u00a0?",
-    );
+    throw new Error(`No hardware address was found for ${config.windows.ip}. Has the PC responded on this link before?`);
   }
-  const broadcast = broadcastAddress(config.mac.ip, config.mac.subnetMask);
-  await sendMagicPacket(mac, broadcast);
-
-  const woke = await waitForRemote(config, WAKE_DEADLINE_MS);
-  if (!woke) {
-    throw new Error(
-      `Le PC n'a pas répondu dans les ${Math.round(WAKE_DEADLINE_MS / 60_000)} minutes suivant le réveil.`,
-    );
+  await sendMagicPacket(mac, broadcastAddress(config.mac.ip, config.mac.subnetMask));
+  if (!(await waitForRemote(config, WAKE_DEADLINE_MS))) {
+    throw new Error(`The PC did not respond within ${WAKE_DEADLINE_MS / 60_000} minutes after wake.`);
   }
 }
 
@@ -113,190 +138,111 @@ const APOLLO_STATUS = (name: string) => `
 $svc = Get-Service -Name '${name}' -ErrorAction SilentlyContinue
 [pscustomobject]@{ status = if ($svc) { [string]$svc.Status } else { $null } }`;
 
-/**
- * Apollo doit tourner avant que le flux ne parte : un serveur arrete rend une
- * erreur de connexion que rien ne distingue d'un PC absent.
- */
 async function ensureApolloRunning(config: Config): Promise<void> {
   const rows = await runRemoteJson<{ status: string | null }>(
     config.ssh,
     APOLLO_STATUS(config.apollo.serviceName),
   );
   if (rows[0]?.status === "Running") return;
-
-  await runRemoteChecked(
-    config.ssh,
-    `Start-Service -Name '${config.apollo.serviceName}'`,
-  );
-
+  await runRemoteChecked(config.ssh, `Start-Service -Name '${config.apollo.serviceName}'`);
   const recheck = await runRemoteJson<{ status: string | null }>(
     config.ssh,
     APOLLO_STATUS(config.apollo.serviceName),
   );
   if (recheck[0]?.status !== "Running") {
-    throw new Error(
-      `Le service «\u00a0${config.apollo.serviceName}\u00a0» n'a pas démarré ` +
-        `(état\u00a0: ${recheck[0]?.status ?? "inconnu"}).`,
-    );
+    throw new Error(`Service '${config.apollo.serviceName}' did not start (status: ${recheck[0]?.status ?? "unknown"}).`);
   }
 }
 
-/**
- * Enveloppe la phase preparatoire. Meme forme que `withSpinner`, dont c'est
- * le seul emploi legitime ici : la preparation capture toutes ses sorties,
- * le flux non.
- */
-export type PreparationWrapper = <T>(
-  label: string,
-  run: (progress: (message: string) => void) => Promise<T>,
-) => Promise<T>;
-
-export type UpHooks = {
-  /** Enveloppe la seule phase preparatoire, jamais le flux. */
-  withPreparation: PreparationWrapper;
-  /** Appele une fois tout pret, juste avant que le flux ne parte. */
-  onStreamStart: () => void;
-};
-
-const NO_HOOKS: UpHooks = {
-  withPreparation: (_label, run) => run(() => {}),
-  onStreamStart: () => {},
-};
-
-/**
- * L'enchainement complet d'une session.
- *
- * `runStream` lance Moonlight avec les flux du terminal HERITES : il ecrit
- * directement sur stdout et prend le terminal jusqu'a la fermeture de la
- * session. Aucun spinner ne peut tourner par-dessus sans entrelacer son rendu
- * et rester fige sur son libelle (voir le contrat de withSpinner,
- * src/lib/ui.ts). La phase preparatoire — reveil, ecrans, service, montages —
- * capture au contraire tout ce qu'elle lance : c'est elle, et elle seule, que
- * `hooks.withPreparation` enveloppe.
- *
- * Le demontage et l'appel a `moonlight quit` sont dans un `finally` qui
- * englobe le montage ET le flux : une interruption a n'importe quel point
- * apres le premier montage doit encore defaire ce qui a ete monte et fermer la
- * session cote serveur, sans quoi l'ecran virtuel reste sur le PC.
- * unmountShare ne leve jamais pour un partage jamais monte (voir
- * src/lib/smb.ts), ce qui rend sur d'appeler ce nettoyage sur TOUS les
- * partages, meme ceux qu'un montage partiel n'a jamais atteints.
- *
- * `monte` garde la frontiere d'avant : un PC qui ne se reveille jamais n'a
- * rien fait monter, et rien ne doit alors etre demonte ni clos sur une machine
- * qu'on n'a jamais atteinte.
- */
 export async function runUp(
+  run: CommandRun<UpFact>,
   config: Config,
   options: StreamOptions,
-  hooks: UpHooks = NO_HOOKS,
+  selectedDisplay: Display | null,
 ): Promise<number> {
-  let monte = false;
-
+  let mounted = false;
   try {
-    const display = await hooks.withPreparation(
-      "Préparation de la session",
-      async (progress) => {
-        if (!(await pcReachable(config))) {
-          progress("réveil du PC");
-          await wakePC(config);
-        }
-
-        const ecran = mainDisplay(await listDisplays());
-
-        progress("démarrage du service Apollo");
-        await ensureApolloRunning(config);
-
-        // Le mot de passe ne quitte jamais cette portee : il part dans
-        // mountShare, qui compose l'URL SMB lui-meme et retire le secret de
-        // ses propres messages d'erreur. Il n'est ni journalise, ni passe en
-        // argument de commande, ni repris dans une erreur d'ici.
-        const password = await getSecret("windows-account");
-        if (password === null) {
-          throw new Error(
-            "Aucun mot de passe Windows au trousseau\u00a0: lancer «\u00a0hardline install\u00a0» d'abord.",
-          );
-        }
-
-        progress("montage des partages");
-        monte = true;
-        for (const share of config.smb.shares) {
-          await mountShare(share, config, password);
-        }
-
-        return ecran;
-      },
-    );
-
-    hooks.onStreamStart();
-    return await runStream(config, display, options);
-  } finally {
-    if (monte) {
-      await releaseSession(config);
+    await run.phase(fact("prepare"), async () => {
+      if (!(await pcReachable(config))) {
+        run.activity(fact("activity", { message: "Wake PC" }));
+        await wakePC(config);
+      }
+      run.activity(fact("activity", { message: "Start Apollo service" }));
+      await ensureApolloRunning(config);
+      run.activity(fact("activity", { message: "Reset video mode" }));
+      await runQuit(config);
+      const password = await getSecret("windows-account");
+      if (password === null) {
+        throw new Error("No Windows password is stored in the keychain. Run 'hardline install' first.");
+      }
+      run.activity(fact("activity", { message: "Mount shares" }));
+      mounted = true;
+      for (const share of config.smb.shares) await mountShare(share, config, password);
+    });
+    // No Command Run phase is active while Moonlight owns the terminal.
+    try {
+      return await runStream(config, selectedDisplay, options);
+    } catch {
+      throw new StreamLaunchError();
     }
+  } finally {
+    if (mounted) await releaseSession(config);
   }
 }
 
-/** Defait ce que la session a monte, puis la clot cote serveur. */
+class StreamLaunchError extends Error {}
+
 async function releaseSession(config: Config): Promise<void> {
   for (const share of config.smb.shares) {
     try {
       await unmountShare(share);
-    } catch {
-      // Demontage en best effort a la fermeture : un partage qui refuse de se
-      // demonter ne doit ni empecher les autres ni empecher la fermeture cote
-      // serveur.
-    }
+    } catch {}
   }
   try {
     await runQuit(config);
-  } catch {
-    // La session doit se fermer cote client quoi qu'il arrive : une erreur
-    // ici ne doit pas masquer celle, plus importante, du flux lui-meme.
-  }
+  } catch {}
 }
 
-/**
- * Les options sont validees AVANT la moindre action sur les machines : une
- * definition mal ecrite ne doit pas reveiller un PC pour rien.
- */
-export async function upCommand(cliOptions: UpCliOptions): Promise<void> {
-  configureOutput();
-  ui.start("hardline — up");
-
+export async function runUpCommand(
+  run: CommandRun<UpFact>,
+  config: Config,
+  cliOptions: UpCliOptions,
+): Promise<CommandResult<UpFact>> {
   let options: StreamOptions;
   try {
     options = buildStreamOptions(cliOptions);
   } catch (error) {
-    ui.failed({ label: "Options", detail: errorMessage(error) });
-    ui.finish("Options invalides.");
-    process.exitCode = 1;
-    return;
+    return { status: "failed", summary: fact("invalid-options", { error: errorMessage(error) }) };
   }
-
+  const display = await chooseDisplay(run, await listDisplays());
+  if (display) {
+    const issue = colorProfileIssue(display);
+    if (issue) run.warning(fact("color-warning", { message: issue }));
+    else run.detail(fact("color-ok", { profile: display.colorProfile }));
+  }
   try {
-    // Le spinner n'enveloppe que la preparation : Moonlight herite du terminal
-    // et le garde jusqu'a la fin de la session.
-    const exitCode = await runUp(CONFIG, options, {
-      withPreparation: withSpinner,
-      onStreamStart: () =>
-        ui.info(
-          "Session ouverte\u00a0: Moonlight prend le terminal jusqu'à sa fermeture.",
-        ),
-    });
-    // Meme contrat que partout ailleurs dans le programme : le code de sortie
-    // rapporte ce qui a ete OBSERVE. Un flux qui se termine en erreur a ete vu
-    // echouer ; le taire sous un code 0 rendrait « hardline up » inutilisable
-    // dans un script, qui ne peut lire que ce code.
-    if (exitCode === 0) {
-      ui.finish("Session terminée.");
-      return;
-    }
-    ui.finish(`Session terminée avec le code ${exitCode}.`);
-    process.exitCode = 1;
+    const exitCode = await runUp(run, config, options, display);
+    return exitCode === 0
+      ? { status: "succeeded", summary: fact("success") }
+      : { status: "failed", summary: fact("stream-failed", { code: exitCode }) };
   } catch (error) {
-    ui.failed({ label: "up", detail: errorMessage(error) });
-    ui.finish("Échec de l'ouverture de la session.");
-    process.exitCode = 1;
+    return error instanceof StreamLaunchError
+      ? { status: "failed", summary: fact("failed") }
+      : { status: "failed", summary: fact("preparation-failed", { error: errorMessage(error) }) };
   }
+}
+
+export function upCommand(options: {
+  config: Config;
+  output: CommandOutput;
+  cli: UpCliOptions;
+}): Promise<CommandResult<UpFact>> {
+  return runCommand({
+    title: fact("title"),
+    render: renderUpFact,
+    output: options.output,
+    cancelled: fact("cancelled"),
+    unexpected: (error) => fact("failed", { error: errorMessage(error) }),
+    execute: (run) => runUpCommand(run, options.config, options.cli),
+  });
 }

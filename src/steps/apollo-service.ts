@@ -25,7 +25,7 @@ export const apolloServiceStep: Step<ServiceState> = {
     );
     const current = rows[0];
     if (!current) {
-      throw new Error("Le PC n'a renvoyé aucun état du service Apollo. Vérifier la liaison SSH.");
+      throw new Error("The PC returned no Apollo service state. Check the SSH connection.");
     }
     const conforming = current.startType === "Automatic" && current.status === "Running";
     return {

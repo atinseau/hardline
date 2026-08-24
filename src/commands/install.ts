@@ -1,14 +1,16 @@
 import { readFile } from "node:fs/promises";
-import { CONFIG } from "../config";
+import type { Config } from "../config";
+import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
+import { runCommand } from "../command-run";
+import { englishCheckName, englishStepLabel } from "../command-run/english";
 import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
 import { BOOTSTRAP_STEP_NAME } from "../steps/bootstrap-name";
-import { applySteps } from "../lib/orchestrator";
+import { applySteps, type OrchestratorFact } from "../lib/orchestrator";
 import {
   acquireManifestLock,
   defaultManifestPath,
   ManifestLockedError,
   type Manifest,
-  type ManifestLock,
 } from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
 import {
@@ -30,353 +32,307 @@ import {
 import { getSecret } from "../lib/keychain";
 import { forgetPassword, providePassword } from "../steps/smb-credentials";
 import type { Step } from "../steps/types";
-import {
-  askConfirmation,
-  askSecret,
-  configureOutput,
-  isInteractive,
-  ui,
-  withSpinner,
-} from "../lib/ui";
 
 const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
 
-function reportChecks(checks: CheckResult[]): void {
-  for (const check of checks) {
-    if (check.ok) ui.info(`${check.name} — ${check.detail}`);
-    else if (check.blocking) ui.failed({ label: check.name, detail: check.detail });
-    else ui.warn(`${check.name} — ${check.detail}`);
+type InstallFact = {
+  id:
+    | "title"
+    | "check-mac"
+    | "configure-mac"
+    | "check-pc"
+    | "bootstrap-pc"
+    | "record-recovery"
+    | "configure-pc"
+    | "check"
+    | "step"
+    | "password"
+    | "bootstrap-instructions"
+    | "foreign-apollo"
+    | "replace-apollo"
+    | "backup"
+    | "warning"
+    | "success"
+    | "cancelled"
+    | "locked"
+    | "mac-not-ready"
+    | "bootstrap-failed"
+    | "pc-timeout"
+    | "pc-not-ready"
+    | "convergence-failed"
+    | "foreign-kept"
+    | "unexpected";
+  values?: Record<string, unknown>;
+};
+
+const fact = (id: InstallFact["id"], values?: Record<string, unknown>): InstallFact => ({
+  id,
+  ...(values ? { values } : {}),
+});
+
+export function renderInstallFact(value: InstallFact): string {
+  const v = value.values ?? {};
+  switch (value.id) {
+    case "title": return "Install Hardline";
+    case "check-mac": return "Check Mac";
+    case "configure-mac": return "Configure Mac";
+    case "check-pc": return "Check PC";
+    case "bootstrap-pc": return "Bootstrap PC";
+    case "record-recovery": return "Record Recovery State";
+    case "configure-pc": return "Configure PC";
+    case "check": return `${englishCheckName(String(v.name))}: ${v.detail}`;
+    case "step": {
+      const verbs = {
+        conforming: "already conforming",
+        applied: "applied",
+        restored: "restored",
+        yielded: "yielded",
+        detached: "launched without confirmation",
+        failed: "failed",
+      } as const;
+      return `${englishStepLabel(String(v.step))}: ${verbs[v.kind as keyof typeof verbs]}.`;
+    }
+    case "password": return `Windows account password for ${v.user}`;
+    case "bootstrap-instructions": return `Run this command in an Administrator PowerShell on the PC:\n\n  irm ${v.url} | iex\n\nInstallation will resume when the PC responds.`;
+    case "foreign-apollo": return `Foreign Apollo installation detected (version ${v.version}, ${v.clients} paired client(s)). ${v.backup}`;
+    case "replace-apollo": return "Replace this Apollo installation with Hardline's managed installation?";
+    case "backup": return `Foreign Apollo configuration backed up at ${v.path}.`;
+    case "warning": return "Apollo cleanup could not complete one item. Inspect the PC before continuing.";
+    case "success": return "Hardline is installed. Run 'hardline doctor' to verify the link.";
+    case "cancelled": return "Installation cancelled. No unauthorized destructive action was taken.";
+    case "locked": return `Installation could not start: ${v.error}`;
+    case "mac-not-ready": return "Installation stopped: the Mac is not ready. Nothing was changed.";
+    case "bootstrap-failed": return `PC bootstrap failed: ${v.error}. The Mac remains configured and its previous state is recorded. Run 'hardline uninstall' to restore it.`;
+    case "pc-timeout": return "The PC did not respond. Run 'hardline install' again after bootstrap; the Mac's previous state remains recorded and 'hardline uninstall' restores it.";
+    case "pc-not-ready": return `Installation stopped: the PC is not ready. ${v.recovery}`;
+    case "convergence-failed": return `${v.area} failed. Previous state for every touched step is recorded. Fix the problem and run 'hardline install' to resume, or 'hardline uninstall' to restore it.`;
+    case "foreign-kept": return "Installation stopped: the foreign Apollo installation was preserved. Non-interactive replacement requires explicit 'hardline install --yes' authorization.";
+    case "unexpected": return "Installation failed safely. No unrecorded result is being reported.";
   }
 }
 
-/**
- * La presence de la cle est deja une precondition de la phase 1. Ce second
- * controle couvre le seul cas qu'elle ne peut pas couvrir : le fichier efface
- * entre la phase 1 et l'amorcage.
- */
-async function readPublicKey(): Promise<string> {
+const failed = (summary: InstallFact): CommandResult<InstallFact> => ({
+  status: "failed",
+  summary,
+});
+
+function reportChecks(run: CommandRun<InstallFact>, checks: CheckResult[]): void {
+  for (const check of checks) {
+    const value = fact("check", { name: check.name, detail: check.detail });
+    if (check.ok) run.detail(value);
+    else if (check.blocking) run.warning(value);
+    else run.warning(value);
+  }
+}
+
+const reportStep = (run: CommandRun<InstallFact>) => (step: OrchestratorFact): void => {
+  const value = fact("step", step);
+  if (step.kind === "failed" || step.kind === "detached") run.warning(value);
+  else run.detail(value);
+};
+
+async function readPublicKey(config: Config): Promise<string> {
   let key = "";
   try {
-    key = (await readFile(publicKeyPath(CONFIG), "utf8")).trim();
-  } catch {
-    key = "";
-  }
-  if (key.length === 0) throw new Error(missingPublicKeyMessage(CONFIG));
+    key = (await readFile(publicKeyPath(config), "utf8")).trim();
+  } catch {}
+  if (!key) throw new Error(missingPublicKeyMessage(config));
   return key;
 }
 
-/**
- * Sert le script d'amorcage et attend que le PC reponde. C'est le seul geste
- * manuel du projet : une ligne a coller une fois par PC.
- */
-async function bootstrapRemote(): Promise<boolean> {
-  const publicKey = await readPublicKey();
+async function bootstrapRemote(
+  run: CommandRun<InstallFact>,
+  config: Config,
+): Promise<boolean> {
+  const publicKey = await readPublicKey(config);
   const server = await serveBootstrap({
-    port: CONFIG.bootstrapPort,
+    port: config.bootstrapPort,
     publicKey,
-    interfaceAlias: CONFIG.windows.interfaceAlias,
-    windowsIp: CONFIG.windows.ip,
-    prefixLength: CONFIG.windows.prefixLength,
+    interfaceAlias: config.windows.interfaceAlias,
+    windowsIp: config.windows.ip,
+    prefixLength: config.windows.prefixLength,
   });
-
-  // Tout ce qui suit la creation du serveur est dans le try : une exception
-  // avant le finally laisserait un ecouteur ouvert et figerait la commande.
   try {
-    ui.report("Amorçage du PC", [
-      "Le PC n'est pas encore joignable. Sur le PC, dans un",
-      "PowerShell lancé en administrateur, coller cette ligne\u00a0:",
-      "",
-      `  irm ${localBootstrapUrl(server.port)} | iex`,
-      "",
-      "L'installation reprendra d'elle-même dès que le PC répondra.",
-    ]);
-
-    return await withSpinner("Attente du PC (10 minutes au plus)", () =>
-      waitForRemote(CONFIG, BOOTSTRAP_DEADLINE_MS),
+    run.report(
+      fact("bootstrap-pc"),
+      [fact("bootstrap-instructions", { url: localBootstrapUrl(server.port) })],
     );
+    run.activity(fact("bootstrap-pc"));
+    return await waitForRemote(config, BOOTSTRAP_DEADLINE_MS);
   } finally {
     server.stop();
   }
 }
 
-/**
- * Le mot de passe Windows n'est jamais recueilli par l'etape elle-meme : les
- * etapes ne dialoguent jamais. Il est demande ici, une seule fois, avant que
- * la convergence locale ne commence, et depose dans smb-credentials par ce
- * pont.
- */
-async function ensureWindowsPassword(): Promise<void> {
-  if ((await getSecret("windows-account")) !== null) return;
-  const password = await askSecret(
-    `Mot de passe du compte Windows «\u00a0${CONFIG.smb.user}\u00a0», pour les partages\u00a0:`,
-  );
-  providePassword(password);
-}
-
-/**
- * Applique une phase de convergence. Une etape qui echoue ne doit pas remonter
- * nue jusqu'au CLI : l'etat anterieur de tout ce qui a ete touche est sur
- * disque, et l'utilisateur doit savoir qu'il peut reprendre ou tout rendre.
- *
- * Rend le manifeste tel qu'il est apres la phase, ou null si elle a echoue.
- * L'appelant y lit ce qui est reellement enregistre : une phase qui se termine
- * sans exception n'a pas forcement enregistre quoi que ce soit.
- */
 async function converge(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  steps: Step<any>[],
-  label: string,
+  run: CommandRun<InstallFact>,
+  steps: Step<unknown>[],
+  config: Config,
   manifestPath: string,
-): Promise<Manifest | null> {
+): Promise<Manifest> {
+  return await applySteps(steps, config, manifestPath, reportStep(run));
+}
+
+async function replaceForeignApollo(
+  run: CommandRun<InstallFact>,
+  config: Config,
+  manifestPath: string,
+  yes: boolean,
+  foreign: ForeignApolloError,
+): Promise<CommandResult<InstallFact> | null> {
+  run.report(fact("foreign-apollo", {
+    version: foreign.state.version ?? "unknown",
+    clients: foreign.state.pairedClients,
+    backup: foreign.hasConfig
+      ? "Its configuration will be backed up before replacement."
+      : "There is no existing configuration to back up.",
+  }), []);
+  const answer = await run.confirm(fact("replace-apollo"), {
+    assumeYes: yes,
+    destructive: true,
+  });
+  if (answer !== "accepted") return failed(fact("foreign-kept"));
+
+  const backupPath = await backupApolloConfig(config);
+  if (backupPath) run.detail(fact("backup", { path: backupPath }));
+  for (const warning of await uninstallApollo(config)) {
+    run.warning(fact("warning", { message: warning }));
+  }
   try {
-    return await applySteps(steps, CONFIG, manifestPath, ui);
-  } catch (error) {
-    ui.failed({ label, detail: errorMessage(error) });
-    ui.finish(REPRENDRE);
-    process.exitCode = 1;
+    await run.phase(fact("configure-pc"), () =>
+      converge(run, REMOTE_STEPS, config, manifestPath));
     return null;
-  }
-}
-
-const REPRENDRE =
-  "Installation interrompue\u00a0: l'état antérieur de chaque étape touchée est " +
-  "sur disque. Corriger, puis «\u00a0hardline install\u00a0» pour reprendre " +
-  "ou «\u00a0hardline uninstall\u00a0» pour tout rendre.";
-
-/**
- * La convergence distante peut buter sur un Apollo etranger : l'installation
- * s'arrete et demande, plutot que d'effacer en silence le travail de
- * quelqu'un. --yes leve la question.
- */
-async function convergeRemote(
-  manifestPath: string,
-  options: { yes: boolean },
-): Promise<boolean> {
-  try {
-    await applySteps(REMOTE_STEPS, CONFIG, manifestPath, ui);
-    return true;
-  } catch (error) {
-    if (error instanceof ForeignApolloError) {
-      return await handleForeignApollo(error, manifestPath, options);
-    }
-    ui.failed({ label: "Convergence du PC", detail: errorMessage(error) });
-    ui.finish(REPRENDRE);
-    process.exitCode = 1;
-    return false;
-  }
-}
-
-/**
- * L'etape leve et n'agit pas ; c'est la COMMANDE qui obtient le consentement,
- * puis qui efface. Aucun consentement ne transite par un drapeau global : le
- * contrat Step n'a pas de canal pour cela, et lui en inventer un pour un seul
- * cas deformerait le contrat de toutes les autres etapes.
- */
-async function handleForeignApollo(
-  error: ForeignApolloError,
-  manifestPath: string,
-  options: { yes: boolean },
-): Promise<boolean> {
-  const { state, hasConfig } = error;
-  ui.report("Apollo étranger détecté sur le PC", [
-    `Version\u00a0: ${state.version ?? "inconnue"}`,
-    `Clients déjà appairés\u00a0: ${state.pairedClients}`,
-    hasConfig
-      ? "Sa configuration sera sauvegardée sur le PC avant d'être remplacée."
-      : "Aucune configuration existante à sauvegarder.",
-  ]);
-
-  // askConfirmation rend "oui" hors terminal, ce qui est le bon defaut pour une
-  // question benigne mais jamais pour celle-ci : sans ce garde-fou, un install
-  // lance depuis un script effacerait l'Apollo d'un tiers sans que personne
-  // n'ait repondu. Le consentement doit alors etre porte par --yes, ecrit a la
-  // main dans la ligne de commande.
-  if (!options.yes && !isInteractive()) {
-    ui.finish(
-      "Installation interrompue\u00a0: Apollo étranger conservé, rien n'a été modifié sur le PC. " +
-        "Hors terminal, son remplacement doit être autorisé explicitement par " +
-        "«\u00a0hardline install --yes\u00a0».",
-    );
-    process.exitCode = 1;
-    return false;
-  }
-
-  const confirmed = await askConfirmation(
-    "Remplacer cette installation d'Apollo par celle de hardline\u00a0?",
-    { assumeYes: options.yes },
-  );
-  if (!confirmed) {
-    ui.finish(
-      "Installation interrompue\u00a0: Apollo étranger conservé, rien n'a été modifié sur le PC.",
-    );
-    process.exitCode = 1;
-    return false;
-  }
-
-  // La sauvegarde precede TOUJOURS la desinstallation : l'inverse perd
-  // definitivement la configuration d'un tiers, et aucun message ne la
-  // rendrait.
-  const backupPath = await backupApolloConfig(CONFIG);
-  if (backupPath !== null) {
-    ui.info(`Configuration de l'Apollo étranger sauvegardée dans ${backupPath}`);
-  }
-  // Le demontage tolere l'absence de ses cibles, mais ce qu'il n'a pas pu
-  // faire ne se perd pas : c'est la seule occasion de le dire a l'operateur.
-  for (const cede of await uninstallApollo(CONFIG)) {
-    ui.warn(cede);
-  }
-
-  try {
-    await applySteps(REMOTE_STEPS, CONFIG, manifestPath, ui);
-    return true;
   } catch (retryError) {
-    ui.failed({ label: "Convergence du PC", detail: errorMessage(retryError) });
-    ui.finish(REPRENDRE);
-    process.exitCode = 1;
-    return false;
+    return failed(fact("convergence-failed", { area: "PC configuration", error: errorMessage(retryError) }));
   }
 }
 
-/**
- * Le verrou est pris pour TOUTE l'execution, et non par phase : install ecrit
- * le manifeste trois fois, et trois verrous successifs laisseraient entre eux
- * exactement les fenetres qu'un verrou existe pour fermer.
- */
-export async function installCommand(options: { yes?: boolean } = {}): Promise<void> {
-  configureOutput();
-  ui.start("hardline — installation");
-
-  const manifestPath = defaultManifestPath();
-  let lock: ManifestLock;
+export async function runInstall(
+  run: CommandRun<InstallFact>,
+  config: Config,
+  options: { yes: boolean; manifestPath?: string },
+): Promise<CommandResult<InstallFact>> {
+  const manifestPath = options.manifestPath ?? defaultManifestPath();
+  let lock;
   try {
     lock = await acquireManifestLock(manifestPath);
   } catch (error) {
-    if (!(error instanceof ManifestLockedError)) throw error;
-    ui.failed({ label: "Manifeste", detail: errorMessage(error) });
-    ui.finish("Installation abandonnée.");
-    process.exitCode = 1;
-    return;
+    if (error instanceof ManifestLockedError) {
+      return failed(fact("locked", { error: errorMessage(error) }));
+    }
+    throw error;
   }
 
   try {
-    await install(manifestPath, { yes: options.yes ?? false });
+    const local = await run.phase(fact("check-mac"), async () => {
+      const checks = await runLocalPreflight(config);
+      reportChecks(run, checks);
+      return checks;
+    });
+    if (hasBlockingFailure(local)) return failed(fact("mac-not-ready"));
+
+    const secret = await getSecret("windows-account");
+    if (secret === null) {
+      const answer = await run.secret(fact("password", { user: config.smb.user }));
+      if (answer.status !== "provided") {
+        return failed(fact("convergence-failed", {
+          area: "Credential acquisition",
+          error: "an interactive terminal is required to enter the Windows password",
+        }));
+      }
+      providePassword(answer.value);
+    }
+
+    try {
+      await run.phase(fact("configure-mac"), () =>
+        converge(run, LOCAL_STEPS, config, manifestPath));
+    } catch (error) {
+      return failed(fact("convergence-failed", { area: "Mac configuration", error: errorMessage(error) }));
+    }
+
+    let remote = await run.phase(fact("check-pc"), async () => {
+      const checks = await runRemotePreflight(config);
+      reportChecks(run, checks);
+      return checks;
+    });
+    const blocking = remote.filter((check) => !check.ok && check.blocking);
+    if (blocking.length === 1 && blocking[0]?.name === SSH_CHECK) {
+      try {
+        const bootstrapped = await run.phase(fact("bootstrap-pc"), () =>
+          bootstrapRemote(run, config));
+        if (!bootstrapped) return failed(fact("pc-timeout"));
+      } catch (error) {
+        return failed(fact("bootstrap-failed", { error: errorMessage(error) }));
+      }
+      remote = await run.phase(fact("check-pc"), async () => {
+        const checks = await runRemotePreflight(config);
+        reportChecks(run, checks);
+        return checks;
+      });
+    }
+
+    const reachable = remote.some((check) => check.name === SSH_CHECK && check.ok);
+    let recoveryRecorded = false;
+    if (reachable) {
+      try {
+        const manifest = await run.phase(fact("record-recovery"), () =>
+          converge(run, CAPTURE_STEPS, config, manifestPath));
+        recoveryRecorded = BOOTSTRAP_STEP_NAME in manifest.steps;
+      } catch (error) {
+        return failed(fact("convergence-failed", { area: "Recovery capture", error: errorMessage(error) }));
+      }
+    }
+
+    if (hasBlockingFailure(remote)) {
+      const recovery = recoveryRecorded
+        ? "The Mac is configured and PC bootstrap recovery is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore both machines."
+        : reachable
+          ? "The Mac's previous state is recorded, but the PC supplied no usable bootstrap recovery state. Bootstrap changes cannot be undone; 'hardline uninstall' can still restore the Mac."
+          : "The Mac's previous state is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore the Mac.";
+      return failed(fact("pc-not-ready", { recovery }));
+    }
+
+    try {
+      await run.phase(fact("configure-pc"), () =>
+        converge(run, REMOTE_STEPS, config, manifestPath));
+      return { status: "succeeded", summary: fact("success") };
+    } catch (error) {
+      if (!(error instanceof ForeignApolloError)) {
+        return failed(fact("convergence-failed", {
+          area: "PC configuration",
+          error: errorMessage(error),
+        }));
+      }
+      const result = await replaceForeignApollo(
+        run,
+        config,
+        manifestPath,
+        options.yes,
+        error,
+      );
+      return result ?? { status: "succeeded", summary: fact("success") };
+    }
   } finally {
-    // Quel que soit le chemin de sortie, echec compris : l'orchestrateur saute
-    // apply() quand smb-credentials est deja conforme, et le mot de passe garde
-    // en memoire de module survivrait alors jusqu'a la fin du processus.
     forgetPassword();
     await lock.release();
   }
 }
 
-async function install(manifestPath: string, options: { yes: boolean }): Promise<void> {
-  // Phase 1 - preconditions locales. Rien n'est encore modifie.
-  const local = await withSpinner("Vérification du Mac", () =>
-    runLocalPreflight(CONFIG),
-  );
-  reportChecks(local);
-
-  if (hasBlockingFailure(local)) {
-    // Un blocage cote Mac n'a rien a faire sur le PC : envoyer l'utilisateur
-    // amorcer une machine pendant dix minutes ne le reglerait pas.
-    ui.finish(
-      "Installation interrompue\u00a0: le Mac n'est pas prêt. Rien n'a été modifié.",
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  // Phase 2 - convergence locale. C'est elle qui cree la route vers le
-  // lien direct : sans elle, aucune precondition distante n'est observable.
-  // Elle passe par applySteps, qui ecrit l'etat anterieur avant de modifier.
-  await ensureWindowsPassword();
-  if (!(await converge(LOCAL_STEPS, "Convergence du Mac", manifestPath))) return;
-
-  // Phase 3 - preconditions distantes, desormais observables.
-  let remote = await withSpinner("Vérification du PC", () =>
-    runRemotePreflight(CONFIG),
-  );
-  reportChecks(remote);
-
-  const blocking = remote.filter((c) => !c.ok && c.blocking);
-  const sshSeulBloque = blocking.length === 1 && blocking[0]?.name === SSH_CHECK;
-
-  if (sshSeulBloque) {
-    let amorce: boolean;
-    try {
-      amorce = await bootstrapRemote();
-    } catch (error) {
-      // Apres la phase 2, aucune sortie ne doit laisser l'utilisateur ignorer
-      // que le Mac a change et qu'on sait le lui rendre.
-      ui.failed({ label: "Amorçage du PC", detail: errorMessage(error) });
-      ui.finish(
-        "Amorçage impossible. Le Mac reste configuré et son état antérieur " +
-          "enregistré\u00a0: «\u00a0hardline uninstall\u00a0» le rend.",
-      );
-      process.exitCode = 1;
-      return;
-    }
-
-    if (!amorce) {
-      ui.finish(
-        "Le PC n'a pas répondu. Relancer «\u00a0hardline install\u00a0» une fois amorcé\u00a0; " +
-          "le Mac reste configuré et son état antérieur enregistré\u00a0: " +
-          "«\u00a0hardline uninstall\u00a0» le rend.",
-      );
-      process.exitCode = 1;
-      return;
-    }
-    remote = await withSpinner("Nouvelle vérification du PC", () =>
-      runRemotePreflight(CONFIG),
-    );
-    reportChecks(remote);
-  }
-
-  // Phase 3bis - rapatriement du relevé d'amorçage, AVANT la porte des
-  // préconditions restantes. Quand cette session s'ouvre, l'amorçage a déjà
-  // modifié le PC ; s'arrêter ici sur un GPU absent laissait un manifeste vide
-  // et un PC dont l'adressage d'origine n'existait plus nulle part. On
-  // enregistre ce qu'on peut perdre dès l'instant où on ne peut plus le perdre.
-  const joignable = remote.some((c) => c.name === SSH_CHECK && c.ok);
-
-  // Joignable ne veut pas dire releve. Un PC amorce par une version anterieure
-  // de hardline n'en porte aucun : l'etape le dit et se declare conforme sans
-  // rien enregistrer, et le message ci-dessous annoncait pourtant un releve qui
-  // n'existe nulle part. Le manifeste rendu par la convergence est la seule
-  // source qui sache la difference : on la lui demande.
-  let releveEnregistre = false;
-  if (joignable) {
-    const manifest = await converge(
-      CAPTURE_STEPS,
-      "Relevé d'amorçage du PC",
-      manifestPath,
-    );
-    if (!manifest) return;
-    releveEnregistre = BOOTSTRAP_STEP_NAME in manifest.steps;
-  }
-
-  if (hasBlockingFailure(remote)) {
-    ui.finish(
-      "Installation interrompue\u00a0: le PC n'est pas prêt. " +
-        (releveEnregistre
-          ? "Le Mac est configuré et le relevé d'amorçage du PC enregistré\u00a0: " +
-            "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
-            "rend les deux machines à leur état d'origine."
-          : joignable
-            ? "Le Mac est configuré et son état antérieur enregistré, mais le PC " +
-              "n'a livré aucun relevé d'amorçage exploitable\u00a0: ce que l'amorçage " +
-              "a modifié ne pourra pas être défait. «\u00a0hardline install\u00a0» " +
-              "reprendra ici, «\u00a0hardline uninstall\u00a0» rend le Mac à son état " +
-              "d'origine."
-            : "Le Mac est configuré et son état antérieur enregistré\u00a0: " +
-              "«\u00a0hardline install\u00a0» reprendra ici, «\u00a0hardline uninstall\u00a0» " +
-              "rend le Mac à son état d'origine."),
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  // Phase 4 - convergence distante.
-  if (!(await convergeRemote(manifestPath, options))) return;
-  ui.finish("Liaison établie. Vérifier avec «\u00a0hardline doctor\u00a0».");
+export function installCommand(options: {
+  config: Config;
+  output: CommandOutput;
+  yes?: boolean;
+  manifestPath?: string;
+}): Promise<CommandResult<InstallFact>> {
+  return runCommand({
+    title: fact("title"),
+    render: renderInstallFact,
+    output: options.output,
+    cancelled: fact("cancelled"),
+    unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
+    execute: (run) => runInstall(run, options.config, {
+      yes: options.yes ?? false,
+      ...(options.manifestPath ? { manifestPath: options.manifestPath } : {}),
+    }),
+  });
 }

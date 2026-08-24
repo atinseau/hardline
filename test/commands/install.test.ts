@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import type { CheckResult } from "../../src/lib/preflight";
 import type { Manifest } from "../../src/lib/manifest";
 import type { Step } from "../../src/steps/types";
+import { CONFIG } from "../../src/config";
+import { exitCodeFor, type CommandOutput } from "../../src/command-run";
 
 // Les fonctions pures de preflight restent les vraies : hasBlockingFailure et
 // SSH_CHECK decident du parcours, les simuler reviendrait a tester la simulation.
@@ -198,28 +200,6 @@ mock.module("../../src/lib/bootstrap-server", () => ({
 /** Le terminal, tel que la commande le voit. Faux = script, tache planifiee. */
 let interactif = true;
 
-mock.module("../../src/lib/ui", () => ({
-  configureOutput: () => {},
-  isInteractive: () => interactif,
-  withSpinner: async <T>(_label: string, run: () => Promise<T>) => run(),
-  askConfirmation,
-  askSecret,
-  ui: {
-    start: () => {},
-    finish: (message: string) => finishes.push(message),
-    skipped: () => {},
-    applied: () => {},
-    restored: () => {},
-    yielded: () => {},
-    detached: () => {},
-    failed: ({ label, detail }: { label: string; detail: string }) =>
-      failures.push(`${label} — ${detail}`),
-    info: (message: string) => infos.push(message),
-    warn: (message: string) => warns.push(message),
-    report: (title: string, lines: string[]) => reports.push([title, ...lines]),
-  },
-}));
-
 // Le manifeste ET son verrou vont dans un repertoire temporaire : une suite de
 // tests n'a rien a ecrire dans ~/.config de la vraie machine.
 const realManifest = await import("../../src/lib/manifest");
@@ -248,7 +228,33 @@ mock.module("node:fs/promises", () => ({
   },
 }));
 
-const { installCommand } = await import("../../src/commands/install");
+const { installCommand: executeInstallCommand } = await import("../../src/commands/install");
+
+const output: CommandOutput = {
+  interactive: true,
+  start: () => {},
+  phaseStart: () => {},
+  phaseActivity: () => {},
+  phaseDetail: (message) => infos.push(message),
+  phaseEnd: () => {},
+  warning: (message) => warns.push(message),
+  report: (title, lines) => reports.push([title, ...lines]),
+  confirm: async (message, destructive) => {
+    if (destructive && !interactif) return "unavailable";
+    return (await askConfirmation(message)) ? "accepted" : "declined";
+  },
+  choice: async (_message, _choices, initialValue) => ({ status: "selected", value: initialValue }),
+  secret: async (message) => ({ status: "provided", value: await askSecret(message) }),
+  finish: (message, status) => {
+    finishes.push(message);
+    if (status === "failed") failures.push(message);
+  },
+};
+
+async function installCommand(options: { yes?: boolean } = {}): Promise<void> {
+  const result = await executeInstallCommand({ config: CONFIG, output, yes: options.yes });
+  process.exitCode = exitCodeFor(result);
+}
 
 const ok = (name: string): CheckResult => ({
   name,
@@ -365,7 +371,7 @@ describe("installCommand", () => {
     expect(serveCalls).toBe(0);
     expect(waitCalls).toBe(0);
     expect(process.exitCode).toBe(1);
-    expect(finishes.join("\n")).toContain("Rien n'a été modifié");
+    expect(finishes.join("\n")).toContain("Nothing was changed");
   });
 
   test("un amorcage reussi rejoue la phase distante au lieu de demander une relance", async () => {
@@ -384,7 +390,7 @@ describe("installCommand", () => {
       "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
       "forgetPassword",
     ]);
-    expect(finishes.join("\n")).toContain("Liaison établie");
+    expect(finishes.join("\n")).toContain("Hardline is installed");
     expect(finishes.join("\n")).not.toContain("Relancer");
     expect(process.exitCode).toBe(0);
   });
@@ -399,7 +405,7 @@ describe("installCommand", () => {
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
-    expect(message).toContain("le Mac reste configuré");
+    expect(message).toContain("Mac's previous state remains recorded");
     expect(message).toContain("hardline uninstall");
   });
 
@@ -437,7 +443,7 @@ describe("installCommand", () => {
       "forgetPassword",
     ]);
     expect(process.exitCode).toBe(1);
-    expect(finishes.join("\n")).toContain("relevé d'amorçage du PC enregistré");
+    expect(finishes.join("\n")).toContain("PC bootstrap recovery is recorded");
   });
 
   test("n'annonce aucun releve quand le PC n'en a livre aucun", async () => {
@@ -452,9 +458,9 @@ describe("installCommand", () => {
     // L'etape a bien tourne : c'est ce qu'elle a enregistre qui differe.
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
     const message = finishes.join("\n");
-    expect(message).not.toContain("relevé d'amorçage du PC enregistré");
-    expect(message).toContain("aucun relevé d'amorçage exploitable");
-    expect(message).toContain("rend le Mac à son état d'origine");
+    expect(message).not.toContain("PC bootstrap recovery is recorded");
+    expect(message).toContain("no usable bootstrap recovery state");
+    expect(message).toContain("restore the Mac");
     expect(process.exitCode).toBe(1);
   });
 
@@ -474,7 +480,7 @@ describe("installCommand", () => {
     remoteRounds = [[ko("ssh"), ko("lien-windows")]];
     await installCommand();
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
-    expect(finishes.join("\n")).toContain("Le Mac est configuré et son état antérieur");
+    expect(finishes.join("\n")).toContain("Mac's previous state is recorded");
   });
 
   test("SSH en echec accompagne d'un autre blocage n'ouvre pas l'amorcage", async () => {
@@ -491,7 +497,7 @@ describe("installCommand", () => {
     expect(trace).toEqual(["preflight-local", "forgetPassword"]);
     expect(appliedGroups).toEqual([]);
     expect(serveCalls).toBe(0);
-    expect(finishes.join("\n")).toContain("Rien n'a été modifié");
+    expect(finishes.join("\n")).toContain("Nothing was changed");
     expect(process.exitCode).toBe(1);
   });
 
@@ -512,7 +518,7 @@ describe("installCommand", () => {
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
     expect(failures.join("\n")).toContain("ssh-keygen -t ed25519");
     const message = finishes.join("\n");
-    expect(message).toContain("Le Mac reste configuré");
+    expect(message).toContain("Mac remains configured");
     expect(message).toContain("hardline uninstall");
     expect(process.exitCode).toBe(1);
   });
@@ -526,7 +532,7 @@ describe("installCommand", () => {
       "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "forgetPassword",
     ]);
-    expect(failures.join("\n")).toContain("Convergence du Mac — boum");
+    expect(failures.join("\n")).toContain("Mac configuration failed");
     expect(process.exitCode).toBe(1);
   });
 
@@ -534,9 +540,9 @@ describe("installCommand", () => {
     applyThrowsOn =
       "network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing";
     await installCommand();
-    expect(failures.join("\n")).toContain("Convergence du PC — boum");
+    expect(failures.join("\n")).toContain("PC configuration failed");
     const message = finishes.join("\n");
-    expect(message).toContain("état antérieur");
+    expect(message).toContain("Previous state");
     expect(message).toContain("hardline uninstall");
     expect(process.exitCode).toBe(1);
   });
@@ -558,8 +564,8 @@ describe("installCommand", () => {
 
     expect(trace).toEqual([]);
     expect(appliedGroups).toEqual([]);
-    expect(failures.join("\n")).toContain("Une autre exécution de hardline est en cours");
-    expect(finishes.join("\n")).toContain("Installation abandonnée");
+    expect(failures.join("\n")).toContain("Another Command Run is active");
+    expect(finishes.join("\n")).toContain("Installation could not start");
     expect(process.exitCode).toBe(1);
   });
 
@@ -605,9 +611,9 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
 
     await installCommand({ yes: false });
 
-    for (const cede of uninstallCedes) {
-      expect(warns).toContain(cede);
-    }
+    expect(warns).toContain(
+      "Apollo cleanup could not complete one item. Inspect the PC before continuing.",
+    );
   });
 
   test("la sauvegarde precede la desinstallation dans le journal d'appels", async () => {
@@ -646,16 +652,14 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
     expect(backupApolloConfig).not.toHaveBeenCalled();
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
     expect(process.exitCode).toBe(1);
-    expect(finishes.join("\n")).toContain("Apollo étranger conservé");
+    expect(finishes.join("\n")).toContain("foreign Apollo installation was preserved");
   });
 
   test("--yes leve la question", async () => {
     applyThrowsForeign = true;
     await installCommand({ yes: true });
 
-    expect(askConfirmation).toHaveBeenCalledTimes(1);
-    const options = askConfirmation.mock.calls[0]?.[1] as { assumeYes: boolean };
-    expect(options.assumeYes).toBe(true);
+    expect(askConfirmation).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(0);
   });
 
@@ -663,7 +667,7 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
     applyThrowsForeign = true;
     applyThrowsOn = REMOTE_GROUP.join("+");
     await installCommand({ yes: true });
-    expect(failures.join("\n")).toContain("Convergence du PC — boum");
+    expect(failures.join("\n")).toContain("PC configuration failed");
     expect(process.exitCode).toBe(1);
   });
 });
@@ -735,13 +739,15 @@ describe("installCommand, le mot de passe en memoire est efface en fin de conver
     // Le seul chemin qui distingue un effacement dans le finally d'un
     // effacement pose apres l'appel : une exception qui traverse install().
     preflightThrows = true;
-    await expect(installCommand()).rejects.toThrow("sonde locale cassée");
+    await installCommand();
+    expect(process.exitCode).toBe(1);
     expect(forgetPassword).toHaveBeenCalledTimes(1);
   });
 
   test("meme quand l'utilisateur annule l'invite du mot de passe", async () => {
     askSecretRejects = true;
-    await expect(installCommand()).rejects.toThrow(/Interrompu/);
+    await installCommand();
+    expect(process.exitCode).toBe(1);
     expect(forgetPassword).toHaveBeenCalledTimes(1);
   });
 
@@ -767,7 +773,7 @@ describe("installCommand, Apollo etranger hors terminal", () => {
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
-    expect(message).toContain("Apollo étranger conservé");
+    expect(message).toContain("foreign Apollo installation was preserved");
     expect(message).toContain("--yes");
   });
 

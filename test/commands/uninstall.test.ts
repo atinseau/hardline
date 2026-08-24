@@ -2,6 +2,8 @@ import { test, expect, describe, afterAll, beforeEach, afterEach, mock } from "b
 import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Manifest } from "../../src/lib/manifest";
+import { CONFIG } from "../../src/config";
+import { exitCodeFor, type CommandOutput, type PromptAnswer } from "../../src/command-run";
 
 const realManifest = await import("../../src/lib/manifest");
 const MANIFEST_PATH = `/tmp/hardline-uninstall-${process.pid}/manifest.json`;
@@ -12,7 +14,10 @@ let unconfirmed: string[] = [];
 const prompts: string[] = [];
 const reports: { title: string; lines: string[] }[] = [];
 const finishes: string[] = [];
+const warnings: string[] = [];
 const trace: string[] = [];
+const destructivePrompts: boolean[] = [];
+let confirmation: PromptAnswer = "accepted";
 /** L'ordre reel entre les encarts affiches et la question posee. */
 const sequence: string[] = [];
 
@@ -42,34 +47,37 @@ mock.module("../../src/lib/orchestrator", () => ({
   },
 }));
 
-mock.module("../../src/lib/ui", () => ({
-  configureOutput: () => {},
-  askConfirmation: async (message: string) => {
-    prompts.push(message);
-    sequence.push("question");
-    return true;
-  },
-  ui: {
-    start: () => {},
-    finish: (message: string) => finishes.push(message),
-    skipped: () => {},
-    applied: () => {},
-    restored: () => {},
-    yielded: () => {},
-    detached: () => {},
-    failed: () => {},
-    info: () => {},
-    warn: () => {},
-    report: (title: string, lines: string[]) => {
-      reports.push({ title, lines });
-      sequence.push(`encart:${title}`);
-    },
-  },
-}));
-
-const { uninstallCommand, scopeLabel, bootstrapCaveats } = await import(
+const { uninstallCommand: executeUninstallCommand, scopeLabel, bootstrapCaveats } = await import(
   "../../src/commands/uninstall"
 );
+
+const output: CommandOutput = {
+  interactive: true,
+  start: () => {},
+  phaseStart: () => {},
+  phaseActivity: () => {},
+  phaseDetail: () => {},
+  phaseEnd: () => {},
+  warning: (message) => warnings.push(message),
+  report: (title, lines) => {
+    reports.push({ title, lines });
+    sequence.push(`encart:${title}`);
+  },
+  confirm: async (message, destructive = false) => {
+    prompts.push(message);
+    destructivePrompts.push(destructive);
+    sequence.push("question");
+    return confirmation;
+  },
+  choice: async (_message, _choices, initialValue) => ({ status: "selected", value: initialValue }),
+  secret: async () => ({ status: "unavailable" }),
+  finish: (message) => finishes.push(message),
+};
+
+async function uninstallCommand(options: { yes?: boolean }): Promise<void> {
+  const result = await executeUninstallCommand({ config: CONFIG, output, yes: options.yes });
+  process.exitCode = exitCodeFor(result);
+}
 
 beforeEach(() => {
   order = [
@@ -83,7 +91,10 @@ beforeEach(() => {
   prompts.length = 0;
   reports.length = 0;
   finishes.length = 0;
+  warnings.length = 0;
   trace.length = 0;
+  destructivePrompts.length = 0;
+  confirmation = "accepted";
   sequence.length = 0;
   process.exitCode = 0;
 });
@@ -98,27 +109,27 @@ afterAll(async () => {
 
 describe("scopeLabel", () => {
   test("nomme le Mac seul apres un arret en phase distante", () => {
-    expect(scopeLabel(["network-mac"])).toBe("du Mac");
+    expect(scopeLabel(["network-mac"])).toBe("on the Mac");
   });
 
   test("nomme le PC seul", () => {
-    expect(scopeLabel(["network-windows"])).toBe("du PC");
+    expect(scopeLabel(["network-windows"])).toBe("on the PC");
   });
 
   test("ne parle des deux machines que si les deux sont enregistrees", () => {
-    expect(scopeLabel(["network-mac", "network-windows"])).toBe("des deux machines");
+    expect(scopeLabel(["network-mac", "network-windows"])).toBe("on both machines");
   });
 
   test("nomme le PC quand seul le releve d'amorcage est enregistre", () => {
     // C'est l'etat laisse par un arret sur une precondition distante apres
     // amorcage : le releve est au manifeste, aucune etape de convergence.
-    expect(scopeLabel(["network-mac", "bootstrap-windows"])).toBe("des deux machines");
-    expect(scopeLabel(["bootstrap-windows"])).toBe("du PC");
+    expect(scopeLabel(["network-mac", "bootstrap-windows"])).toBe("on both machines");
+    expect(scopeLabel(["bootstrap-windows"])).toBe("on the PC");
   });
 
   test("ne pretend rien d'une etape inconnue", () => {
     expect(scopeLabel(["etape-d-une-version-ulterieure"])).toBe(
-      "des machines concernées",
+      "on the affected machines",
     );
   });
 });
@@ -131,13 +142,13 @@ describe("bootstrapCaveats", () => {
   test("dit que la capacite OpenSSH reste installee", () => {
     const lines = (bootstrapCaveats(["bootstrap-windows"]) ?? []).join("\n");
     expect(lines).toContain("OpenSSH Server");
-    expect(lines).toContain("reste installée");
+    expect(lines).toContain("remains installed");
   });
 
   test("dit que le geste manuel d'amorcage sera a refaire", () => {
     const lines = (bootstrapCaveats(["bootstrap-windows"]) ?? []).join("\n");
-    expect(lines).toContain("amorçage");
-    expect(lines).toContain("plus joignable en SSH");
+    expect(lines).toContain("bootstrap again");
+    expect(lines).toContain("network profile are removed");
   });
 
   test("nomme les sauvegardes d'Apollo laissees sur le PC", () => {
@@ -145,7 +156,7 @@ describe("bootstrapCaveats", () => {
     // taisait, et ces fichiers s'accumulent sans que rien ne les retire.
     const lines = (bootstrapCaveats(["bootstrap-windows"]) ?? []).join("\n");
     expect(lines).toContain("C:\\ProgramData\\hardline\\");
-    expect(lines).toContain("sauvegardes de la configuration d'Apollo");
+    expect(lines).toContain("Apollo configuration backups");
   });
 });
 
@@ -156,20 +167,31 @@ describe("uninstallCommand", () => {
     order = ["network-mac"];
     await uninstallCommand({ yes: false });
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain("du Mac");
-    expect(prompts[0]).not.toContain("des deux machines");
+    expect(prompts[0]).toContain("on the Mac");
+    expect(prompts[0]).not.toContain("on both machines");
   });
 
   test("demande les deux machines quand les deux sont enregistrees", async () => {
     await uninstallCommand({ yes: false });
-    expect(prompts[0]).toContain("des deux machines");
+    expect(prompts[0]).toContain("on both machines");
+    expect(destructivePrompts).toEqual([true]);
+  });
+
+  test("refuse la restauration non interactive sans autorisation explicite", async () => {
+    confirmation = "unavailable";
+    await uninstallCommand({ yes: false });
+
+    expect(destructivePrompts).toEqual([true]);
+    expect(trace).toEqual([]);
+    expect(finishes.join("\n")).toBe("Nothing was changed.");
+    expect(process.exitCode).toBe(1);
   });
 
   test("liste les etapes reellement enregistrees", async () => {
     order = ["network-mac"];
     await uninstallCommand({ yes: false });
     expect(reports).toHaveLength(1);
-    expect(reports[0]?.lines).toEqual(["Adresse fixe sur le lien direct (Mac)"]);
+    expect(reports[0]?.lines).toEqual(["Static address on the direct link (Mac)"]);
   });
 
   test("dit ce qui ne sera pas defait AVANT de poser la question", async () => {
@@ -177,8 +199,8 @@ describe("uninstallCommand", () => {
     // proposer : l'utilisateur a deja repondu.
     await uninstallCommand({ yes: false });
     expect(sequence).toEqual([
-      "encart:État antérieur enregistré",
-      "encart:Ce qui ne sera pas défait",
+      "encart:Recorded previous state",
+      "encart:Changes that will remain",
       "question",
     ]);
   });
@@ -186,7 +208,7 @@ describe("uninstallCommand", () => {
   test("n'affiche aucune nuance quand l'amorcage n'est pas enregistre", async () => {
     order = ["network-mac"];
     await uninstallCommand({ yes: false });
-    expect(sequence).toEqual(["encart:État antérieur enregistré", "question"]);
+    expect(sequence).toEqual(["encart:Recorded previous state", "question"]);
   });
 
   test("ne demande rien et ne restaure rien sur un manifeste vide", async () => {
@@ -194,7 +216,7 @@ describe("uninstallCommand", () => {
     await uninstallCommand({ yes: false });
     expect(prompts).toEqual([]);
     expect(trace).toEqual([]);
-    expect(finishes.join("\n")).toContain("rien à restaurer");
+    expect(finishes.join("\n")).toContain("nothing to restore");
     expect(process.exitCode).toBe(0);
   });
 
@@ -216,7 +238,7 @@ describe("uninstallCommand", () => {
     expect(prompts).toEqual([]);
     expect(reports).toEqual([]);
     expect(trace).toEqual([]);
-    expect(finishes.join("\n")).toContain("Désinstallation abandonnée");
+    expect(finishes.join("\n")).toContain("Uninstall could not start");
     expect(process.exitCode).toBe(1);
   });
 
@@ -228,24 +250,24 @@ describe("uninstallCommand", () => {
     await uninstallCommand({ yes: true });
 
     const message = finishes.join("\n");
-    expect(message).not.toContain("État antérieur restauré");
-    expect(message).toContain("Restauration lancée sur le PC");
-    expect(message).toContain("ne peut pas être observée");
+    expect(message).not.toContain("Previous state restored");
+    expect(message).toContain("launched on the PC");
+    expect(message).toContain("cannot be observed");
     // Le signal nomme doit DISTINGUER les deux issues. Une liaison qui ne
     // revient pas ne distingue rien : c'est ce que l'utilisateur vient de
     // demander, et c'est aussi a quoi ressemble un echec.
-    expect(message).toContain("retrouvé son adressage et son profil réseau");
+    expect(message).toContain("original addressing and network profile");
     expect(message).not.toContain("Si la liaison ne revient pas");
     // Rien n'a ete OBSERVE en echec : inventer une panne serait le meme
     // mensonge dans l'autre sens.
-    expect(process.exitCode).toBe(0);
+    expect(process.exitCode).toBe(1);
   });
 
   test("annonce l'etat rendu quand tout a ete observe", async () => {
     // Le controle : sans lui, un message d'incertitude systematique
     // satisferait aussi le test precedent.
     await uninstallCommand({ yes: true });
-    expect(finishes.join("\n")).toBe("État antérieur restauré.");
+    expect(finishes.join("\n")).toBe("Previous state restored.");
     expect(process.exitCode).toBe(0);
   });
 
@@ -253,7 +275,8 @@ describe("uninstallCommand", () => {
     unrestored = ["network-mac"];
     unconfirmed = ["bootstrap-windows"];
     await uninstallCommand({ yes: true });
-    expect(finishes.join("\n")).toContain("Restauration incomplète");
+    expect(finishes.join("\n")).toContain("Restoration failed");
+    expect(warnings.join("\n")).toContain("Unconfirmed PC steps retained");
     expect(process.exitCode).toBe(1);
   });
 
@@ -261,7 +284,7 @@ describe("uninstallCommand", () => {
     unrestored = ["network-windows"];
     await uninstallCommand({ yes: true });
     expect(trace).toEqual(["revert"]);
-    expect(finishes.join("\n")).toContain("Restauration incomplète");
+    expect(finishes.join("\n")).toContain("Restoration failed");
     expect(process.exitCode).toBe(1);
   });
 });

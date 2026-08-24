@@ -112,9 +112,7 @@ export function parseRemoteJson<T>(stdout: string): T[] {
   try {
     return JSON.parse(stdout) as T[];
   } catch {
-    throw new Error(
-      `Sortie distante illisible, JSON attendu\u00a0: ${stdout.slice(0, 200)}`,
-    );
+    throw new Error("The remote command returned invalid structured output.");
   }
 }
 
@@ -136,7 +134,7 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
 
   if (result.exitCode !== 0) {
     throw new RemoteError(
-      `Commande distante en échec (code ${result.exitCode})\u00a0: ${result.stderr || result.stdout}`,
+      `Remote command failed with exit code ${result.exitCode}.`,
       result,
     );
   }
@@ -145,7 +143,7 @@ if ($null -eq $result) { '[]' } else { ConvertTo-Json -InputObject @($result) -D
     return parseRemoteJson(result.stdout);
   } catch (err) {
     throw new RemoteError(
-      err instanceof Error ? err.message : "Erreur de parsing inconnue",
+      err instanceof Error ? err.message : "unknown parsing error",
       result,
     );
   }
@@ -169,7 +167,7 @@ ${script}`;
 
   if (result.exitCode !== 0) {
     throw new RemoteError(
-      `Commande distante en échec (code ${result.exitCode})\u00a0: ${result.stderr || result.stdout}`,
+      `Remote command failed with exit code ${result.exitCode}.`,
       result,
     );
   }

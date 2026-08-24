@@ -214,7 +214,7 @@ async function readHolder(path: string): Promise<LockHolder | null> {
     const bootedAt = candidate["bootedAt"];
     return {
       pid: candidate["pid"],
-      startedAt: String(candidate["startedAt"] ?? "date inconnue"),
+      startedAt: String(candidate["startedAt"] ?? "unknown date"),
       bootedAt: typeof bootedAt === "string" ? bootedAt : null,
     };
   } catch {
@@ -308,14 +308,12 @@ function heldMessage(holder: LockHolder, path: string): string {
   // au dernier demarrage ne peut appartenir a aucun processus vivant, et le
   // dire rend la suppression manifestement sans risque a qui la lit.
   const perime = predatesLastBoot(holder)
-    ? " Ce verrou est antérieur au dernier démarrage de la machine, donc le " +
-      "processus qui porte ce numéro aujourd'hui n'est pas celui qui l'a posé."
+    ? " This lock predates the machine's last boot, so the process using this PID today did not create it."
     : "";
 
   return (
-    `Une autre exécution de hardline est en cours (processus ${holder.pid}, ` +
-    `démarré le ${holder.startedAt})\u00a0: attendre qu'elle se termine.${perime} ` +
-    `Si aucune ne tourne, supprimer ${path}. Rien n'a été modifié.`
+    `Another Command Run is active (process ${holder.pid}, started ${holder.startedAt}). ` +
+    `Wait for it to finish.${perime} If none is running, remove ${path}. Nothing was changed.`
   );
 }
 
@@ -327,16 +325,15 @@ function heldMessage(holder: LockHolder, path: string): string {
  */
 function contendedMessage(path: string): string {
   return (
-    `Une autre exécution de hardline vient de prendre le verrou ${path}\u00a0: ` +
-    `relancer la commande une fois qu'elle sera terminée. Rien n'a été modifié.`
+    `Another Command Run just acquired lock ${path}. ` +
+    `Run the command again after it finishes. Nothing was changed.`
   );
 }
 
 function unreadableMessage(path: string): string {
   return (
-    `Une autre exécution de hardline semble en cours\u00a0: le verrou ${path} ` +
-    `existe mais ne nomme aucun processus. Le supprimer s'il ne correspond à ` +
-    `plus rien. Rien n'a été modifié.`
+    `Another Command Run may be active: lock ${path} exists but names no process. ` +
+    `Remove it if it no longer corresponds to a running process. Nothing was changed.`
   );
 }
 

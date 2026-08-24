@@ -130,7 +130,7 @@ export const windowsProfileTaskStep: Step<ScheduledTaskState> = {
     const current = rows[0];
 
     if (!current) {
-      throw new Error("Le PC n'a renvoyé aucun état de tâche planifiée.");
+      throw new Error("The PC returned no scheduled task state.");
     }
 
     const conforming = current.present && current.state !== "Disabled";
