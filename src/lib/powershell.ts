@@ -1,16 +1,14 @@
 /**
  * Les valeurs qu'on coud dans un script PowerShell, et le controle qui va avec.
  *
- * Le script d'amorcage refusait deja toute valeur contenant une apostrophe :
- * ses marqueurs sont places entre apostrophes cote PowerShell, et une
- * apostrophe casserait la chaine. Le chemin RETOUR — les valeurs du releve,
- * relues sur le PC et recousues dans un script de restauration — n'avait pas
- * cette rigueur. Elle est ici, en un seul endroit, pour les deux sens.
+ * Certains contextes compacts du script d'amorcage refusent encore les
+ * apostrophes avec assertNoApostrophe. Pour les chaines PowerShell ordinaires,
+ * psQuote applique l'echappement natif : une apostrophe devient deux
+ * apostrophes et reste dans le litteral.
  *
- * Rien de tout cela n'est une barriere de securite : le releve n'est
- * modifiable que par un administrateur du PC. C'est une garantie de forme —
- * mieux vaut une erreur nommee qu'une instruction muette qui ne repose jamais
- * l'adresse d'origine.
+ * Cette citation centralisee est aussi une barriere contre les valeurs
+ * decouvertes ou persistees qui fermeraient autrement le litteral et
+ * deviendraient des instructions.
  */
 
 /** Le nom lisible sert au message : une valeur refusee doit se retrouver. */
@@ -22,10 +20,9 @@ export function assertNoApostrophe(value: string, what: string): void {
   }
 }
 
-/** La valeur, entouree d'apostrophes, prete a etre cousue dans un script. */
-export function psQuote(value: string, what: string): string {
-  assertNoApostrophe(value, what);
-  return `'${value}'`;
+/** La valeur, echappee et entouree d'apostrophes, prete pour PowerShell. */
+export function psQuote(value: string, _what: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 /**

@@ -11,6 +11,8 @@ const TARGET: SSHTarget = {
   host: "10.10.10.1",
   user: "arthur",
   identityFile: "/Users/arthur/.ssh/id_ed25519_winpc",
+  knownHostsFile: "/Users/arthur/Library/Application Support/Hardline/known_hosts",
+  hostKeyAlias: "hardline-windows-01",
 };
 
 describe("encodePowerShell", () => {
@@ -88,6 +90,61 @@ describe("preambule pose au point d'entree commun", () => {
 });
 
 describe("buildSSHArgs", () => {
+  test("refuse tout appel sans confiance d'hote epinglee", () => {
+    expect(() =>
+      buildSSHArgs(
+        {
+          host: TARGET.host,
+          user: TARGET.user,
+          identityFile: TARGET.identityFile,
+        },
+        "whoami",
+      ),
+    ).toThrow("pinned Hardline known-hosts");
+  });
+
+  test("verifie strictement l'hote Hardline et impose le lien direct", () => {
+    const args = buildSSHArgs(
+      {
+        ...TARGET,
+        knownHostsFile: "/Users/arthur/Library/Application Support/Hardline/known_hosts",
+        hostKeyAlias: "hardline-windows-01",
+        sourceAddress: "10.10.10.2",
+        bindInterface: "en7",
+      },
+      "whoami",
+    );
+
+    expect(args).toEqual([
+      "ssh",
+      "-i",
+      TARGET.identityFile,
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "IdentityAgent=none",
+      "-o",
+      "StrictHostKeyChecking=yes",
+      "-o",
+      "UserKnownHostsFile=/Users/arthur/Library/Application Support/Hardline/known_hosts",
+      "-o",
+      "GlobalKnownHostsFile=/dev/null",
+      "-o",
+      "HostKeyAlias=hardline-windows-01",
+      "-b",
+      "10.10.10.2",
+      "-o",
+      "BindInterface=en7",
+      "-o",
+      "ConnectTimeout=8",
+      "arthur@10.10.10.1",
+      "whoami",
+    ]);
+    expect(args).not.toContain("StrictHostKeyChecking=accept-new");
+  });
+
   test("construit un tableau d'arguments, jamais une chaine shell", () => {
     const args = buildSSHArgs(TARGET, "powershell -EncodedCommand AAA=");
     expect(Array.isArray(args)).toBe(true);

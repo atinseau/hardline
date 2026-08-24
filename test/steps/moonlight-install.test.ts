@@ -1,13 +1,14 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { MoonlightState } from "../../src/lib/brew";
 
 let currentState: MoonlightState;
 const install = mock(async (..._args: unknown[]) => 0);
 const uninstall = mock(async (..._args: unknown[]) => 0);
+const info = mock(async () => currentState);
 
 mock.module("../../src/lib/brew", () => ({
-  caskInfo: async () => currentState,
+  caskInfo: info,
   installCask: install,
   uninstallCask: uninstall,
 }));
@@ -15,6 +16,8 @@ mock.module("../../src/lib/brew", () => ({
 const { moonlightInstallStep } = await import("../../src/steps/moonlight-install");
 
 beforeEach(() => {
+  currentState = { installed: true, version: CONFIG.moonlight.version };
+  info.mockClear();
   install.mockClear();
   uninstall.mockClear();
 });
@@ -33,13 +36,28 @@ describe("inspect", () => {
     expect(state.conforming).toBe(false);
     expect(state.current).toEqual({ installed: false, version: null });
   });
+
+  test("declare non conforme quand une autre version est installee", async () => {
+    currentState = { installed: true, version: "6.0.1" };
+    const state = await moonlightInstallStep.inspect(CONFIG);
+    expect(state.conforming).toBe(false);
+    expect(state.detail).toContain("6.0.1");
+  });
 });
 
 describe("apply", () => {
   test("installe le cask configure", async () => {
     await moonlightInstallStep.apply(CONFIG);
     expect(install).toHaveBeenCalledTimes(1);
-    expect(install).toHaveBeenCalledWith("moonlight");
+    expect(install).toHaveBeenCalledWith(CONFIG.moonlight);
+    expect(info).toHaveBeenCalledWith("moonlight");
+  });
+
+  test("rejette quand la version installee n'est pas celle du catalogue", async () => {
+    currentState = { installed: true, version: "6.0.1" };
+    await expect(moonlightInstallStep.apply(CONFIG)).rejects.toThrow(
+      /6\.1\.0.*6\.0\.1/,
+    );
   });
 
   test("rejette quand brew refuse l'installation", async () => {

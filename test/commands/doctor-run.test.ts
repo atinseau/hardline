@@ -1,9 +1,17 @@
 import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CheckResult } from "../../src/lib/preflight";
 import type { ThroughputStats } from "../../src/lib/throughput";
 import { REQUIRED_CONF } from "../../src/lib/apollo-conf";
-import { CONFIG } from "../../src/config";
+import { CONFIG, type Config } from "../fixtures/config";
 import { exitCodeFor, type CommandOutput } from "../../src/command-run";
+import type {
+  LifecycleOutcome,
+  ResolvedTarget,
+  TargetIntent,
+  TargetResolution,
+} from "../../src/target-resolution";
 
 const realShell = await import("../../src/lib/shell");
 const realSsh = await import("../../src/lib/ssh");
@@ -78,8 +86,44 @@ mock.module("../../src/lib/ssh", () => ({
     if (!reachable) throw new Error("PC injoignable");
     if (script.includes("Get-ScheduledTask")) return [{ present: true, state: "Ready" }];
     if (script.includes("bootstrap-state.json")) {
-      // Aucun releve : l'etape se declare conforme et ne promet rien.
-      return [{ capture: null, acknowledged: false, unreadable: false }];
+      return [{
+        acknowledged: true,
+        unreadable: false,
+        capture: {
+          version: 1,
+          machineId: "01234567-89AB-CDEF-0123-456789ABCDEF",
+          capturedAt: "2026-08-24T12:00:00.000Z",
+          interfaceAlias: "Ethernet",
+          hardwareId: "11111111-2222-3333-4444-555555555555",
+          address: "10.10.10.1",
+          capability: { name: "OpenSSH.Server~~~~0.0.1.0", state: "Installed", changed: false },
+          sshd: {
+            present: true,
+            startupType: "Automatic",
+            status: "Running",
+            startupChanged: false,
+            statusChanged: false,
+          },
+          firewall: { name: "OpenSSH-Server-In-TCP", existed: true, changed: false },
+          authorizedKeys: {
+            path: "C:\\ProgramData\\ssh\\administrators_authorized_keys",
+            publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest hardline",
+            fileExisted: true,
+            keyPresent: true,
+            aclSddl: null,
+            changed: false,
+            aclChanged: false,
+          },
+          network: {
+            addresses: ["10.10.10.1/30"],
+            manualAddresses: ["10.10.10.1/30"],
+            dhcp: "Disabled",
+            category: "Private",
+            addressingChanged: false,
+            categoryChanged: false,
+          },
+        },
+      }];
     }
     if (script.includes("'sunshine.exe'")) {
       return [
@@ -184,8 +228,27 @@ const output: CommandOutput = {
   finish: (message) => finishes.push(message),
 };
 
+const intents: TargetIntent[] = [];
+const lifecycleOutcomes: string[] = [];
+const targetResolution = {
+  async during<Result>(
+    intent: TargetIntent,
+    callback: (target: ResolvedTarget<Config>) => Promise<LifecycleOutcome<Result>>,
+  ): Promise<LifecycleOutcome<Result>> {
+    intents.push(intent);
+    const outcome = await callback({
+      config: CONFIG,
+      manifestPath: join(tmpdir(), `hardline-doctor-${process.pid}`, "manifest.json"),
+      profile: { lifecycle: "installed" } as ResolvedTarget<Config>["profile"],
+      resolution: "validated",
+    });
+    lifecycleOutcomes.push(outcome.lifecycle);
+    return outcome;
+  },
+} as TargetResolution<Config>;
+
 async function doctorCommand(): Promise<void> {
-  const result = await executeDoctorCommand({ config: CONFIG, output });
+  const result = await executeDoctorCommand({ targetResolution, output });
   process.exitCode = exitCodeFor(result);
 }
 
@@ -216,6 +279,8 @@ beforeEach(() => {
   trace.length = 0;
   reports.length = 0;
   finishes.length = 0;
+  intents.length = 0;
+  lifecycleOutcomes.length = 0;
   localChecks = [ok("service-mac")];
   remoteChecks = [ok("ssh"), ok("gpu")];
   reachable = true;
@@ -229,6 +294,12 @@ afterEach(() => {
 });
 
 describe("doctorCommand", () => {
+  test("passe l'intention doctor et conserve le cycle de vie", async () => {
+    await doctorCommand();
+    expect(intents).toEqual(["doctor"]);
+    expect(lifecycleOutcomes).toEqual(["unchanged"]);
+  });
+
   test("execute les deux phases de preconditions", async () => {
     await doctorCommand();
     expect(trace).toEqual(["preflight-local", "preflight-remote"]);

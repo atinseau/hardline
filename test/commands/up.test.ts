@@ -1,7 +1,15 @@
 import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CONFIG, type Config } from "../fixtures/config";
 import { exitCodeFor, type CommandOutput, type CommandRun } from "../../src/command-run";
 import type { StreamOptions } from "../../src/lib/moonlight";
+import type {
+  LifecycleOutcome,
+  ResolvedTarget,
+  TargetIntent,
+  TargetResolution,
+} from "../../src/target-resolution";
 
 /** Journal d'appels partage : c'est l'ORDRE qui porte les garanties de up. */
 const order: string[] = [];
@@ -175,8 +183,27 @@ const output: CommandOutput = {
   },
 };
 
+const intents: TargetIntent[] = [];
+const lifecycleOutcomes: string[] = [];
+const targetResolution = {
+  async during<Result>(
+    intent: TargetIntent,
+    callback: (target: ResolvedTarget<Config>) => Promise<LifecycleOutcome<Result>>,
+  ): Promise<LifecycleOutcome<Result>> {
+    intents.push(intent);
+    const outcome = await callback({
+      config: CONFIG,
+      manifestPath: join(tmpdir(), `hardline-up-${process.pid}`, "manifest.json"),
+      profile: { lifecycle: "installed" } as ResolvedTarget<Config>["profile"],
+      resolution: "validated",
+    });
+    lifecycleOutcomes.push(outcome.lifecycle);
+    return outcome;
+  },
+} as TargetResolution<Config>;
+
 async function upCommand(cli: Parameters<typeof executeUpCommand>[0]["cli"]): Promise<void> {
-  const result = await executeUpCommand({ config: CONFIG, output, cli });
+  const result = await executeUpCommand({ targetResolution, output, cli });
   if (result.status === "cancelled") throw new MockCancelledError();
   process.exitCode = exitCodeFor(result);
 }
@@ -211,6 +238,8 @@ beforeEach(() => {
   spinnerLabels.length = 0;
   spinnerProgress.length = 0;
   choicePrompts.length = 0;
+  intents.length = 0;
+  lifecycleOutcomes.length = 0;
 
   runRemoteJson.mockClear();
   runRemoteChecked.mockClear();
@@ -356,6 +385,18 @@ describe("runUp, PC deja joignable", () => {
     expect(mountShare).not.toHaveBeenCalled();
   });
 
+  test("ne consulte pas le trousseau et lance le flux sans partage SMB", async () => {
+    windowsPassword = null;
+    await runUp({
+      ...CONFIG,
+      smb: { ...CONFIG.smb, shares: [] },
+    }, NO_OPTIONS);
+
+    expect(getSecret).not.toHaveBeenCalled();
+    expect(mountShare).not.toHaveBeenCalled();
+    expect(runStream).toHaveBeenCalledTimes(1);
+  });
+
   test("demarre le service Apollo s'il n'est pas deja en cours", async () => {
     apolloStatusRounds = ["Stopped", "Running"];
     await runUp(CONFIG, NO_OPTIONS);
@@ -495,6 +536,12 @@ describe("runUp, nettoyage garanti par le finally", () => {
 });
 
 describe("upCommand", () => {
+  test("passe l'intention up et conserve le cycle de vie", async () => {
+    await upCommand({ fullscreen: false });
+    expect(intents).toEqual(["up"]);
+    expect(lifecycleOutcomes).toEqual(["unchanged"]);
+  });
+
   test("propose tous les ecrans et transmet celui qui est choisi", async () => {
     displays = [
       {

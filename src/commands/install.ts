@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type { Config } from "../config";
 import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
 import { runCommand } from "../command-run";
@@ -6,23 +5,14 @@ import { englishCheckName, englishStepLabel } from "../command-run/english";
 import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
 import { BOOTSTRAP_STEP_NAME } from "../steps/bootstrap-name";
 import { applySteps, type OrchestratorFact } from "../lib/orchestrator";
-import {
-  acquireManifestLock,
-  defaultManifestPath,
-  ManifestLockedError,
-  type Manifest,
-} from "../lib/manifest";
+import type { Manifest } from "../lib/manifest";
 import type { CheckResult } from "../lib/preflight";
 import {
   SSH_CHECK,
   hasBlockingFailure,
-  missingPublicKeyMessage,
-  publicKeyPath,
   runLocalPreflight,
   runRemotePreflight,
-  waitForRemote,
 } from "../lib/preflight";
-import { localBootstrapUrl, serveBootstrap } from "../lib/bootstrap-server";
 import { errorMessage } from "../lib/errors";
 import {
   backupApolloConfig,
@@ -32,8 +22,7 @@ import {
 import { getSecret } from "../lib/keychain";
 import { forgetPassword, providePassword } from "../steps/smb-credentials";
 import type { Step } from "../steps/types";
-
-const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
+import type { TargetResolution } from "../target-resolution";
 
 type InstallFact = {
   id:
@@ -41,23 +30,18 @@ type InstallFact = {
     | "check-mac"
     | "configure-mac"
     | "check-pc"
-    | "bootstrap-pc"
     | "record-recovery"
     | "configure-pc"
     | "check"
     | "step"
     | "password"
-    | "bootstrap-instructions"
     | "foreign-apollo"
     | "replace-apollo"
     | "backup"
     | "warning"
     | "success"
     | "cancelled"
-    | "locked"
     | "mac-not-ready"
-    | "bootstrap-failed"
-    | "pc-timeout"
     | "pc-not-ready"
     | "convergence-failed"
     | "foreign-kept"
@@ -77,7 +61,6 @@ export function renderInstallFact(value: InstallFact): string {
     case "check-mac": return "Check Mac";
     case "configure-mac": return "Configure Mac";
     case "check-pc": return "Check PC";
-    case "bootstrap-pc": return "Bootstrap PC";
     case "record-recovery": return "Record Recovery State";
     case "configure-pc": return "Configure PC";
     case "check": return `${englishCheckName(String(v.name))}: ${v.detail}`;
@@ -93,17 +76,13 @@ export function renderInstallFact(value: InstallFact): string {
       return `${englishStepLabel(String(v.step))}: ${verbs[v.kind as keyof typeof verbs]}.`;
     }
     case "password": return `Windows account password for ${v.user}`;
-    case "bootstrap-instructions": return `Run this command in an Administrator PowerShell on the PC:\n\n  irm ${v.url} | iex\n\nInstallation will resume when the PC responds.`;
     case "foreign-apollo": return `Foreign Apollo installation detected (version ${v.version}, ${v.clients} paired client(s)). ${v.backup}`;
     case "replace-apollo": return "Replace this Apollo installation with Hardline's managed installation?";
     case "backup": return `Foreign Apollo configuration backed up at ${v.path}.`;
     case "warning": return "Apollo cleanup could not complete one item. Inspect the PC before continuing.";
     case "success": return "Hardline is installed. Run 'hardline doctor' to verify the link.";
     case "cancelled": return "Installation cancelled. No unauthorized destructive action was taken.";
-    case "locked": return `Installation could not start: ${v.error}`;
     case "mac-not-ready": return "Installation stopped: the Mac is not ready. Nothing was changed.";
-    case "bootstrap-failed": return `PC bootstrap failed: ${v.error}. The Mac remains configured and its previous state is recorded. Run 'hardline uninstall' to restore it.`;
-    case "pc-timeout": return "The PC did not respond. Run 'hardline install' again after bootstrap; the Mac's previous state remains recorded and 'hardline uninstall' restores it.";
     case "pc-not-ready": return `Installation stopped: the PC is not ready. ${v.recovery}`;
     case "convergence-failed": return `${v.area} failed. Previous state for every touched step is recorded. Fix the problem and run 'hardline install' to resume, or 'hardline uninstall' to restore it.`;
     case "foreign-kept": return "Installation stopped: the foreign Apollo installation was preserved. Non-interactive replacement requires explicit 'hardline install --yes' authorization.";
@@ -130,39 +109,6 @@ const reportStep = (run: CommandRun<InstallFact>) => (step: OrchestratorFact): v
   if (step.kind === "failed" || step.kind === "detached") run.warning(value);
   else run.detail(value);
 };
-
-async function readPublicKey(config: Config): Promise<string> {
-  let key = "";
-  try {
-    key = (await readFile(publicKeyPath(config), "utf8")).trim();
-  } catch {}
-  if (!key) throw new Error(missingPublicKeyMessage(config));
-  return key;
-}
-
-async function bootstrapRemote(
-  run: CommandRun<InstallFact>,
-  config: Config,
-): Promise<boolean> {
-  const publicKey = await readPublicKey(config);
-  const server = await serveBootstrap({
-    port: config.bootstrapPort,
-    publicKey,
-    interfaceAlias: config.windows.interfaceAlias,
-    windowsIp: config.windows.ip,
-    prefixLength: config.windows.prefixLength,
-  });
-  try {
-    run.report(
-      fact("bootstrap-pc"),
-      [fact("bootstrap-instructions", { url: localBootstrapUrl(server.port) })],
-    );
-    run.activity(fact("bootstrap-pc"));
-    return await waitForRemote(config, BOOTSTRAP_DEADLINE_MS);
-  } finally {
-    server.stop();
-  }
-}
 
 async function converge(
   run: CommandRun<InstallFact>,
@@ -193,7 +139,11 @@ async function replaceForeignApollo(
   });
   if (answer !== "accepted") return failed(fact("foreign-kept"));
 
-  const backupPath = await backupApolloConfig(config);
+  const backupPath = await backupApolloConfig(config, {
+    version: foreign.state.version,
+    explanation:
+      "This Apollo installation existed before Hardline and is not reinstalled automatically.",
+  });
   if (backupPath) run.detail(fact("backup", { path: backupPath }));
   for (const warning of await uninstallApollo(config)) {
     run.warning(fact("warning", { message: warning }));
@@ -210,18 +160,9 @@ async function replaceForeignApollo(
 export async function runInstall(
   run: CommandRun<InstallFact>,
   config: Config,
-  options: { yes: boolean; manifestPath?: string },
+  options: { yes: boolean; manifestPath: string },
 ): Promise<CommandResult<InstallFact>> {
-  const manifestPath = options.manifestPath ?? defaultManifestPath();
-  let lock;
-  try {
-    lock = await acquireManifestLock(manifestPath);
-  } catch (error) {
-    if (error instanceof ManifestLockedError) {
-      return failed(fact("locked", { error: errorMessage(error) }));
-    }
-    throw error;
-  }
+  const manifestPath = options.manifestPath;
 
   try {
     const local = await run.phase(fact("check-mac"), async () => {
@@ -231,16 +172,18 @@ export async function runInstall(
     });
     if (hasBlockingFailure(local)) return failed(fact("mac-not-ready"));
 
-    const secret = await getSecret("windows-account");
-    if (secret === null) {
-      const answer = await run.secret(fact("password", { user: config.smb.user }));
-      if (answer.status !== "provided") {
-        return failed(fact("convergence-failed", {
-          area: "Credential acquisition",
-          error: "an interactive terminal is required to enter the Windows password",
-        }));
+    if (config.smb.shares.length > 0) {
+      const secret = await getSecret("windows-account");
+      if (secret === null) {
+        const answer = await run.secret(fact("password", { user: config.smb.user }));
+        if (answer.status !== "provided") {
+          return failed(fact("convergence-failed", {
+            area: "Credential acquisition",
+            error: "an interactive terminal is required to enter the Windows password",
+          }));
+        }
+        providePassword(answer.value);
       }
-      providePassword(answer.value);
     }
 
     try {
@@ -250,27 +193,11 @@ export async function runInstall(
       return failed(fact("convergence-failed", { area: "Mac configuration", error: errorMessage(error) }));
     }
 
-    let remote = await run.phase(fact("check-pc"), async () => {
+    const remote = await run.phase(fact("check-pc"), async () => {
       const checks = await runRemotePreflight(config);
       reportChecks(run, checks);
       return checks;
     });
-    const blocking = remote.filter((check) => !check.ok && check.blocking);
-    if (blocking.length === 1 && blocking[0]?.name === SSH_CHECK) {
-      try {
-        const bootstrapped = await run.phase(fact("bootstrap-pc"), () =>
-          bootstrapRemote(run, config));
-        if (!bootstrapped) return failed(fact("pc-timeout"));
-      } catch (error) {
-        return failed(fact("bootstrap-failed", { error: errorMessage(error) }));
-      }
-      remote = await run.phase(fact("check-pc"), async () => {
-        const checks = await runRemotePreflight(config);
-        reportChecks(run, checks);
-        return checks;
-      });
-    }
-
     const reachable = remote.some((check) => check.name === SSH_CHECK && check.ok);
     let recoveryRecorded = false;
     if (reachable) {
@@ -314,15 +241,13 @@ export async function runInstall(
     }
   } finally {
     forgetPassword();
-    await lock.release();
   }
 }
 
 export function installCommand(options: {
-  config: Config;
+  targetResolution: TargetResolution<Config>;
   output: CommandOutput;
   yes?: boolean;
-  manifestPath?: string;
 }): Promise<CommandResult<InstallFact>> {
   return runCommand({
     title: fact("title"),
@@ -330,9 +255,28 @@ export function installCommand(options: {
     output: options.output,
     cancelled: fact("cancelled"),
     unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
-    execute: (run) => runInstall(run, options.config, {
-      yes: options.yes ?? false,
-      ...(options.manifestPath ? { manifestPath: options.manifestPath } : {}),
-    }),
+    execute: async (run) => {
+      const outcome = await options.targetResolution.during("install", async (target) => {
+        const result = await runInstall(run, target.config, {
+          yes: options.yes ?? false,
+          manifestPath: target.manifestPath,
+        });
+        const failedBeforeMutation =
+          result.status === "failed" &&
+          (result.summary.id === "mac-not-ready" ||
+            (result.summary.id === "convergence-failed" &&
+              result.summary.values?.area === "Credential acquisition"));
+        return {
+          lifecycle:
+            result.status === "succeeded"
+              ? "installed"
+              : target.profile.lifecycle === "installed" && failedBeforeMutation
+                ? "unchanged"
+                : "incomplete",
+          result,
+        } as const;
+      });
+      return outcome.result;
+    },
   });
 }

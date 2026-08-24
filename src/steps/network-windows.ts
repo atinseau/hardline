@@ -1,4 +1,5 @@
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
+import { psInteger, psQuote } from "../lib/powershell";
 import type { Config } from "../config";
 import { BOOTSTRAP_STEP_NAME } from "./bootstrap-name";
 import { SSH_LOCAL_ADDRESS, detachTail } from "./detach";
@@ -15,11 +16,13 @@ export type WindowsNetworkState = {
   category: "Public" | "Private" | "DomainAuthenticated" | null;
 };
 
-const INSPECT = (alias: string) => `
-$adapter = Get-NetAdapter -Name '${alias}' -ErrorAction SilentlyContinue
-$addresses = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue
-$interface = Get-NetIPInterface -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue
-$connection = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue
+const INSPECT = (alias: string) => {
+  const aliasQ = psQuote(alias, "alias de l'interface Windows");
+  return `
+$adapter = Get-NetAdapter -Name ${aliasQ} -ErrorAction SilentlyContinue
+$addresses = Get-NetIPAddress -InterfaceAlias ${aliasQ} -AddressFamily IPv4 -ErrorAction SilentlyContinue
+$interface = Get-NetIPInterface -InterfaceAlias ${aliasQ} -AddressFamily IPv4 -ErrorAction SilentlyContinue
+$connection = Get-NetConnectionProfile -InterfaceAlias ${aliasQ} -ErrorAction SilentlyContinue
 [pscustomobject]@{
   adapterPresent  = [bool]$adapter
   adapterStatus   = if ($adapter) { [string]$adapter.Status } else { $null }
@@ -28,6 +31,7 @@ $connection = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction S
   dhcpEnabled     = if ($interface) { [bool]($interface.Dhcp -eq 'Enabled') } else { $false }
   category        = if ($connection) { [string]$connection.NetworkCategory } else { $null }
 }`;
+};
 
 /**
  * L'adresse cible d'abord, le menage ensuite. Tant que New-NetIPAddress n'a
@@ -35,21 +39,26 @@ $connection = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction S
  * qu'il a reussi, l'interface porte deja la configuration cible et une
  * interruption a n'importe quel point suivant laisse le PC joignable.
  */
-const APPLY = (alias: string, ip: string, prefix: number) => `
+const APPLY = (alias: string, ip: string, prefix: number) => {
+  const aliasQ = psQuote(alias, "alias de l'interface Windows");
+  const ipQ = psQuote(ip, "adresse IPv4 cible");
+  const prefixValue = psInteger(prefix, "préfixe IPv4 cible", 32);
+  return `
 ${SSH_LOCAL_ADDRESS}
-$target = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -IPAddress '${ip}' -ErrorAction SilentlyContinue
+$target = Get-NetIPAddress -InterfaceAlias ${aliasQ} -AddressFamily IPv4 -IPAddress ${ipQ} -ErrorAction SilentlyContinue
 if ($target) {
-  if ($target.PrefixLength -ne ${prefix}) {
-    Set-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -PrefixLength ${prefix} | Out-Null
+  if ($target.PrefixLength -ne ${prefixValue}) {
+    Set-NetIPAddress -InterfaceAlias ${aliasQ} -IPAddress ${ipQ} -PrefixLength ${prefixValue} | Out-Null
   }
 } else {
-  New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -PrefixLength ${prefix} | Out-Null
+  New-NetIPAddress -InterfaceAlias ${aliasQ} -IPAddress ${ipQ} -PrefixLength ${prefixValue} | Out-Null
 }
-Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object { $_.IPAddress -ne '${ip}' -and $_.IPAddress -ne $sshLocal } |
+Get-NetIPAddress -InterfaceAlias ${aliasQ} -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Where-Object { $_.IPAddress -ne ${ipQ} -and $_.IPAddress -ne $sshLocal } |
   Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Disabled -ErrorAction SilentlyContinue
-Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory Private`;
+Set-NetIPInterface -InterfaceAlias ${aliasQ} -Dhcp Disabled -ErrorAction SilentlyContinue
+Set-NetConnectionProfile -InterfaceAlias ${aliasQ} -NetworkCategory Private`;
+};
 
 /**
  * Windows accepte le client DHCP et des adresses fixes en meme temps : rendre
@@ -71,23 +80,26 @@ function restoreAddressing(
   previous: WindowsNetworkState,
 ): string[] {
   const lines: string[] = [];
+  const aliasQ = psQuote(alias, "alias de l'interface Windows");
 
   for (const entry of previous.manualAddresses) {
     const [address, prefix] = entry.split("/");
+    const addressQ = psQuote(address ?? "", "adresse IPv4 restaurée");
+    const prefixValue = psInteger(prefix, "préfixe IPv4 restauré", 32);
     lines.push(
-      `$prev = Get-NetIPAddress -InterfaceAlias '${alias}' -AddressFamily IPv4 -IPAddress '${address}' -ErrorAction SilentlyContinue`,
+      `$prev = Get-NetIPAddress -InterfaceAlias ${aliasQ} -AddressFamily IPv4 -IPAddress ${addressQ} -ErrorAction SilentlyContinue`,
       `if ($prev) {`,
-      `  if ($prev.PrefixLength -ne ${prefix}) {`,
-      `    Set-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null`,
+      `  if ($prev.PrefixLength -ne ${prefixValue}) {`,
+      `    Set-NetIPAddress -InterfaceAlias ${aliasQ} -IPAddress ${addressQ} -PrefixLength ${prefixValue} | Out-Null`,
       `  }`,
       `} else {`,
-      `  New-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${address}' -PrefixLength ${prefix} | Out-Null`,
+      `  New-NetIPAddress -InterfaceAlias ${aliasQ} -IPAddress ${addressQ} -PrefixLength ${prefixValue} | Out-Null`,
       `}`,
     );
   }
 
   if (previous.dhcpEnabled) {
-    lines.push(`Set-NetIPInterface -InterfaceAlias '${alias}' -Dhcp Enabled`);
+    lines.push(`Set-NetIPInterface -InterfaceAlias ${aliasQ} -Dhcp Enabled`);
   }
 
   return lines;
@@ -142,7 +154,7 @@ function setProfileStatement(
   category: WindowsNetworkState["category"],
 ): string | null {
   if (!category || !ASSIGNABLE_CATEGORIES.has(category)) return null;
-  return `Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory ${category} -ErrorAction SilentlyContinue`;
+  return `Set-NetConnectionProfile -InterfaceAlias ${psQuote(alias, "alias de l'interface Windows")} -NetworkCategory ${psQuote(category, "catégorie réseau restaurée")} -ErrorAction SilentlyContinue`;
 }
 
 /**
@@ -158,7 +170,7 @@ export const DETACHED_MARK = "hardline:queue-detachee";
 export const INLINE_MARK = "hardline:queue-en-ligne";
 
 const removeStatement = (alias: string, ip: string): string =>
-  `Remove-NetIPAddress -InterfaceAlias '${alias}' -IPAddress '${ip}' -Confirm:$false -ErrorAction SilentlyContinue`;
+  `Remove-NetIPAddress -InterfaceAlias ${psQuote(alias, "alias de l'interface Windows")} -IPAddress ${psQuote(ip, "adresse IPv4 cible")} -Confirm:$false -ErrorAction SilentlyContinue`;
 
 /**
  * Tout ce qui peut couper le canal part ensemble, en dernier.
@@ -185,6 +197,7 @@ const RESTORE = (
   previous: WindowsNetworkState,
 ): { script: string; marked: boolean } => {
   const lines = restoreAddressing(alias, previous);
+  const ipQ = psQuote(ip, "adresse IPv4 cible");
 
   const tail: string[] = [];
 
@@ -201,7 +214,7 @@ const RESTORE = (
   if (tail.length > 0) {
     lines.push(
       SSH_LOCAL_ADDRESS,
-      `if ($sshLocal -eq '${ip}') {`,
+      `if ($sshLocal -eq ${ipQ}) {`,
       `  ${detachTail(tail)}`,
       `  Write-Output '${DETACHED_MARK}'`,
       `} else {`,

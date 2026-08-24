@@ -137,18 +137,41 @@ New-Item -ItemType File -Path (Join-Path ${installDirQ} '${MARKER_FILE}') -Force
  * va supprimer tout le dossier. Rend le chemin de la sauvegarde, ou null
  * quand il n'y avait rien a sauvegarder.
  */
-export async function backupApolloConfig(config: Config): Promise<string | null> {
+export type ApolloRescueMetadata = {
+  readonly version: string | null;
+  readonly explanation: string;
+};
+
+export async function backupApolloConfig(
+  config: Config,
+  metadata: ApolloRescueMetadata = {
+    version: config.apollo.version,
+    explanation:
+      "This backup describes the Apollo installation removed by Hardline. Hardline does not reinstall it automatically.",
+  },
+): Promise<string | null> {
   const installDirQ = psQuote(config.apollo.installDir, "répertoire d'installation");
+  const versionLineQ = psQuote(
+    `Detected version: ${metadata.version ?? "unknown"}`,
+    "version Apollo relevée",
+  );
+  const explanationQ = psQuote(metadata.explanation, "explication de la sauvegarde Apollo");
   const script = `
 $confPath = ${CONFIG_PATH_EXPR(installDirQ)}
-$backupPath = $null
+$dir = Join-Path $env:ProgramData 'hardline'
+if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+$stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+$backupPath = Join-Path $dir "apollo-rescue-$stamp"
+New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
 if (Test-Path $confPath) {
-  $dir = Join-Path $env:ProgramData 'hardline'
-  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-  $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-  $backupPath = Join-Path $dir "apollo-backup-$stamp.conf"
-  Copy-Item -Path $confPath -Destination $backupPath -Force
+  Copy-Item -Path $confPath -Destination (Join-Path $backupPath 'sunshine.conf') -Force
 }
+$readme = @(
+  'Apollo Rescue Backup'
+  ${versionLineQ}
+  ${explanationQ}
+)
+Set-Content -Path (Join-Path $backupPath 'README.txt') -Value $readme -Encoding UTF8
 [pscustomobject]@{ backupPath = $backupPath }`;
   const rows = await runRemoteJson<{ backupPath: string | null }>(config.ssh, script);
   return rows[0]?.backupPath ?? null;
@@ -433,8 +456,6 @@ export const apolloInstallStep: Step<ApolloInstallState> = {
    * retire comme le reste.
    */
   async restore(config: Config, previous: ApolloInstallState, _context: RestoreContext) {
-    await backupApolloConfig(config);
-
     // Ce que le PC n'a pas pu faire est NOMME, jamais tu : une installation a
     // demi demontee se nettoie jusqu'au bout, et ce qui manquait pour la
     // nettoyer entierement se dit a l'ecran. Meme usage que pairing.restore().

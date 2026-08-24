@@ -3,7 +3,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 /** Aucune etape ne suit : cette restauration est la derniere a passer. */
 const NO_PENDING = { pending: [] as string[] };
 import type { ServiceIPConfig } from "../../src/lib/shell";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let currentInfo: ServiceIPConfig;
 const setManual = mock(async (..._args: unknown[]) => 0);

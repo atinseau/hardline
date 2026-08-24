@@ -1,5 +1,5 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let jsonQueue: unknown[][] = [];
 const runRemoteJson = mock(async () => {

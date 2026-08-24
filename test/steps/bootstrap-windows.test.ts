@@ -2,7 +2,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 
 /** Aucune etape ne suit : cette restauration est la derniere a passer. */
 const NO_PENDING = { pending: [] as string[] };
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type {
   BootstrapCapture,
   BootstrapState,
@@ -39,8 +39,11 @@ const SDDL = "O:BAG:SYD:P(A;;FA;;;BA)(A;;FA;;;SY)";
  */
 const CAPTURE: BootstrapCapture = {
   version: 1,
+  machineId: "WINDOWS-PRODUCT-UUID",
   capturedAt: "2026-08-22T09:00:00",
   interfaceAlias: "Ethernet",
+  hardwareId: "{ADAPTER-GUID}",
+  address: "10.10.10.1",
   capability: { name: "OpenSSH.Server~~~~0.0.1.0", state: "NotPresent", changed: true },
   sshd: {
     present: false,
@@ -129,24 +132,15 @@ describe("inspect", () => {
     expect(state.current.capture).toEqual(CAPTURE);
   });
 
-  test("ne bloque pas l'installation quand le PC n'a aucun releve", async () => {
-    // Un PC amorce par une version anterieure de hardline. Bloquer ici
-    // interdirait toute installation sur une machine deja amorcee.
+  test("bloque l'installation quand le PC n'a aucun releve durable", async () => {
     remoteState = [{ capture: null, acknowledged: false }];
-    const state = await bootstrapWindowsStep.inspect(CONFIG);
-    expect(state.conforming).toBe(true);
-  });
-
-  test("dit franchement qu'il n'y a rien a defaire, au lieu d'inventer", async () => {
-    remoteState = [{ capture: null, acknowledged: false }];
-    const state = await bootstrapWindowsStep.inspect(CONFIG);
-    expect(state.current.capture).toBeNull();
-    expect(state.detail).toContain("aucun relevé");
-    expect(state.detail).toContain("ne pourra pas être défait");
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /aucun relevé.*Ne pas continuer.*amorçage/i,
+    );
   });
 
   test("lit le releve la ou l'amorcage l'ecrit, sans rien modifier", async () => {
-    remoteState = [{ capture: null, acknowledged: false }];
+    remoteState = [{ capture: CAPTURE, acknowledged: false }];
     await bootstrapWindowsStep.inspect(CONFIG);
 
     expect(inspectScript).toContain(
@@ -160,19 +154,18 @@ describe("inspect", () => {
     expect(inspectScript).not.toContain("Remove-Item");
   });
 
-  test("degrade comme un releve absent quand le PC dit ne pas savoir le lire", async () => {
+  test("bloque l'installation quand le PC dit ne pas savoir lire le releve", async () => {
     // Le PC met un try/catch autour de ConvertFrom-Json : sans lui, sous
     // $ErrorActionPreference = 'Stop', un octet abime faisait sortir powershell
     // en 1 et arretait TOUTE la convergence distante des la premiere etape.
     remoteState = [{ capture: null, acknowledged: false, unreadable: true }];
-    const state = await bootstrapWindowsStep.inspect(CONFIG);
-    expect(state.conforming).toBe(true);
-    expect(state.current.capture).toBeNull();
-    expect(state.detail).toContain("illisible");
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /illisible.*Ne pas continuer.*amorçage/i,
+    );
   });
 
   test("le script distant n'abandonne pas sur un JSON invalide", async () => {
-    remoteState = [{ capture: null, acknowledged: false }];
+    remoteState = [{ capture: CAPTURE, acknowledged: false }];
     await bootstrapWindowsStep.inspect(CONFIG);
     expect(inspectScript).toContain("try {");
     expect(inspectScript).toContain("catch {");
@@ -185,19 +178,17 @@ describe("inspect", () => {
     // Le manifeste du projet refuse deja franchement tout ce qui n'est pas
     // version 1 ; consommer un releve v2 dereferencerait des champs absents.
     remoteState = [{ capture: { ...CAPTURE, version: 2 }, acknowledged: false }];
-    const state = await bootstrapWindowsStep.inspect(CONFIG);
-    expect(state.conforming).toBe(true);
-    expect(state.current.capture).toBeNull();
-    expect(state.detail).toContain("version inconnue");
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /version.*pas prise en charge.*Ne pas continuer/i,
+    );
   });
 
   test("refuse un releve ampute d'une de ses sections", async () => {
     const { network: _absent, ...ampute } = CAPTURE;
     remoteState = [{ capture: ampute, acknowledged: false }];
-    const state = await bootstrapWindowsStep.inspect(CONFIG);
-    expect(state.conforming).toBe(true);
-    expect(state.current.capture).toBeNull();
-    expect(state.detail).toContain("illisible");
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /sémantiquement inutilisable.*Ne pas continuer/i,
+    );
   });
 
   test("refuse un releve dont les adresses ne sont pas des listes", async () => {
@@ -207,14 +198,39 @@ describe("inspect", () => {
         acknowledged: false,
       },
     ];
-    expect((await bootstrapWindowsStep.inspect(CONFIG)).current.capture).toBeNull();
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /sémantiquement inutilisable/i,
+    );
   });
 
-  test("un releve scalaire n'est pas pris pour un releve", async () => {
+  test("bloque un releve dont une adresse ne peut pas etre restauree", async () => {
+    remoteState = [
+      {
+        capture: {
+          ...CAPTURE,
+          network: { ...CAPTURE.network, manualAddresses: ["192.168.1.50"] },
+        },
+        acknowledged: false,
+      },
+    ];
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /sémantiquement inutilisable/i,
+    );
+  });
+
+  test("un releve scalaire bloque l'installation", async () => {
     remoteState = [{ capture: "n'importe quoi", acknowledged: false }];
-    const state = await bootstrapWindowsStep.inspect(CONFIG);
-    expect(state.current.capture).toBeNull();
-    expect(state.detail).not.toContain("undefined");
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /sémantiquement inutilisable/i,
+    );
+  });
+
+  test("bloque un releve sans identite materielle stable", async () => {
+    const { hardwareId: _absent, ...withoutHardwareId } = CAPTURE;
+    remoteState = [{ capture: withoutHardwareId, acknowledged: false }];
+    await expect(bootstrapWindowsStep.inspect(CONFIG)).rejects.toThrow(
+      /sémantiquement inutilisable/i,
+    );
   });
 
   test("echoue explicitement si le PC ne repond rien", async () => {
@@ -538,15 +554,15 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     expect(script).not.toContain("WindowsOptionalFeature");
   });
 
-  test("ne supprime pas le releve, seulement son accuse de reception", async () => {
-    // La queue est detachee : son echec n'est pas observable depuis le Mac,
-    // qui aura pourtant deja oublie l'entree du manifeste. Le releve reste
-    // alors la seule trace de l'etat d'avant amorcage.
+  test("la queue finale supprime son releve apres avoir lance la restauration", async () => {
     const script = await restoreWith({});
-    expect(script).toContain(
+    const acknowledgement = script.indexOf(
       "Remove-Item -Path (Join-Path (Join-Path $env:ProgramData 'hardline') 'bootstrap-state.acknowledged')",
     );
-    expect(script).not.toContain("bootstrap-state.json");
+    const state = script.indexOf("bootstrap-state.json");
+    expect(acknowledgement).toBeGreaterThanOrEqual(0);
+    expect(state).toBeGreaterThan(acknowledgement);
+    expect(script).toContain("Get-ChildItem -Path `$hardlineState");
   });
 
   test("repose l'adressage sur l'interface que le releve decrit", async () => {
@@ -604,15 +620,14 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     expect(runRemoteChecked).not.toHaveBeenCalled();
   });
 
-  test("refuse une valeur du releve qui casserait le script", async () => {
-    await expect(
-      bootstrapWindowsStep.restore(
-        CONFIG,
-        { capture: capture({ interfaceAlias: "Réseau d'Arthur" }), acknowledged: true },
-        NO_PENDING,
-      ),
-    ).rejects.toThrow(/apostrophe/);
-    expect(runRemoteChecked).not.toHaveBeenCalled();
+  test("garde l'apostrophe d'une valeur du releve dans son litteral", async () => {
+    await bootstrapWindowsStep.restore(
+      CONFIG,
+      { capture: capture({ interfaceAlias: "Réseau d'Arthur" }), acknowledged: true },
+      NO_PENDING,
+    );
+    expect(scriptOf(0)).toContain("'Réseau d''Arthur'");
+    expect(scriptOf(0)).not.toContain("'Réseau d'Arthur'");
   });
 
   test("refuse un type de demarrage hors de l'ensemble connu", async () => {
@@ -702,7 +717,7 @@ describe("restore, ordre des operations", () => {
     expect(script).not.toContain("Get-NetTCPConnection");
   });
 
-  test("n'emet aucune queue quand l'amorcage n'a rien change", async () => {
+  test("emet seulement la queue de nettoyage quand l'amorcage n'a rien change", async () => {
     // Un PC qui avait deja tout : OpenSSH installe et lance, la regle, la cle,
     // l'adresse et le profil. Le releve ne revendique rien, il n'y a rien a
     // defaire, et lancer un processus detache pour ne rien faire serait
@@ -731,7 +746,8 @@ describe("restore, ordre des operations", () => {
       },
     });
 
-    expect(script).not.toContain("Start-Process");
+    expect(script).toContain("Start-Process");
+    expect(script).toContain("bootstrap-state.json");
     // L'accuse de reception part quand meme : une installation ulterieure doit
     // retrouver un releve non acquitte, donc non conforme, donc reenregistre.
     expect(script).toContain("bootstrap-state.acknowledged");
@@ -751,9 +767,7 @@ describe("restore, ordre des operations", () => {
     });
   });
 
-  test("se declare restauree quand il n'y a aucune queue a lancer", async () => {
-    // Le controle : sans queue, tout ce que fait l'etape tient dans la session
-    // et son code de retour est verifie. C'est observe, donc c'est restaure.
+  test("se declare lancee meme quand la queue ne fait que nettoyer son releve", async () => {
     const outcome = await bootstrapWindowsStep.restore(
       CONFIG,
       {
@@ -784,7 +798,10 @@ describe("restore, ordre des operations", () => {
       },
       NO_PENDING,
     );
-    expect(outcome).toBeUndefined();
+    expect(outcome).toEqual({
+      detached:
+        "adressage, pare-feu, clé et sshd confiés à un processus détaché sur le PC",
+    });
   });
 
   test("l'accuse de reception part avant la queue", async () => {

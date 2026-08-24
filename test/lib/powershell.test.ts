@@ -32,8 +32,8 @@ describe("psQuote", () => {
     expect(psQuote("Ethernet", "alias")).toBe("'Ethernet'");
   });
 
-  test("refuse ce qui casserait la chaine", () => {
-    expect(() => psQuote("a'b", "alias")).toThrow(/apostrophe/);
+  test("double une apostrophe pour qu'elle reste dans la chaine", () => {
+    expect(psQuote("a'b", "alias")).toBe("'a''b'");
   });
 });
 

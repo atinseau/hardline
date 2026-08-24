@@ -1,4 +1,5 @@
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
+import { psQuote } from "../lib/powershell";
 import type { Config } from "../config";
 import type { Step } from "./types";
 
@@ -47,18 +48,19 @@ $task = Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue
 const SCHEDULED_SCRIPT = (alias: string) =>
   [
     "$ErrorActionPreference = 'Stop'",
+    `$alias = ${psQuote(alias, "alias de l'interface Windows")}`,
     "$deadline = (Get-Date).AddMinutes(3)",
     "$applied = $false",
     "$last = $null",
     "while ((Get-Date) -lt $deadline) {",
     "  try {",
-    `    $p = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue`,
+    "    $p = Get-NetConnectionProfile -InterfaceAlias $alias -ErrorAction SilentlyContinue",
     "    if ($p) {",
     "      $last = [string]$p.NetworkCategory",
     "      if ($p.NetworkCategory -ne 'Private') {",
-    `        Set-NetConnectionProfile -InterfaceAlias '${alias}' -NetworkCategory Private`,
+    "        Set-NetConnectionProfile -InterfaceAlias $alias -NetworkCategory Private",
     "      }",
-    `      $check = Get-NetConnectionProfile -InterfaceAlias '${alias}' -ErrorAction SilentlyContinue`,
+    "      $check = Get-NetConnectionProfile -InterfaceAlias $alias -ErrorAction SilentlyContinue",
     "      if ($check) { $last = [string]$check.NetworkCategory }",
     "      if ($last -eq 'Private') {",
     "        $applied = $true",
@@ -74,16 +76,13 @@ const SCHEDULED_SCRIPT = (alias: string) =>
     "  try {",
     `    $dir = ${LOG_DIR}`,
     "    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }",
-    `    "$((Get-Date).ToString('s')) profil privé non appliqué sur '${alias}' (état constaté\u00a0: $last)" | Add-Content -Path (Join-Path $dir '${LOG_NAME}') -Encoding UTF8`,
+    `    "$((Get-Date).ToString('s')) profil privé non appliqué sur '$alias' (état constaté\u00a0: $last)" | Add-Content -Path (Join-Path $dir '${LOG_NAME}') -Encoding UTF8`,
     "  } catch { }",
     "}",
   ].join("\n");
 
 const APPLY = (alias: string) => `
-$inner = @'
-${SCHEDULED_SCRIPT(alias)}
-'@
-$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+$encoded = ${psQuote(Buffer.from(SCHEDULED_SCRIPT(alias), "utf16le").toString("base64"), "script planifié encodé")}
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' \`
   -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
 $trigger = New-ScheduledTaskTrigger -AtStartup

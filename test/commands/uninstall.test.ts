@@ -1,12 +1,20 @@
 import { test, expect, describe, afterAll, beforeEach, afterEach, mock } from "bun:test";
 import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Manifest } from "../../src/lib/manifest";
-import { CONFIG } from "../../src/config";
+import { CONFIG, type Config } from "../fixtures/config";
 import { exitCodeFor, type CommandOutput, type PromptAnswer } from "../../src/command-run";
+import type {
+  LifecycleOutcome,
+  ResolvedTarget,
+  TargetIntent,
+  TargetResolution,
+} from "../../src/target-resolution";
+import { TargetResolutionRefusedError } from "../../src/target-resolution";
 
 const realManifest = await import("../../src/lib/manifest");
-const MANIFEST_PATH = `/tmp/hardline-uninstall-${process.pid}/manifest.json`;
+const MANIFEST_PATH = join(tmpdir(), `hardline-uninstall-${process.pid}`, "manifest.json");
 
 let order: string[] = [];
 let unrestored: string[] = [];
@@ -36,14 +44,23 @@ function manifestOf(names: string[]): Manifest {
 
 mock.module("../../src/lib/manifest", () => ({
   ...realManifest,
-  defaultManifestPath: () => MANIFEST_PATH,
   readManifest: async () => manifestOf(order),
 }));
 
 mock.module("../../src/lib/orchestrator", () => ({
-  revertSteps: async () => {
+  revertSteps: async (
+    steps: { name: string }[],
+    _config: Config,
+    _manifestPath: string,
+    _reporter: unknown,
+    options: { selectedSteps?: readonly string[] } = {},
+  ) => {
     trace.push("revert");
-    return { unrestored, unconfirmed };
+    const names = new Set(options.selectedSteps ?? steps.map((step) => step.name));
+    return {
+      unrestored: unrestored.filter((step) => names.has(step)),
+      unconfirmed: unconfirmed.filter((step) => names.has(step)),
+    };
   },
 }));
 
@@ -74,8 +91,39 @@ const output: CommandOutput = {
   finish: (message) => finishes.push(message),
 };
 
+const intents: TargetIntent[] = [];
+const lifecycleOutcomes: string[] = [];
+
+function targetResolution(): TargetResolution<Config> {
+  return {
+    async during<Result>(
+      intent: TargetIntent,
+      callback: (target: ResolvedTarget<Config>) => Promise<LifecycleOutcome<Result>>,
+    ): Promise<LifecycleOutcome<Result>> {
+      intents.push(intent);
+      const lock = await realManifest.acquireManifestLock(MANIFEST_PATH);
+      try {
+        const outcome = await callback({
+          config: CONFIG,
+          manifestPath: MANIFEST_PATH,
+          profile: { lifecycle: "installed" } as ResolvedTarget<Config>["profile"],
+          resolution: "validated",
+        });
+        lifecycleOutcomes.push(outcome.lifecycle);
+        return outcome;
+      } finally {
+        await lock.release();
+      }
+    },
+  } as TargetResolution<Config>;
+}
+
 async function uninstallCommand(options: { yes?: boolean }): Promise<void> {
-  const result = await executeUninstallCommand({ config: CONFIG, output, yes: options.yes });
+  const result = await executeUninstallCommand({
+    targetResolution: targetResolution(),
+    output,
+    yes: options.yes,
+  });
   process.exitCode = exitCodeFor(result);
 }
 
@@ -96,6 +144,8 @@ beforeEach(() => {
   destructivePrompts.length = 0;
   confirmation = "accepted";
   sequence.length = 0;
+  intents.length = 0;
+  lifecycleOutcomes.length = 0;
   process.exitCode = 0;
 });
 
@@ -161,6 +211,25 @@ describe("bootstrapCaveats", () => {
 });
 
 describe("uninstallCommand", () => {
+  test("traite explicitement l'absence de Target Profile comme deja desinstalle", async () => {
+    const absent = {
+      async during(): Promise<never> {
+        throw new TargetResolutionRefusedError("profile-absent", "No Target Profile exists.");
+      },
+    } as unknown as TargetResolution<Config>;
+
+    const result = await executeUninstallCommand({ targetResolution: absent, output, yes: true });
+
+    expect(result.status).toBe("succeeded");
+    expect(finishes.join("\n")).toContain("nothing to restore");
+  });
+
+  test("passe l'intention uninstall et publie ready-to-retire au succes", async () => {
+    await uninstallCommand({ yes: true });
+    expect(intents).toEqual(["uninstall"]);
+    expect(lifecycleOutcomes).toEqual(["ready-to-retire"]);
+  });
+
   test("ne demande que le Mac quand le manifeste ne contient que lui", async () => {
     // C'est l'etat laisse par un arret en phase 3 : promettre la restauration
     // des deux machines serait promettre ce qui n'aura pas lieu.
@@ -238,11 +307,11 @@ describe("uninstallCommand", () => {
     expect(prompts).toEqual([]);
     expect(reports).toEqual([]);
     expect(trace).toEqual([]);
-    expect(finishes.join("\n")).toContain("Uninstall could not start");
+    expect(finishes.join("\n")).toContain("Uninstall failed safely");
     expect(process.exitCode).toBe(1);
   });
 
-  test("n'annonce pas une restauration que le Mac n'a pas pu observer", async () => {
+  test("annonce le lancement terminal sans pretendre en observer l'achevement", async () => {
     // Le seul endroit du programme ou il serait tentant d'affirmer ce qu'on ne
     // peut pas savoir : la derniere queue part dans un processus detache qui
     // retire l'adresse portant la session SSH. Le Mac ne reverra jamais ce PC.
@@ -251,16 +320,9 @@ describe("uninstallCommand", () => {
 
     const message = finishes.join("\n");
     expect(message).not.toContain("Previous state restored");
-    expect(message).toContain("launched on the PC");
-    expect(message).toContain("cannot be observed");
-    // Le signal nomme doit DISTINGUER les deux issues. Une liaison qui ne
-    // revient pas ne distingue rien : c'est ce que l'utilisateur vient de
-    // demander, et c'est aussi a quoi ressemble un echec.
-    expect(message).toContain("original addressing and network profile");
-    expect(message).not.toContain("Si la liaison ne revient pas");
-    // Rien n'a ete OBSERVE en echec : inventer une panne serait le meme
-    // mensonge dans l'autre sens.
-    expect(process.exitCode).toBe(1);
+    expect(message).toContain("Final Windows cleanup was launched");
+    expect(message).toContain("intentionally unobservable");
+    expect(process.exitCode).toBe(0);
   });
 
   test("annonce l'etat rendu quand tout a ete observe", async () => {
@@ -276,7 +338,8 @@ describe("uninstallCommand", () => {
     unconfirmed = ["bootstrap-windows"];
     await uninstallCommand({ yes: true });
     expect(finishes.join("\n")).toContain("Restoration failed");
-    expect(warnings.join("\n")).toContain("Unconfirmed PC steps retained");
+    expect(warnings.join("\n")).toContain("launched without observable completion");
+    expect(lifecycleOutcomes).toEqual(["terminal-incomplete"]);
     expect(process.exitCode).toBe(1);
   });
 

@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { SSHTarget } from "./lib/ssh";
 
 export type ApolloConfig = {
@@ -20,8 +18,16 @@ export type ApolloConfig = {
 };
 
 export type MoonlightConfig = {
+  /** Version exacte exigee pour declarer l'installation conforme. */
+  version: string;
   /** Nom du cask Homebrew. */
   cask: string;
+  /** Recette Homebrew immuable, epinglee a un commit du depot de casks. */
+  recipeUrl: string;
+  /** Empreinte SHA-256 de la recette, verifiee avant d'invoquer Homebrew. */
+  recipeSha256: string;
+  /** Empreinte SHA-256 de l'artefact, imposee par la recette authentifiee. */
+  artifactSha256: string;
   /** Chemin du binaire en ligne de commande, pose par le cask. */
   binary: string;
   /** Nom sous lequel ce Mac s'annonce a Apollo. */
@@ -54,56 +60,4 @@ export type Config = {
   apollo: ApolloConfig;
   moonlight: MoonlightConfig;
   smb: SMBConfig;
-};
-
-export const CONFIG: Config = {
-  mac: {
-    serviceName: "AX88179A",
-    ip: "10.10.10.2",
-    subnetMask: "255.255.255.0",
-  },
-  windows: {
-    interfaceAlias: "Ethernet",
-    ip: "10.10.10.1",
-    prefixLength: 24,
-  },
-  ssh: {
-    host: "10.10.10.1",
-    user: "arthur",
-    identityFile: join(homedir(), ".ssh", "id_ed25519_winpc"),
-    connectTimeoutSec: 8,
-  },
-  bootstrapPort: 8080,
-  apollo: {
-    version: "0.4.6",
-    installerUrl:
-      "https://github.com/ClassicOldSong/Apollo/releases/download/v0.4.6/Apollo-0.4.6.exe",
-    installerSha256:
-      "42b2aefaacb3474511517a56b96ee9f0517f30ac38b5dd2fda9fd5b478f5021a",
-    installDir: "C:\\Program Files\\Apollo",
-    serviceName: "ApolloService",
-    apiPort: 47990,
-    webUser: "hardline",
-  },
-  moonlight: {
-    cask: "moonlight",
-    // L'executable DANS le bundle, jamais le lien que Homebrew pose dans
-    // /opt/homebrew/bin. Qt resout ses greffons relativement au chemin par
-    // lequel le programme est lance : appele par le lien, il les cherche
-    // dans /opt/homebrew/PlugIns, ne les trouve pas, et l'interface ne se
-    // charge jamais — « module "QtQuick.Controls" plugin
-    // "qtquickcontrols2plugin" not found », mesure sur le Mac. Le programme
-    // reste alors muet, et l'appairage echoue sans que rien ne le dise.
-    binary: "/Applications/Moonlight.app/Contents/MacOS/Moonlight",
-    clientName: "hardline-mac",
-    app: "Desktop",
-  },
-  smb: {
-    user: "arthur",
-    shares: [
-      { name: "arthur", path: null, mountPoint: join(homedir(), "PC", "arthur") },
-      { name: "hardline-d", path: "D:\\", mountPoint: join(homedir(), "PC", "d") },
-      { name: "hardline-e", path: "E:\\", mountPoint: join(homedir(), "PC", "e") },
-    ],
-  },
 };

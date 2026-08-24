@@ -1,7 +1,8 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let storedSecret: string | null;
+const getSecret = mock(async (_name: string) => storedSecret);
 const setSecret = mock(async (_name: string, value: string) => {
   storedSecret = value;
 });
@@ -12,7 +13,7 @@ const deleteSecret = mock(async (_name: string) => {
 });
 
 mock.module("../../src/lib/keychain", () => ({
-  getSecret: async () => storedSecret,
+  getSecret,
   setSecret,
   deleteSecret,
 }));
@@ -21,8 +22,15 @@ const { smbCredentialsStep, providePassword, forgetPassword } = await import(
   "../../src/steps/smb-credentials"
 );
 
+const CONFIG_WITHOUT_SHARES = {
+  ...CONFIG,
+  smb: { ...CONFIG.smb, shares: [] },
+};
+
 beforeEach(() => {
   storedSecret = null;
+  forgetPassword();
+  getSecret.mockClear();
   setSecret.mockClear();
   deleteSecret.mockClear();
 });
@@ -45,6 +53,13 @@ describe("inspect", () => {
     storedSecret = "s3cr3t-Windows!";
     const state = await smbCredentialsStep.inspect(CONFIG);
     expect(state.detail).not.toContain("s3cr3t-Windows!");
+  });
+
+  test("est conforme sans lire le trousseau quand aucun partage n'est configure", async () => {
+    const state = await smbCredentialsStep.inspect(CONFIG_WITHOUT_SHARES);
+    expect(state.conforming).toBe(true);
+    expect(state.current).toEqual({ present: false });
+    expect(getSecret).not.toHaveBeenCalled();
   });
 });
 
@@ -95,6 +110,13 @@ describe("apply", () => {
     );
   });
 
+  test("ne demande ni ne range de mot de passe quand aucun partage n'est configure", async () => {
+    await expect(
+      smbCredentialsStep.apply(CONFIG_WITHOUT_SHARES),
+    ).resolves.toBeUndefined();
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
   test("le message d'erreur de mot de passe manquant ne contient jamais un secret depose auparavant", async () => {
     // Depose puis consomme un secret, puis provoque l'echec "manquant" : le
     // message d'erreur ne doit porter aucune trace du secret precedent.
@@ -123,5 +145,16 @@ describe("restore", () => {
     storedSecret = "mot-de-passe-utilisateur";
     await smbCredentialsStep.restore(CONFIG, { present: true }, NO_PENDING);
     expect(deleteSecret).not.toHaveBeenCalled();
+  });
+
+  test("ne supprime aucun secret quand aucun partage n'est configure", async () => {
+    storedSecret = "mot-de-passe-utilisateur";
+    await smbCredentialsStep.restore(
+      CONFIG_WITHOUT_SHARES,
+      { present: false },
+      NO_PENDING,
+    );
+    expect(deleteSecret).not.toHaveBeenCalled();
+    expect(storedSecret).toBe("mot-de-passe-utilisateur");
   });
 });

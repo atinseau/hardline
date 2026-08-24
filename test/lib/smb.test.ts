@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
 import type { Config, SMBShare } from "../../src/config";
+import { INSTALLATION_CATALOG } from "../../src/installation-catalog";
 
 let mkdirCalls: string[];
 const realFs = await import("node:fs/promises");
@@ -28,10 +29,8 @@ const CONFIG: Config = {
     webUser: "hardline",
   },
   moonlight: {
-    cask: "moonlight",
+    ...INSTALLATION_CATALOG.moonlight,
     binary: "/opt/homebrew/bin/moonlight",
-    clientName: "hardline-mac",
-    app: "Desktop",
   },
   smb: {
     user: "arthur",

@@ -4,24 +4,50 @@ import { installCommand } from "./commands/install";
 import { upCommand, type UpCliOptions } from "./commands/up";
 import { uninstallCommand } from "./commands/uninstall";
 import { doctorCommand } from "./commands/doctor";
-import { CONFIG, type Config } from "./config";
+import type { Config } from "./config";
 import {
   createCommandOutput,
   exitCodeFor,
   type CommandOutput,
   type CommandResult,
 } from "./command-run";
+import { createTargetResolution, type TargetResolution } from "./target-resolution";
 
 export const VERSION = "0.1.0";
 
 type CliDependencies = {
-  config: Config;
+  targetResolution: (output: CommandOutput) => TargetResolution<Config>;
   output: (verbose: boolean) => CommandOutput;
   setExitCode: (code: number) => void;
 };
 
 const defaults: CliDependencies = {
-  config: CONFIG,
+  targetResolution: (output) =>
+    createTargetResolution({
+      reportBootstrapCommand: (command) => {
+        output.report("Bootstrap PC", [
+          `Run this command in an Administrator PowerShell on the PC:\n\n  ${command}\n\nInstallation will resume when the PC responds.`,
+        ]);
+      },
+      chooseEthernetCandidate: async (machine, candidates) => {
+        const choices = candidates.map((candidate) => ({
+          value: candidate.stableId,
+          label: `${candidate.hardwareName} (${candidate.alias}, ${candidate.macAddress}, ${candidate.speedMbps ?? "unknown"} Mbit/s)`,
+          hint: `link ${candidate.linkState}; no default gateway`,
+        }));
+        const first = choices[0];
+        if (!first) throw new Error(`No eligible Ethernet adapter was found on ${machine}.`);
+        const answer = await output.choice(
+          `Which physical Ethernet adapter should Hardline use on ${machine}?`,
+          choices,
+          first.value,
+        );
+        if (answer.status !== "selected") {
+          throw new Error("Ethernet adapter selection requires an interactive choice.");
+        }
+        return answer.value;
+      },
+    }),
   output: (verbose) => createCommandOutput({ verbose }),
   setExitCode: (code) => {
     process.exitCode = code;
@@ -46,23 +72,27 @@ export function buildProgram(dependencies: CliDependencies = defaults): Command 
     .command("install")
     .description("Converge both machines to the target state")
     .option("-y, --yes", "authorize prompts without interaction", false)
-    .action(async (options: { yes?: boolean }, command: Command) =>
-      execute(installCommand({
-        config: dependencies.config,
-        output: outputFor(command),
+    .action(async (options: { yes?: boolean }, command: Command) => {
+      const output = outputFor(command);
+      return execute(installCommand({
+        targetResolution: dependencies.targetResolution(output),
+        output,
         yes: options.yes,
-      })));
+      }));
+    });
 
   program
     .command("uninstall")
     .description("Restore previous state from the manifest")
     .option("-y, --yes", "authorize prompts without interaction", false)
-    .action(async (options: { yes?: boolean }, command: Command) =>
-      execute(uninstallCommand({
-        config: dependencies.config,
-        output: outputFor(command),
+    .action(async (options: { yes?: boolean }, command: Command) => {
+      const output = outputFor(command);
+      return execute(uninstallCommand({
+        targetResolution: dependencies.targetResolution(output),
+        output,
         yes: options.yes,
-      })));
+      }));
+    });
 
   program
     .command("up")
@@ -71,21 +101,25 @@ export function buildProgram(dependencies: CliDependencies = defaults): Command 
     .option("--resolution <WxH>", "override resolution, for example 1920x1080")
     .option("--fps <n>", "override frames per second")
     .option("--monitor", "show live stream performance statistics", false)
-    .action(async (options: UpCliOptions, command: Command) =>
-      execute(upCommand({
-        config: dependencies.config,
-        output: outputFor(command),
+    .action(async (options: UpCliOptions, command: Command) => {
+      const output = outputFor(command);
+      return execute(upCommand({
+        targetResolution: dependencies.targetResolution(output),
+        output,
         cli: options,
-      })));
+      }));
+    });
 
   program
     .command("doctor")
     .description("Diagnose the link and services")
-    .action(async (_options: unknown, command: Command) =>
-      execute(doctorCommand({
-        config: dependencies.config,
-        output: outputFor(command),
-      })));
+    .action(async (_options: unknown, command: Command) => {
+      const output = outputFor(command);
+      return execute(doctorCommand({
+        targetResolution: dependencies.targetResolution(output),
+        output,
+      }));
+    });
 
   return program;
 }

@@ -1,5 +1,5 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { ShareState } from "../../src/steps/smb-shares";
 
 let remoteState: ShareState[];

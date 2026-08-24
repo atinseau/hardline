@@ -2,7 +2,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 
 /** Aucune etape ne suit : cette restauration est la derniere a passer. */
 const NO_PENDING = { pending: [] as string[] };
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
 let remoteState: unknown[];
@@ -13,9 +13,10 @@ const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   stdout: remoteStdout,
   stderr: "",
 }));
+const runRemoteJson = mock(async (..._args: unknown[]) => remoteState);
 
 mock.module("../../src/lib/ssh", () => ({
-  runRemoteJson: async () => remoteState,
+  runRemoteJson,
   runRemoteChecked,
 }));
 
@@ -32,11 +33,16 @@ const CONFORME: WindowsNetworkState = {
 
 beforeEach(() => {
   runRemoteChecked.mockClear();
+  runRemoteJson.mockClear();
   remoteStdout = "";
 });
 
 function scriptOf(call: number): string {
   return String((runRemoteChecked.mock.calls[call] as unknown[])[1]);
+}
+
+function inspectScript(): string {
+  return String((runRemoteJson.mock.calls[0] as unknown[])[1]);
 }
 
 /**
@@ -143,6 +149,20 @@ describe("inspect", () => {
     remoteState = [];
     expect(windowsNetworkStep.inspect(CONFIG)).rejects.toThrow();
   });
+
+  test("garde un alias a apostrophe et une charge dans un litteral", async () => {
+    remoteState = [CONFORME];
+    const alias = "Ethernet'; Write-Output INJECTED; #";
+    await windowsNetworkStep.inspect({
+      ...CONFIG,
+      windows: { ...CONFIG.windows, interfaceAlias: alias },
+    });
+
+    expect(inspectScript()).toContain(
+      "-Name 'Ethernet''; Write-Output INJECTED; #'",
+    );
+    expect(inspectScript()).not.toContain("-Name 'Ethernet'; Write-Output");
+  });
 });
 
 describe("apply", () => {
@@ -217,6 +237,24 @@ describe("apply", () => {
       throw new Error("acces refuse");
     });
     expect(windowsNetworkStep.apply(CONFIG)).rejects.toThrow("acces refuse");
+  });
+
+  test("cite alias et adresse cible contenant une charge", async () => {
+    const hostile = {
+      ...CONFIG,
+      windows: {
+        ...CONFIG.windows,
+        interfaceAlias: "Ethernet'; Write-Output ALIAS; #",
+        ip: "10.10.10.1'; Write-Output ADDRESS; #",
+      },
+    };
+    await windowsNetworkStep.apply(hostile);
+    const script = scriptOf(0);
+
+    expect(script).toContain("'Ethernet''; Write-Output ALIAS; #'");
+    expect(script).toContain("'10.10.10.1''; Write-Output ADDRESS; #'");
+    expect(script).not.toContain("'Ethernet'; Write-Output ALIAS");
+    expect(script).not.toContain("'10.10.10.1'; Write-Output ADDRESS");
   });
 });
 
@@ -311,6 +349,33 @@ describe("restore", () => {
     expect(script).toContain("-IPAddress '192.168.1.48'");
     expect(script).toContain("-PrefixLength 24");
   });
+
+  test("cite les alias et adresses persistes jusque dans la queue detachee", async () => {
+    const hostile = {
+      ...CONFIG,
+      windows: {
+        ...CONFIG.windows,
+        interfaceAlias: "Ethernet'; Write-Output ALIAS; #",
+        ip: "10.10.10.1'; Write-Output TARGET; #",
+      },
+    };
+    await windowsNetworkStep.restore(hostile, {
+      ...CONFORME,
+      addresses: ["192.0.2.1'; Write-Output PERSISTED; #/24"],
+      manualAddresses: ["192.0.2.1'; Write-Output PERSISTED; #/24"],
+      dhcpEnabled: true,
+      category: "Public",
+    }, NO_PENDING);
+    const script = scriptOf(0);
+
+    expect(script).toContain("'Ethernet''; Write-Output ALIAS; #'");
+    expect(script).toContain("'192.0.2.1''; Write-Output PERSISTED; #'");
+    expect(detachedLine(script)).toContain(
+      "'10.10.10.1''; Write-Output TARGET; #'",
+    );
+    expect(script).not.toContain("'Ethernet'; Write-Output ALIAS");
+    expect(script).not.toContain("'192.0.2.1'; Write-Output PERSISTED");
+  });
 });
 
 // L'invariant que ces tests protegent : a aucun instant le PC ne doit se
@@ -335,7 +400,7 @@ describe("restore, ordre des operations", () => {
     expect(script.indexOf("-IPAddress '192.168.1.48'")).toBeLessThan(cut);
     expect(script.indexOf("-Dhcp Enabled")).toBeLessThan(cut);
     expect(script.indexOf("Remove-NetIPAddress")).toBeGreaterThan(cut);
-    expect(script.indexOf("-NetworkCategory Public")).toBeGreaterThan(cut);
+    expect(script.indexOf("-NetworkCategory 'Public'")).toBeGreaterThan(cut);
   });
 
   test("repose les adresses enregistrees avant de rallumer le DHCP", async () => {
@@ -365,7 +430,7 @@ describe("restore, ordre des operations", () => {
     // suivrait — le retrait de 10.10.10.1 — ne serait jamais execute.
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const script = scriptOf(0);
-    expect(script.indexOf("-NetworkCategory Public")).toBeGreaterThan(
+    expect(script.indexOf("-NetworkCategory 'Public'")).toBeGreaterThan(
       script.indexOf("Remove-NetIPAddress"),
     );
   });
@@ -376,7 +441,7 @@ describe("restore, ordre des operations", () => {
 
     expect(line).toContain("Start-Sleep -Seconds 2");
     expect(line.indexOf("Remove-NetIPAddress")).toBeGreaterThan(0);
-    expect(line.indexOf("-NetworkCategory Public")).toBeGreaterThan(
+    expect(line.indexOf("-NetworkCategory 'Public'")).toBeGreaterThan(
       line.indexOf("Remove-NetIPAddress"),
     );
   });
@@ -417,7 +482,7 @@ describe("restore, ordre des operations", () => {
     expect(inline).toContain(
       "Remove-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress '10.10.10.1'",
     );
-    expect(inline).toContain("-NetworkCategory Public");
+    expect(inline).toContain("-NetworkCategory 'Public'");
     expect(inline).not.toContain("Start-Process");
   });
 

@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtemp, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import { createMountPoints, removeMountPoints } from "../../src/lib/smb";
 
 /**

@@ -1,5 +1,5 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { MountPointState } from "../../src/steps/smb-mountpoints";
 
 const NO_PENDING = { pending: [] as string[] };

@@ -1,5 +1,5 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let jsonQueue: unknown[][] = [];
 /** Les scripts envoyes a runRemoteJson, dans l'ordre reel des appels. */
@@ -136,19 +136,16 @@ describe("apply", () => {
     expect(script).toContain("headless_mode = enabled");
   });
 
-  /**
-   * Preuve par mutation : le mot de passe engendre doit passer par psQuote
-   * avant d'entrer dans le script distant, jamais par interpolation directe.
-   * psQuote rejette toute valeur contenant une apostrophe (voir
-   * src/lib/powershell.ts) ; si le mot de passe tire au hasard en contient
-   * une, apply() doit echouer. Une interpolation directe (par exemple
-   * `'${password}'` a la main) ne ferait pas cette verification et laisserait
-   * ce test passer a tort : c'est exactement le bug que ce test attrape.
-   */
-  test("le mot de passe engendre passe par psQuote : une apostrophe fait echouer apply", async () => {
+  test("le mot de passe engendre garde son apostrophe dans le litteral PowerShell", async () => {
     generatePassword.mockImplementation(() => "mauvais'motdepasse");
     jsonQueue.push([{ conf: null, hadCredentials: false, serviceRunning: false }]);
-    await expect(apolloConfigStep.apply(CONFIG)).rejects.toThrow();
+    await apolloConfigStep.apply(CONFIG);
+    expect(checkedScript(0)).toContain(
+      "$applyWebPassword = 'mauvais''motdepasse'",
+    );
+    expect(checkedScript(0)).not.toContain(
+      "$applyWebPassword = 'mauvais'motdepasse'",
+    );
   });
 
   /**

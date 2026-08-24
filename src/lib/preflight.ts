@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { listNetworkServices } from "./shell";
 import { runRemoteJson } from "./ssh";
 import { errorMessage } from "./errors";
+import { psQuote } from "./powershell";
 import type { Config } from "../config";
 
 export type CheckResult = {
@@ -56,7 +57,7 @@ const EXPECTED_BUILD = 26200;
 
 const FACTS = (alias: string) => `
 $os = Get-CimInstance Win32_OperatingSystem
-$adapter = Get-NetAdapter -Name '${alias}' -ErrorAction SilentlyContinue
+$adapter = Get-NetAdapter -Name ${psQuote(alias, "alias de l'interface Windows")} -ErrorAction SilentlyContinue
 [pscustomobject]@{
   caption       = [string]$os.Caption
   build         = [int]$os.BuildNumber

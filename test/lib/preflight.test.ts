@@ -1,5 +1,5 @@
 import { test, expect, describe, mock } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let services: unknown[];
 let remoteRows: unknown[];
@@ -15,6 +15,7 @@ let probeCostMs = 0;
 // sonder le PC, faute de quoi le defaut d'origine revient.
 let shellCalls = 0;
 let sshCalls = 0;
+let remoteScript = "";
 
 // La cle publique est un fichier de la vraie machine : le test decide de sa
 // presence et de son contenu, jamais le disque.
@@ -37,8 +38,9 @@ mock.module("../../src/lib/shell", () => ({
 }));
 
 mock.module("../../src/lib/ssh", () => ({
-  runRemoteJson: async () => {
+  runRemoteJson: async (_ssh: unknown, script: string) => {
     sshCalls += 1;
+    remoteScript = script;
     clockMs += probeCostMs;
     if (remoteThrows) throw remoteThrows;
     return remoteRows;
@@ -75,6 +77,7 @@ function setup(remote: Partial<typeof HEALTHY_REMOTE> = {}, svc = HEALTHY_SERVIC
   probeCostMs = 0;
   shellCalls = 0;
   sshCalls = 0;
+  remoteScript = "";
   publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 }
 
@@ -218,6 +221,20 @@ describe("runRemotePreflight", () => {
     expect(check?.ok).toBe(false);
     expect(check?.blocking).toBe(true);
     expect(check?.detail).toContain("cable");
+  });
+
+  test("garde un alias a apostrophe et une charge dans un litteral", async () => {
+    setup();
+    const alias = "Ethernet'; Write-Output INJECTED; #";
+    await runRemotePreflight({
+      ...CONFIG,
+      windows: { ...CONFIG.windows, interfaceAlias: alias },
+    });
+
+    expect(remoteScript).toContain(
+      "-Name 'Ethernet''; Write-Output INJECTED; #'",
+    );
+    expect(remoteScript).not.toContain("-Name 'Ethernet'; Write-Output");
   });
 });
 

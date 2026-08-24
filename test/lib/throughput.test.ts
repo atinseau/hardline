@@ -2,6 +2,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "../../src/config";
+import { INSTALLATION_CATALOG } from "../../src/installation-catalog";
 import type { RemoteResult } from "../../src/lib/ssh";
 
 const IPERF3_OK = readFileSync(join(import.meta.dir, "../assets/iperf3-ok.json"), "utf8");
@@ -48,10 +49,8 @@ const CONFIG: Config = {
     webUser: "hardline",
   },
   moonlight: {
-    cask: "moonlight",
+    ...INSTALLATION_CATALOG.moonlight,
     binary: "/opt/homebrew/bin/moonlight",
-    clientName: "hardline-mac",
-    app: "Desktop",
   },
   smb: {
     user: "arthur",

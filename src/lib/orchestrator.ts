@@ -83,6 +83,10 @@ export type RevertReport = {
   unconfirmed: string[];
 };
 
+export type RevertOptions = {
+  readonly selectedSteps?: readonly string[];
+};
+
 /**
  * Restaure l'etat anterieur, du plus recent au plus ancien.
  *
@@ -98,9 +102,13 @@ export async function revertSteps(
   config: Config,
   manifestPath: string,
   reporter: StepReporter,
+  options: RevertOptions = {},
 ): Promise<RevertReport> {
   let manifest = await readManifest(manifestPath);
   const byName = new Map(steps.map((s) => [s.name, s]));
+  const selected = options.selectedSteps
+    ? new Set(options.selectedSteps)
+    : null;
   const unrestored: string[] = [];
   const unconfirmed: string[] = [];
 
@@ -110,6 +118,12 @@ export async function revertSteps(
 
   for (const [index, record] of records.entries()) {
     const step = byName.get(record.step);
+
+    // A staged caller may reserve known records for a later pass. Unknown
+    // records are never skipped: omitting one from the registry must retain the
+    // default fail-safe behaviour.
+    if (step && selected && !selected.has(record.step)) continue;
+
     const context = {
       // Filtre par le registre, et non par le seul manifeste. `pending` sert a
       // une etape a savoir qu'une restauration plus profonde passera apres

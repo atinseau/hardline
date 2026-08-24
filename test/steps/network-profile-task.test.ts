@@ -2,9 +2,10 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 
 /** Aucune etape ne suit : cette restauration est la derniere a passer. */
 const NO_PENDING = { pending: [] as string[] };
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let remoteState: unknown[];
+const realSsh = await import("../../src/lib/ssh");
 const runRemoteChecked = mock(async (..._args: unknown[]) => ({
   exitCode: 0,
   stdout: "",
@@ -12,6 +13,7 @@ const runRemoteChecked = mock(async (..._args: unknown[]) => ({
 }));
 
 mock.module("../../src/lib/ssh", () => ({
+  ...realSsh,
   runRemoteJson: async () => remoteState,
   runRemoteChecked,
 }));
@@ -21,6 +23,16 @@ const { windowsProfileTaskStep, TASK_NAME } = await import(
 );
 
 beforeEach(() => runRemoteChecked.mockClear());
+
+function appliedScript(): string {
+  return String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+}
+
+function decodedScheduledScript(): string {
+  const encoded = appliedScript().match(/\$encoded = '([^']+)'/)?.[1];
+  expect(encoded).toBeDefined();
+  return Buffer.from(encoded as string, "base64").toString("utf16le");
+}
 
 describe("inspect", () => {
   test("declare conforme quand la tache existe et est active", async () => {
@@ -44,7 +56,7 @@ describe("inspect", () => {
 describe("apply", () => {
   test("enregistre une tache au demarrage executee en SYSTEM", async () => {
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    const script = appliedScript();
     expect(script).toContain("Register-ScheduledTask");
     expect(script).toContain(TASK_NAME);
     expect(script).toContain("AtStartup");
@@ -61,7 +73,7 @@ describe("apply", () => {
     // boucle — une assertion sur "while ou for ou Start-Sleep" laisserait
     // passer `while ($true)`.
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    const script = decodedScheduledScript();
 
     expect(script).toContain("Get-NetConnectionProfile");
     expect(script).toContain("Start-Sleep");
@@ -72,8 +84,23 @@ describe("apply", () => {
 
   test("le script planifie vise la seule interface du lien direct", async () => {
     await windowsProfileTaskStep.apply(CONFIG);
-    const script = String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    const script = decodedScheduledScript();
     expect(script).toContain(CONFIG.windows.interfaceAlias);
+  });
+
+  test("garde un alias a apostrophe et une charge dans le litteral du script planifie", async () => {
+    const alias = "Ethernet'; Write-Output INJECTED; #";
+    await windowsProfileTaskStep.apply({
+      ...CONFIG,
+      windows: { ...CONFIG.windows, interfaceAlias: alias },
+    });
+    const script = decodedScheduledScript();
+
+    expect(script).toContain(
+      "$alias = 'Ethernet''; Write-Output INJECTED; #'",
+    );
+    expect(script).not.toContain("$alias = 'Ethernet'; Write-Output");
+    expect(script).not.toContain("-InterfaceAlias 'Ethernet'; Write-Output");
   });
 });
 
@@ -83,7 +110,7 @@ describe("apply", () => {
 describe("apply, le script planifie verifie ce qu'il ecrit", () => {
   async function scheduledScript(): Promise<string> {
     await windowsProfileTaskStep.apply(CONFIG);
-    return String((runRemoteChecked.mock.calls[0] as unknown[])[1]);
+    return decodedScheduledScript();
   }
 
   test("arrete les erreurs au lieu de les laisser filer", async () => {

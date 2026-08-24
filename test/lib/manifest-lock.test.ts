@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { Step } from "../../src/steps/types";
 import {
   acquireManifestLock,

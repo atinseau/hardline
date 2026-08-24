@@ -2,16 +2,15 @@ import type { Config } from "../config";
 import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
 import { runCommand } from "../command-run";
 import { englishStepLabel } from "../command-run/english";
-import { ALL_STEPS, LOCAL_STEPS, WINDOWS_STEPS } from "../steps";
+import { ALL_STEPS, CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS, WINDOWS_STEPS } from "../steps";
 import { bootstrapWindowsStep } from "../steps/bootstrap-windows";
 import { revertSteps, type OrchestratorFact } from "../lib/orchestrator";
-import {
-  acquireManifestLock,
-  defaultManifestPath,
-  ManifestLockedError,
-  readManifest,
-} from "../lib/manifest";
+import { readManifest } from "../lib/manifest";
 import { errorMessage } from "../lib/errors";
+import {
+  TargetResolutionRefusedError,
+  type TargetResolution,
+} from "../target-resolution";
 
 type UninstallFact = {
   id:
@@ -28,11 +27,15 @@ type UninstallFact = {
     | "nothing"
     | "cancelled"
     | "success"
+    | "tail-launched"
     | "failed"
     | "incomplete"
-    | "locked"
     | "unexpected";
   values?: Record<string, unknown>;
+};
+
+type UninstallResult = CommandResult<UninstallFact> & {
+  readonly terminalLaunched?: true;
 };
 
 const fact = (id: UninstallFact["id"], values?: Record<string, unknown>): UninstallFact => ({
@@ -56,9 +59,9 @@ export function renderUninstallFact(value: UninstallFact): string {
     case "nothing": return "No recorded steps; there is nothing to restore.";
     case "cancelled": return "Nothing was changed.";
     case "success": return "Previous state restored.";
+    case "tail-launched": return "Final Windows cleanup was launched. Its completion is intentionally unobservable; local Hardline state can now be removed.";
     case "failed": return "Restoration failed. Unrestored entries remain recorded for another attempt.";
     case "incomplete": return "Restoration was launched on the PC but cannot be observed from the Mac. Verify at the PC that its original addressing and network profile were restored. The previous state remains recorded until it can be confirmed.";
-    case "locked": return `Uninstall could not start: ${v.error}`;
     case "unexpected": return "Uninstall failed safely. Recorded state was retained.";
   }
 }
@@ -97,71 +100,92 @@ const reportStep = (run: CommandRun<UninstallFact>) => (step: OrchestratorFact):
 export async function runUninstall(
   run: CommandRun<UninstallFact>,
   config: Config,
-  options: { yes: boolean; manifestPath?: string },
-): Promise<CommandResult<UninstallFact>> {
-  const manifestPath = options.manifestPath ?? defaultManifestPath();
-  let lock;
-  try {
-    lock = await acquireManifestLock(manifestPath);
-  } catch (error) {
-    if (error instanceof ManifestLockedError) {
-      return { status: "failed", summary: fact("locked", { error: errorMessage(error) }) };
-    }
-    throw error;
-  }
+  options: { yes: boolean; manifestPath: string },
+): Promise<UninstallResult> {
+  const manifestPath = options.manifestPath;
+  const manifest = await run.phase(fact("inspect"), () => readManifest(manifestPath));
+  const recorded = manifest.order;
+  if (recorded.length === 0) return { status: "succeeded", summary: fact("nothing") };
 
-  try {
-    const manifest = await run.phase(fact("inspect"), () => readManifest(manifestPath));
-    const recorded = manifest.order;
-    if (recorded.length === 0) return { status: "succeeded", summary: fact("nothing") };
-
+  run.report(
+    fact("recorded-title"),
+    recordedLabels(recorded).map((label) => fact("recorded", { label })),
+  );
+  const caveats = bootstrapCaveats(recorded);
+  if (caveats) {
     run.report(
-      fact("recorded-title"),
-      recordedLabels(recorded).map((label) => fact("recorded", { label })),
+      fact("caveats-title"),
+      caveats.map((text) => fact("caveat", { text })),
     );
-    const caveats = bootstrapCaveats(recorded);
-    if (caveats) {
-      run.report(
-        fact("caveats-title"),
-        caveats.map((text) => fact("caveat", { text })),
-      );
-    }
-
-    const answer = await run.confirm(fact("confirm", { scope: scopeLabel(recorded) }), {
-      assumeYes: options.yes,
-      destructive: true,
-    });
-    if (answer !== "accepted") return { status: "cancelled", summary: fact("cancelled") };
-
-    const report = await run.phase(fact("restore"), () =>
-      revertSteps(ALL_STEPS, config, manifestPath, reportStep(run)));
-    if (report.unrestored.length > 0) {
-      run.warning(fact("warning", {
-        message: `Unrestored steps retained in the manifest: ${report.unrestored.join(", ")}.`,
-      }));
-    }
-    if (report.unconfirmed.length > 0) {
-      run.warning(fact("warning", {
-        message: `Unconfirmed PC steps retained in the manifest: ${report.unconfirmed.join(", ")}.`,
-      }));
-    }
-    if (report.unrestored.length > 0) {
-      return { status: "failed", summary: fact("failed") };
-    }
-    if (report.unconfirmed.length > 0) {
-      return { status: "incomplete", summary: fact("incomplete") };
-    }
-    return { status: "succeeded", summary: fact("success") };
-  } finally {
-    await lock.release();
   }
+
+  const answer = await run.confirm(fact("confirm", { scope: scopeLabel(recorded) }), {
+    assumeYes: options.yes,
+    destructive: true,
+  });
+  if (answer !== "accepted") return { status: "cancelled", summary: fact("cancelled") };
+
+  const macNetwork = LOCAL_STEPS.filter((step) => step.name === "network-mac");
+  const observable = [
+    ...LOCAL_STEPS.filter((step) => step.name !== "network-mac"),
+    ...REMOTE_STEPS,
+  ];
+  const observed = await run.phase(fact("restore"), () =>
+    revertSteps(ALL_STEPS, config, manifestPath, reportStep(run), {
+      selectedSteps: observable.map((step) => step.name),
+    }));
+  if (observed.unrestored.length > 0 || observed.unconfirmed.length > 0) {
+    for (const step of observed.unrestored) {
+      run.warning(fact("warning", { message: `Unrestored step retained in the manifest: ${step}.` }));
+    }
+    for (const step of observed.unconfirmed) {
+      run.warning(fact("warning", { message: `PC cleanup step launched without observable completion: ${step}.` }));
+    }
+    return observed.unrestored.length > 0
+      ? { status: "failed", summary: fact("failed") }
+      : { status: "incomplete", summary: fact("incomplete") };
+  }
+
+  // The channel-cutting tail is launched only after every fallible,
+  // independently observable restoration has succeeded. Mac networking is
+  // restored last because it carries the SSH session used to launch the tail.
+  const terminal = [...macNetwork, ...CAPTURE_STEPS];
+  const report = await run.phase(fact("restore"), () =>
+    revertSteps(ALL_STEPS, config, manifestPath, reportStep(run), {
+      selectedSteps: terminal.map((step) => step.name),
+    }));
+  if (report.unrestored.length > 0) {
+    run.warning(fact("warning", {
+      message: `Unrestored steps retained in the manifest: ${report.unrestored.join(", ")}.`,
+    }));
+  }
+  if (report.unconfirmed.length > 0) {
+    run.warning(fact("warning", {
+      message: `PC cleanup steps launched without observable completion: ${report.unconfirmed.join(", ")}.`,
+    }));
+  }
+  if (report.unrestored.length > 0) {
+    return {
+      status: "failed",
+      summary: fact("failed"),
+      ...(report.unconfirmed.length > 0 ? { terminalLaunched: true as const } : {}),
+    };
+  }
+  if (report.unconfirmed.length > 0) {
+    const terminal = report.unconfirmed.every((step) =>
+      step === bootstrapWindowsStep.name || step === "network-windows");
+    if (terminal) {
+      return { status: "succeeded", summary: fact("tail-launched") };
+    }
+    return { status: "incomplete", summary: fact("incomplete") };
+  }
+  return { status: "succeeded", summary: fact("success") };
 }
 
 export function uninstallCommand(options: {
-  config: Config;
+  targetResolution: TargetResolution<Config>;
   output: CommandOutput;
   yes?: boolean;
-  manifestPath?: string;
 }): Promise<CommandResult<UninstallFact>> {
   return runCommand({
     title: fact("title"),
@@ -169,9 +193,37 @@ export function uninstallCommand(options: {
     output: options.output,
     cancelled: fact("cancelled"),
     unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
-    execute: (run) => runUninstall(run, options.config, {
-      yes: options.yes ?? false,
-      ...(options.manifestPath ? { manifestPath: options.manifestPath } : {}),
-    }),
+    execute: async (run) => {
+      try {
+        const outcome = await options.targetResolution.during<CommandResult<UninstallFact>>(
+          "uninstall",
+          async (target) => {
+            const result = await runUninstall(run, target.config, {
+              yes: options.yes ?? false,
+              manifestPath: target.manifestPath,
+            });
+            if (result.status === "succeeded") {
+              return { lifecycle: "ready-to-retire", result } as const;
+            }
+            if (result.terminalLaunched) {
+              return { lifecycle: "terminal-incomplete", result } as const;
+            }
+            if (result.status === "cancelled") {
+              return { lifecycle: "unchanged", result } as const;
+            }
+            return { lifecycle: "incomplete", result } as const;
+          },
+        );
+        return outcome.result;
+      } catch (error) {
+        if (
+          error instanceof TargetResolutionRefusedError &&
+          error.reason === "profile-absent"
+        ) {
+          return { status: "succeeded", summary: fact("nothing") };
+        }
+        throw error;
+      }
+    },
   });
 }

@@ -24,7 +24,8 @@ export const moonlightInstallStep: Step<MoonlightState> = {
   async inspect(config: Config) {
     const current = await caskInfo(config.moonlight.cask);
     return {
-      conforming: current.installed,
+      conforming:
+        current.installed && current.version === config.moonlight.version,
       current,
       detail: current.installed
         ? `${config.moonlight.cask} ${current.version ?? "version inconnue"}`
@@ -33,8 +34,14 @@ export const moonlightInstallStep: Step<MoonlightState> = {
   },
 
   async apply(config: Config) {
-    const exitCode = await installCask(config.moonlight.cask);
+    const exitCode = await installCask(config.moonlight);
     ensureAccepted(exitCode, "poser", config.moonlight.cask);
+    const installed = await caskInfo(config.moonlight.cask);
+    if (!installed.installed || installed.version !== config.moonlight.version) {
+      throw new Error(
+        `Moonlight ${config.moonlight.version} etait attendu apres l'installation, version observee : ${installed.version ?? "absente"}.`,
+      );
+    }
   },
 
   async restore(config: Config) {

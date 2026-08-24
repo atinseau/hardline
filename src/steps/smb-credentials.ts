@@ -32,7 +32,14 @@ export const smbCredentialsStep: Step<CredentialState> = {
   name: "smb-credentials",
   label: "Identifiants des partages au trousseau (Mac)",
 
-  async inspect() {
+  async inspect(config: Config) {
+    if (config.smb.shares.length === 0) {
+      return {
+        conforming: true,
+        current: { present: false },
+        detail: "aucun partage SMB configuré",
+      };
+    }
     const present = (await getSecret("windows-account")) !== null;
     return {
       conforming: present,
@@ -43,7 +50,8 @@ export const smbCredentialsStep: Step<CredentialState> = {
     };
   },
 
-  async apply() {
+  async apply(config: Config) {
+    if (config.smb.shares.length === 0) return;
     if (pendingPassword === null) {
       throw new Error(
         "Mot de passe Windows manquant\u00a0: providePassword() doit être appelé " +
@@ -54,7 +62,8 @@ export const smbCredentialsStep: Step<CredentialState> = {
     pendingPassword = null;
   },
 
-  async restore(_config: Config, previous: CredentialState) {
+  async restore(config: Config, previous: CredentialState) {
+    if (config.smb.shares.length === 0) return;
     // Un mot de passe deja present avant hardline n'est jamais le notre a
     // effacer : seul celui que apply() a cree est retire.
     if (previous.present) return;

@@ -9,6 +9,7 @@ import { getSecret } from "../lib/keychain";
 import { mountShare, unmountShare } from "../lib/smb";
 import { runStream, runQuit, type StreamOptions } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
+import type { TargetResolution } from "../target-resolution";
 
 const WAKE_DEADLINE_MS = 3 * 60_000;
 
@@ -171,13 +172,15 @@ export async function runUp(
       await ensureApolloRunning(config);
       run.activity(fact("activity", { message: "Reset video mode" }));
       await runQuit(config);
-      const password = await getSecret("windows-account");
-      if (password === null) {
-        throw new Error("No Windows password is stored in the keychain. Run 'hardline install' first.");
+      if (config.smb.shares.length > 0) {
+        const password = await getSecret("windows-account");
+        if (password === null) {
+          throw new Error("No Windows password is stored in the keychain. Run 'hardline install' first.");
+        }
+        run.activity(fact("activity", { message: "Mount shares" }));
+        mounted = true;
+        for (const share of config.smb.shares) await mountShare(share, config, password);
       }
-      run.activity(fact("activity", { message: "Mount shares" }));
-      mounted = true;
-      for (const share of config.smb.shares) await mountShare(share, config, password);
     });
     // No Command Run phase is active while Moonlight owns the terminal.
     try {
@@ -233,7 +236,7 @@ export async function runUpCommand(
 }
 
 export function upCommand(options: {
-  config: Config;
+  targetResolution: TargetResolution<Config>;
   output: CommandOutput;
   cli: UpCliOptions;
 }): Promise<CommandResult<UpFact>> {
@@ -243,6 +246,12 @@ export function upCommand(options: {
     output: options.output,
     cancelled: fact("cancelled"),
     unexpected: (error) => fact("failed", { error: errorMessage(error) }),
-    execute: (run) => runUpCommand(run, options.config, options.cli),
+    execute: async (run) => {
+      const outcome = await options.targetResolution.during("up", async (target) => ({
+        lifecycle: "unchanged",
+        result: await runUpCommand(run, target.config, options.cli),
+      }));
+      return outcome.result;
+    },
   });
 }

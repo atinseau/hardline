@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, mock } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { Manifest } from "../../src/lib/manifest";
 
 /**
@@ -361,7 +361,7 @@ describe("une seule queue detachee par desinstallation", () => {
     const tails = withTail(scripts);
 
     expect(tails).toHaveLength(1);
-    expect(tails[0]).toContain("-NetworkCategory Public");
+    expect(tails[0]).toContain("-NetworkCategory 'Public'");
     // C'est bien la sienne : elle ignore tout du PC d'avant amorcage.
     expect(tails[0]).not.toContain("192.168.1.50");
     expect(tails[0]).not.toContain("Stop-Service");

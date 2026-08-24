@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 import type { Step } from "../../src/steps/types";
 import { readManifest } from "../../src/lib/manifest";
 import { applySteps, revertSteps } from "../../src/lib/orchestrator";
@@ -186,9 +186,10 @@ describe("revertSteps", () => {
   test("conserve l'etat anterieur d'une etape dont le code a disparu", async () => {
     const steps = [makeStep("a", false, [])];
     await applySteps(steps, CONFIG, manifestPath, fakeUi);
+    reports.length = 0;
     // On restaure avec un registre vide : ne doit pas lever.
     const { unrestored } = await revertSteps([], CONFIG, manifestPath, fakeUi);
-    expect(reports.some((r) => r.startsWith("failed"))).toBe(true);
+    expect(reports).toEqual(["failed:a"]);
     expect(unrestored).toEqual(["a"]);
 
     // Le point critique : oublier cet enregistrement serait irreversible, son
@@ -196,6 +197,52 @@ describe("revertSteps", () => {
     const manifest = await readManifest(manifestPath);
     expect(manifest.order).toEqual(["a"]);
     expect(manifest.steps["a"]?.previous).toEqual({ marker: "avant-a" });
+  });
+
+  test("restaure un manifeste en passes selectionnees sans lancer la queue trop tot", async () => {
+    const trace: Trace = [];
+    const pending: string[][] = [];
+    const mac = makeStep("network-mac", false, trace);
+    const observable = makeContextSpy("observable", pending);
+    const bootstrap: Step<{ marker: string }> = {
+      ...makeStep("bootstrap-windows", false, trace),
+      async restore() {
+        trace.push("launch:bootstrap-windows");
+        return { detached: "queue terminale lancee" };
+      },
+    };
+    const steps = [mac, bootstrap, observable];
+    await applySteps(steps, CONFIG, manifestPath, fakeUi);
+    trace.length = 0;
+    reports.length = 0;
+
+    const observed = await revertSteps(steps, CONFIG, manifestPath, fakeUi, {
+      selectedSteps: ["observable"],
+    });
+    expect(observed).toEqual({ unrestored: [], unconfirmed: [] });
+    expect(pending).toEqual([["bootstrap-windows", "network-mac"]]);
+    expect((await readManifest(manifestPath)).order).toEqual([
+      "network-mac",
+      "bootstrap-windows",
+    ]);
+
+    const terminal = await revertSteps(steps, CONFIG, manifestPath, fakeUi, {
+      selectedSteps: ["network-mac", "bootstrap-windows"],
+    });
+    expect(trace).toEqual([
+      "launch:bootstrap-windows",
+      "restore:network-mac:avant-network-mac",
+    ]);
+    expect(reports).toEqual([
+      "restored:observable",
+      "detached:bootstrap-windows",
+      "restored:network-mac",
+    ]);
+    expect(terminal).toEqual({
+      unrestored: [],
+      unconfirmed: ["bootstrap-windows"],
+    });
+    expect((await readManifest(manifestPath)).order).toEqual(["bootstrap-windows"]);
   });
 
   test("signale une restauration en echec sans perdre son enregistrement", async () => {

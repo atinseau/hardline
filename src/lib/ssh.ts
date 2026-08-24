@@ -3,6 +3,10 @@ export type SSHTarget = {
   user: string;
   identityFile: string;
   connectTimeoutSec?: number;
+  knownHostsFile?: string;
+  hostKeyAlias?: string;
+  sourceAddress?: string;
+  bindInterface?: string;
 };
 
 export type RemoteResult = {
@@ -60,19 +64,47 @@ export function withRemotePreamble(script: string): string {
 }
 
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
-  return [
+  if (!target.knownHostsFile || !target.hostKeyAlias) {
+    throw new Error("SSH requires a pinned Hardline known-hosts file and HostKeyAlias.");
+  }
+  const args = [
     "ssh",
     "-i",
     target.identityFile,
     "-o",
     "BatchMode=yes",
+  ];
+
+  args.push(
     "-o",
-    "StrictHostKeyChecking=accept-new",
+    "IdentitiesOnly=yes",
+    "-o",
+    "IdentityAgent=none",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    `UserKnownHostsFile=${target.knownHostsFile}`,
+    "-o",
+    "GlobalKnownHostsFile=/dev/null",
+    "-o",
+    `HostKeyAlias=${target.hostKeyAlias}`,
+  );
+
+  if (target.sourceAddress !== undefined) {
+    args.push("-b", target.sourceAddress);
+  }
+  if (target.bindInterface !== undefined) {
+    args.push("-o", `BindInterface=${target.bindInterface}`);
+  }
+
+  args.push(
     "-o",
     `ConnectTimeout=${target.connectTimeoutSec ?? 8}`,
     `${target.user}@${target.host}`,
     remoteCommand,
-  ];
+  );
+
+  return args;
 }
 
 // --- Frontière système. ---

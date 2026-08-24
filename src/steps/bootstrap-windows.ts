@@ -31,8 +31,12 @@ const ackPath = `(Join-Path ${STATE_DIR} '${ACK_FILE}')`;
 /** Le releve ecrit par bootstrap.ps1. Les `changed` disent ce dont il est l'auteur. */
 export type BootstrapCapture = {
   version: number;
+  machineId: string;
   capturedAt: string;
   interfaceAlias: string;
+  /** InterfaceGuid stable de l'adaptateur, independant de son nom affiche. */
+  hardwareId: string;
+  address: string;
   capability: { name: string | null; state: string | null; changed: boolean };
   sshd: {
     present: boolean;
@@ -64,10 +68,10 @@ export type BootstrapCapture = {
 };
 
 /** Pourquoi il n'y a pas de releve exploitable. Sert a le dire, pas a deviner. */
-export type CaptureDefect = "absent" | "illisible" | "version";
+export type CaptureDefect = "absent" | "illisible" | "version" | "inutilisable";
 
 export type BootstrapState = {
-  /** null quand le PC ne porte aucun releve exploitable : on ne l'invente pas. */
+  /** null reste accepte pour relire les anciens manifestes, jamais a l'inspection. */
   capture: BootstrapCapture | null;
   acknowledged: boolean;
   /** Rempli par le PC : le fichier existe mais n'a pas pu etre relu. */
@@ -78,9 +82,9 @@ export type BootstrapState = {
  * Le `try/catch` n'est pas une decoration : le script tourne sous
  * $ErrorActionPreference = 'Stop', prependu par runRemoteJson. Sans lui, un
  * bootstrap-state.json corrompu — edite a la main, abime par un secteur mort,
- * ecrit par une version future — fait sortir powershell en 1, et TOUTE la
- * convergence distante s'arrete a la premiere etape. Un fichier dont l'unique
- * raison d'etre est d'aider plus tard ne doit jamais empecher une installation.
+ * ecrit par une version future — ferait sortir PowerShell avant de pouvoir
+ * classifier le defaut. `inspect` doit recevoir cet etat et l'arreter avec une
+ * erreur de recuperation actionnable, plutot qu'une erreur JSON opaque.
  */
 const INSPECT = `
 $path = ${statePath}
@@ -101,10 +105,10 @@ if (Test-Path $path) {
 }`;
 
 /**
- * `apply` ne modifie rien du PC : il accuse reception du releve, maintenant que
- * le manifeste du Mac en detient une copie. Sans cet accuse, `inspect` rendrait
- * toujours « non conforme » et l'etape serait reappliquee a chaque install ;
- * avec lui, elle devient conforme et le reste.
+ * `apply` ne modifie rien de l'etat amorce du PC : il accuse reception du
+ * releve, maintenant que le manifeste du Mac en detient une copie. Sans cet
+ * accuse, `inspect` rendrait toujours « non conforme » et l'etape serait
+ * reappliquee a chaque install ; avec lui, elle devient conforme et le reste.
  */
 const APPLY = `
 $dir = ${STATE_DIR}
@@ -122,13 +126,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * projet refuse deja franchement tout ce qui n'est pas `version === 1` : la
  * meme rigueur vaut pour ce que le PC renvoie.
  *
- * Rend `null` plutot que de lever : un releve inexploitable doit degrader
- * exactement comme un releve absent, jamais bloquer une installation.
+ * La distinction du defaut permet a inspect de refuser toute installation qui
+ * ne pourrait pas d'abord mettre ce releve durable a l'abri dans le manifeste.
  */
 export function readCapture(
   value: unknown,
 ): { capture: BootstrapCapture } | { defect: CaptureDefect } {
-  if (!isRecord(value)) return { defect: "absent" };
+  if (value === null || value === undefined) return { defect: "absent" };
+  if (!isRecord(value)) return { defect: "inutilisable" };
   if (value["version"] !== CAPTURE_VERSION) return { defect: "version" };
 
   for (const section of [
@@ -138,15 +143,84 @@ export function readCapture(
     "authorizedKeys",
     "network",
   ]) {
-    if (!isRecord(value[section])) return { defect: "illisible" };
+    if (!isRecord(value[section])) return { defect: "inutilisable" };
   }
 
+  const capability = value["capability"] as Record<string, unknown>;
+  const sshd = value["sshd"] as Record<string, unknown>;
+  const firewall = value["firewall"] as Record<string, unknown>;
+  const authorizedKeys = value["authorizedKeys"] as Record<string, unknown>;
   const network = value["network"] as Record<string, unknown>;
+  const stringOrNull = (candidate: unknown) =>
+    candidate === null || typeof candidate === "string";
+  const boolean = (candidate: unknown) => typeof candidate === "boolean";
+  const strings = (candidate: unknown) =>
+    Array.isArray(candidate) &&
+    candidate.every((entry) => typeof entry === "string");
+  const ipv4 = (candidate: unknown) => {
+    if (typeof candidate !== "string") return false;
+    const octets = candidate.split(".");
+    return (
+      octets.length === 4 &&
+      octets.every((octet) => {
+        const number = Number(octet);
+        return /^\d{1,3}$/.test(octet) && number >= 0 && number <= 255;
+      })
+    );
+  };
+  const cidrs = (candidate: unknown) =>
+    strings(candidate) &&
+    candidate.every((entry) => {
+      const [address, prefix, extra] = entry.split("/");
+      const length = Number(prefix);
+      return (
+        extra === undefined &&
+        ipv4(address) &&
+        /^\d{1,2}$/.test(prefix ?? "") &&
+        length >= 0 &&
+        length <= 32
+      );
+    });
+
   if (
-    !Array.isArray(network["addresses"]) ||
-    !Array.isArray(network["manualAddresses"])
+    typeof value["machineId"] !== "string" ||
+    value["machineId"].length === 0 ||
+    typeof value["capturedAt"] !== "string" ||
+    Number.isNaN(Date.parse(value["capturedAt"])) ||
+    typeof value["interfaceAlias"] !== "string" ||
+    value["interfaceAlias"].length === 0 ||
+    typeof value["hardwareId"] !== "string" ||
+    value["hardwareId"].length === 0 ||
+    !ipv4(value["address"]) ||
+    !stringOrNull(capability["name"]) ||
+    !stringOrNull(capability["state"]) ||
+    !boolean(capability["changed"]) ||
+    !boolean(sshd["present"]) ||
+    !stringOrNull(sshd["startupType"]) ||
+    !stringOrNull(sshd["status"]) ||
+    !boolean(sshd["startupChanged"]) ||
+    !boolean(sshd["statusChanged"]) ||
+    typeof firewall["name"] !== "string" ||
+    firewall["name"].length === 0 ||
+    !boolean(firewall["existed"]) ||
+    !boolean(firewall["changed"]) ||
+    typeof authorizedKeys["path"] !== "string" ||
+    authorizedKeys["path"].length === 0 ||
+    typeof authorizedKeys["publicKey"] !== "string" ||
+    authorizedKeys["publicKey"].length === 0 ||
+    !boolean(authorizedKeys["fileExisted"]) ||
+    !boolean(authorizedKeys["keyPresent"]) ||
+    !stringOrNull(authorizedKeys["aclSddl"]) ||
+    !boolean(authorizedKeys["changed"]) ||
+    !boolean(authorizedKeys["aclChanged"]) ||
+    !cidrs(network["addresses"]) ||
+    !cidrs(network["manualAddresses"]) ||
+    !stringOrNull(network["dhcp"]) ||
+    !stringOrNull(network["category"]) ||
+    !boolean(network["addressingChanged"]) ||
+    !boolean(network["categoryChanged"])
   ) {
-    return { defect: "illisible" };
+    return { defect: "inutilisable" };
   }
 
   return { capture: value as unknown as BootstrapCapture };
@@ -363,17 +437,22 @@ function cuttingTail(
     );
   }
 
+  // Last and self-contained: once access has been cut, the detached tail owns
+  // cleanup of its immutable recovery record. Other operator-owned files under
+  // ProgramData\hardline (notably Apollo Rescue Backups) are preserved.
+  tail.push(
+    `Remove-Item -Path ${statePath} -Force -ErrorAction SilentlyContinue`,
+    `$hardlineState = ${STATE_DIR}`,
+    `if ((Test-Path $hardlineState) -and @(Get-ChildItem -Path $hardlineState -Force -ErrorAction SilentlyContinue).Count -eq 0) { Remove-Item -Path $hardlineState -Force -ErrorAction SilentlyContinue }`,
+  );
+
   return tail;
 }
 
 /**
- * Le releve lui-meme n'est PAS supprime. Il reste la seule trace de l'etat
- * d'avant amorcage, et la queue est detachee : son echec n'est pas observable
- * depuis le Mac, qui aura pourtant deja oublie l'entree du manifeste. Le
- * laisser sur le PC, c'est garder de quoi recommencer.
- *
- * L'accuse de reception, lui, part : une installation ulterieure retrouvera
- * alors le releve non acquitte, donc non conforme, donc reenregistre.
+ * L'accuse de reception part avant le lancement. Le releve immuable est retire
+ * par la queue elle-meme, apres ses gestes de restauration : il doit rester
+ * disponible jusqu'au dernier instant ou une reprise est encore observable.
  */
 const RESTORE = (
   alias: string,
@@ -391,14 +470,16 @@ const RESTORE = (
   return { script: lines.join("\n"), detached: tail.length > 0 };
 };
 
-/** Ce que le detail doit dire quand il n'y a rien d'exploitable a rapatrier. */
-const DEFECT_DETAIL: Record<CaptureDefect, string> = {
+/** Une capture douteuse interdit toute mutation supplementaire. */
+const DEFECT_ERROR: Record<CaptureDefect, string> = {
   absent:
-    "aucun relevé d'amorçage sur le PC\u00a0: ce que l'amorçage a modifié ne pourra pas être défait",
+    "Aucun relevé durable d'amorçage n'existe sur le PC. Ne pas continuer l'installation : récupérer le relevé d'origine, ou remettre le PC dans son état antérieur puis relancer l'amorçage.",
   illisible:
-    "relevé d'amorçage illisible sur le PC\u00a0: ce que l'amorçage a modifié ne pourra pas être défait",
+    "Le relevé durable d'amorçage est illisible sur le PC. Ne pas continuer l'installation : réparer ou récupérer ce relevé avant de relancer l'amorçage.",
   version:
-    "relevé d'amorçage d'une version inconnue\u00a0: ce que l'amorçage a modifié ne pourra pas être défait",
+    "La version du relevé durable d'amorçage n'est pas prise en charge. Ne pas continuer l'installation : utiliser une version de hardline compatible avec ce relevé.",
+  inutilisable:
+    "Le relevé durable d'amorçage est sémantiquement inutilisable. Ne pas continuer l'installation : récupérer un relevé complet et valide avant de relancer l'amorçage.",
 };
 
 // --- L'etape. ------------------------------------------------------------
@@ -419,17 +500,9 @@ export const bootstrapWindowsStep: Step<BootstrapState> = {
 
     const read = readCapture(current.capture);
 
-    // Un PC amorcé par une version antérieure de hardline n'a pas de relevé ;
-    // un relevé abîmé ou d'une autre version n'est pas exploitable non plus.
-    // Aucun des trois ne bloque l'installation, et aucun n'invente un état
-    // antérieur : on le dit, et on ne promet rien.
     if (!("capture" in read)) {
       const defect = current.unreadable ? "illisible" : read.defect;
-      return {
-        conforming: true,
-        current: { capture: null, acknowledged: current.acknowledged },
-        detail: DEFECT_DETAIL[defect],
-      };
+      throw new Error(DEFECT_ERROR[defect]);
     }
 
     const { capture } = read;

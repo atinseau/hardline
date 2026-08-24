@@ -1,5 +1,5 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
-import { CONFIG } from "../../src/config";
+import { CONFIG } from "../fixtures/config";
 
 let jsonQueue: unknown[][] = [];
 /**
@@ -33,7 +33,13 @@ mock.module("../../src/lib/ssh", () => ({
   runRemoteChecked,
 }));
 
-const { apolloInstallStep, ForeignApolloError, MARKER_FILE, UNINSTALL_WARN_MARK } =
+const {
+  apolloInstallStep,
+  backupApolloConfig,
+  ForeignApolloError,
+  MARKER_FILE,
+  UNINSTALL_WARN_MARK,
+} =
   await import("../../src/steps/apollo-install");
 
 beforeEach(() => {
@@ -290,6 +296,29 @@ describe("apply - installation etrangere", () => {
   });
 });
 
+describe("Apollo Rescue Backup", () => {
+  test("conserve configuration, version detectee et explication dans un dossier visible", async () => {
+    jsonQueue.push([
+      { backupPath: "C:\\ProgramData\\hardline\\apollo-rescue-20260824-120000" },
+    ]);
+
+    const path = await backupApolloConfig(CONFIG, {
+      version: "0.4.5",
+      explanation:
+        "This Apollo installation existed before Hardline and is not reinstalled automatically.",
+    });
+    const script = scriptLog[0] ?? "";
+
+    expect(path).toContain("apollo-rescue-");
+    expect(script).toContain("apollo-rescue-$stamp");
+    expect(script).toContain("sunshine.conf");
+    expect(script).toContain("README.txt");
+    expect(script).toContain("Detected version: 0.4.5");
+    expect(script).toContain("existed before Hardline");
+    expect(script).not.toContain("Remove-Item");
+  });
+});
+
 describe("apply - remplacement d'une installation posee par hardline", () => {
   test("sauvegarde puis desinstalle puis reinstalle, dans cet ordre", async () => {
     jsonQueue.push([
@@ -321,11 +350,7 @@ describe("apply - remplacement d'une installation posee par hardline", () => {
 });
 
 describe("restore", () => {
-  test("nous : sauvegarde puis desinstallation complete dans l'ordre exact", async () => {
-    jsonQueue.push([
-      { backupPath: "C:\\ProgramData\\hardline\\apollo-backup-20260101-000000.conf" },
-    ]);
-
+  test("nous : desinstallation complete sans nouvelle sauvegarde de secours", async () => {
     const outcome = await apolloInstallStep.restore(
       CONFIG,
       { installed: true, version: "0.4.6", ours: true, backupPath: null, pairedClients: 0 },
@@ -333,13 +358,8 @@ describe("restore", () => {
     );
 
     expect(outcome).toBeUndefined();
-    expect(runRemoteJson).toHaveBeenCalledTimes(1);
+    expect(runRemoteJson).not.toHaveBeenCalled();
     expect(runRemoteChecked).toHaveBeenCalledTimes(1);
-
-    const backupAt = logIndexOf("Copy-Item");
-    const uninstallAt = logIndexOf("Uninstall.exe");
-    expect(backupAt).toBeGreaterThanOrEqual(0);
-    expect(uninstallAt).toBeGreaterThan(backupAt);
 
     const script = checkedScript(0);
 
@@ -656,15 +676,13 @@ describe("restore", () => {
    * seule foi de previous.
    */
   test("previous.installed === false : ce que hardline a pose est desinstalle quand meme", async () => {
-    jsonQueue.push([{ backupPath: null }]);
-
     const outcome = await apolloInstallStep.restore(
       CONFIG,
       { installed: false, version: null, ours: false, backupPath: null, pairedClients: 0 },
       { pending: [] },
     );
 
-    expect(runRemoteJson).toHaveBeenCalledTimes(1);
+    expect(runRemoteJson).not.toHaveBeenCalled();
     expect(runRemoteChecked).toHaveBeenCalledTimes(1);
     expect(checkedScript(0)).toContain("Uninstall.exe");
     expect(outcome).toBeUndefined();
@@ -678,15 +696,15 @@ describe("restore", () => {
    * d'origine ne sera pas remis.
    */
   test("previous.installed && !previous.ours : l'etranger d'origine est efface avec le notre, et non remis", async () => {
-    jsonQueue.push([{ backupPath: null }]);
-
     const outcome = await apolloInstallStep.restore(
       CONFIG,
       { installed: true, version: "1.2.3", ours: false, backupPath: null, pairedClients: 4 },
       { pending: [] },
     );
 
-    expect(runRemoteJson).toHaveBeenCalledTimes(1);
+    // Le secours de l'Apollo etranger a ete cree avant son remplacement. La
+    // restauration retire seulement l'Apollo gere par Hardline, sans en creer un autre.
+    expect(runRemoteJson).not.toHaveBeenCalled();
     expect(runRemoteChecked).toHaveBeenCalledTimes(1);
     expect(checkedScript(0)).toContain("Uninstall.exe");
     expect(outcome).toBeDefined();

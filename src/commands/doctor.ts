@@ -7,6 +7,7 @@ import { pingFrom, type PingStats } from "../lib/shell";
 import { runLocalPreflight, runRemotePreflight, type CheckResult } from "../lib/preflight";
 import { errorMessage } from "../lib/errors";
 import { measureThroughput, type ThroughputStats } from "../lib/throughput";
+import type { TargetResolution } from "../target-resolution";
 
 export type StepSummary = { name: string; conforming: boolean; detail: string };
 export type Diagnostic = {
@@ -187,7 +188,7 @@ export async function runDoctor(
 }
 
 export function doctorCommand(options: {
-  config: Config;
+  targetResolution: TargetResolution<Config>;
   output: CommandOutput;
 }): Promise<CommandResult<DoctorFact>> {
   return runCommand({
@@ -195,6 +196,12 @@ export function doctorCommand(options: {
     render: renderDoctorFact,
     output: options.output,
     unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
-    execute: (run) => runDoctor(run, options.config),
+    execute: async (run) => {
+      const outcome = await options.targetResolution.during("doctor", async (target) => ({
+        lifecycle: "unchanged",
+        result: await runDoctor(run, target.config),
+      }));
+      return outcome.result;
+    },
   });
 }

@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import type { Config } from "../../src/config";
+import { INSTALLATION_CATALOG } from "../../src/installation-catalog";
 import {
   parseClientList,
   sendPin,
@@ -26,10 +27,8 @@ const CONFIG: Config = {
     webUser: "hardline",
   },
   moonlight: {
-    cask: "moonlight",
+    ...INSTALLATION_CATALOG.moonlight,
     binary: "/opt/homebrew/bin/moonlight",
-    clientName: "hardline-mac",
-    app: "Desktop",
   },
   smb: {
     user: "arthur",

@@ -5,16 +5,19 @@ import { dirname, join } from "node:path";
 import type { CheckResult } from "../../src/lib/preflight";
 import type { Manifest } from "../../src/lib/manifest";
 import type { Step } from "../../src/steps/types";
-import { CONFIG } from "../../src/config";
+import { CONFIG, type Config } from "../fixtures/config";
 import { exitCodeFor, type CommandOutput } from "../../src/command-run";
+import type {
+  LifecycleOutcome,
+  ResolvedTarget,
+  TargetIntent,
+  TargetLifecycle,
+  TargetResolution,
+} from "../../src/target-resolution";
 
 // Les fonctions pures de preflight restent les vraies : hasBlockingFailure et
 // SSH_CHECK decident du parcours, les simuler reviendrait a tester la simulation.
 const realPreflight = await import("../../src/lib/preflight");
-const realFs = await import("node:fs/promises");
-// Capturee AVANT le mock : `realFs.readFile` lu apres coup rend le mock
-// lui-meme, et la delegation ci-dessous serait une recursion infinie.
-const readFileReel = realFs.readFile;
 
 // Journal d'execution. C'est l'ORDRE qui porte le correctif : la convergence
 // locale doit preceder la premiere sonde distante, sans quoi la sonde part par
@@ -24,9 +27,6 @@ const trace: string[] = [];
 let localChecks: CheckResult[] = [];
 let remoteRounds: CheckResult[][] = [];
 let remoteCalls = 0;
-let bootstrapSucceeds = true;
-let serveCalls = 0;
-let waitCalls = 0;
 
 const finishes: string[] = [];
 const failures: string[] = [];
@@ -35,7 +35,6 @@ const reports: string[][] = [];
 const infos: string[] = [];
 const warns: string[] = [];
 let applyThrowsOn: string | null = null;
-let publicKey: string | null = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
 const appliedGroups: string[][] = [];
 const manifestPaths: string[] = [];
 /** L'ordre reellement enregistre, tel que le manifeste le porterait. */
@@ -57,11 +56,6 @@ mock.module("../../src/lib/preflight", () => ({
     const round = remoteRounds[Math.min(remoteCalls, remoteRounds.length - 1)];
     remoteCalls += 1;
     return round ?? [];
-  },
-  waitForRemote: async () => {
-    trace.push("wait");
-    waitCalls += 1;
-    return bootstrapSucceeds;
   },
 }));
 
@@ -184,19 +178,6 @@ mock.module("../../src/lib/orchestrator", () => ({
   },
 }));
 
-mock.module("../../src/lib/bootstrap-server", () => ({
-  serveBootstrap: async (options: { port: number }) => {
-    trace.push("serve");
-    serveCalls += 1;
-    return {
-      url: `http://mac.local:${options.port}`,
-      port: options.port,
-      stop: () => trace.push("stop"),
-    };
-  },
-  localBootstrapUrl: (port: number) => `http://mac.local:${port}/bootstrap.ps1`,
-}));
-
 /** Le terminal, tel que la commande le voit. Faux = script, tache planifiee. */
 let interactif = true;
 
@@ -208,25 +189,6 @@ const MANIFEST_PATH = join(
   `hardline-install-${process.pid}`,
   "manifest.json",
 );
-
-mock.module("../../src/lib/manifest", () => ({
-  ...realManifest,
-  defaultManifestPath: () => MANIFEST_PATH,
-}));
-
-// La cle publique est lue avant de servir le script d'amorcage ; le test ne
-// doit dependre d'aucun fichier de la vraie machine.
-mock.module("node:fs/promises", () => ({
-  ...realFs,
-  // Seule la cle publique est simulee. Tout le reste doit etre lu pour de vrai
-  // : le verrou du manifeste en fait partie, et un verrou illisible ne nomme
-  // pas son detenteur.
-  readFile: async (path: Parameters<typeof realFs.readFile>[0], ...rest: never[]) => {
-    if (!String(path).endsWith(".pub")) return readFileReel(path, ...rest);
-    if (publicKey === null) throw new Error("ENOENT");
-    return publicKey;
-  },
-}));
 
 const { installCommand: executeInstallCommand } = await import("../../src/commands/install");
 
@@ -251,8 +213,41 @@ const output: CommandOutput = {
   },
 };
 
+const intents: TargetIntent[] = [];
+const lifecycleOutcomes: string[] = [];
+let profileLifecycle: TargetLifecycle = "installation-incomplete";
+let targetConfig: Config = CONFIG;
+
+function targetResolution(): TargetResolution<Config> {
+  return {
+    async during<Result>(
+      intent: TargetIntent,
+      callback: (target: ResolvedTarget<Config>) => Promise<LifecycleOutcome<Result>>,
+    ): Promise<LifecycleOutcome<Result>> {
+      intents.push(intent);
+      const lock = await realManifest.acquireManifestLock(MANIFEST_PATH);
+      try {
+        const outcome = await callback({
+          config: targetConfig,
+          manifestPath: MANIFEST_PATH,
+          profile: { lifecycle: profileLifecycle } as ResolvedTarget<Config>["profile"],
+          resolution: "validated",
+        });
+        lifecycleOutcomes.push(outcome.lifecycle);
+        return outcome;
+      } finally {
+        await lock.release();
+      }
+    },
+  } as TargetResolution<Config>;
+}
+
 async function installCommand(options: { yes?: boolean } = {}): Promise<void> {
-  const result = await executeInstallCommand({ config: CONFIG, output, yes: options.yes });
+  const result = await executeInstallCommand({
+    targetResolution: targetResolution(),
+    output,
+    yes: options.yes,
+  });
   process.exitCode = exitCodeFor(result);
 }
 
@@ -315,7 +310,6 @@ beforeEach(() => {
   askSecretCalls.length = 0;
   askSecretRejects = false;
   interactif = true;
-  publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 test\n";
   appliedGroups.length = 0;
   manifestPaths.length = 0;
   manifestOrder.length = 0;
@@ -324,9 +318,10 @@ beforeEach(() => {
   localChecks = MAC_OK;
   remoteRounds = [PC_OK];
   remoteCalls = 0;
-  bootstrapSucceeds = true;
-  serveCalls = 0;
-  waitCalls = 0;
+  intents.length = 0;
+  lifecycleOutcomes.length = 0;
+  profileLifecycle = "installation-incomplete";
+  targetConfig = CONFIG;
   process.exitCode = 0;
 });
 
@@ -363,41 +358,17 @@ describe("installCommand", () => {
     expect(manifestPaths[0]).toContain("manifest.json");
   });
 
-  test("un blocage cote Mac ne modifie rien et n'envoie pas amorcer le PC", async () => {
+  test("un blocage cote Mac ne modifie rien et ne sonde pas le PC", async () => {
     localChecks = [ko("service-mac")];
     await installCommand();
-    // Ni convergence, ni sonde distante, ni dix minutes passees devant le PC.
+    // Ni convergence, ni sonde distante.
     expect(trace).toEqual(["preflight-local", "forgetPassword"]);
-    expect(serveCalls).toBe(0);
-    expect(waitCalls).toBe(0);
     expect(process.exitCode).toBe(1);
     expect(finishes.join("\n")).toContain("Nothing was changed");
   });
 
-  test("un amorcage reussi rejoue la phase distante au lieu de demander une relance", async () => {
-    remoteRounds = [[ko("ssh")], PC_OK];
-    await installCommand();
-    expect(trace).toEqual([
-      "preflight-local",
-      "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
-      "preflight-remote",
-      "serve",
-      "wait",
-      "stop",
-      "preflight-remote",
-      "apply:bootstrap-windows",
-      "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
-      "forgetPassword",
-    ]);
-    expect(finishes.join("\n")).toContain("Hardline is installed");
-    expect(finishes.join("\n")).not.toContain("Relancer");
-    expect(process.exitCode).toBe(0);
-  });
-
-  test("un amorcage sans reponse laisse le Mac converge et une consigne utilisable", async () => {
+  test("un echec SSH apres resolution rend le PC non pret sans nouvelle tentative", async () => {
     remoteRounds = [[ko("ssh")]];
-    bootstrapSucceeds = false;
     await installCommand();
     expect(remoteCalls).toBe(1);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
@@ -405,15 +376,13 @@ describe("installCommand", () => {
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
-    expect(message).toContain("Mac's previous state remains recorded");
+    expect(message).toContain("Mac's previous state is recorded");
     expect(message).toContain("hardline uninstall");
   });
 
-  test("un blocage distant autre que SSH n'entre jamais dans l'amorcage", async () => {
+  test("un blocage distant autre que SSH arrete la configuration du PC", async () => {
     remoteRounds = [[ok("ssh"), ko("gpu")]];
     await installCommand();
-    expect(serveCalls).toBe(0);
-    expect(waitCalls).toBe(0);
     expect(remoteCalls).toBe(1);
     expect(process.exitCode).toBe(1);
     // La sortie doit dire dans quel etat sont les machines et comment en sortir.
@@ -421,12 +390,8 @@ describe("installCommand", () => {
     expect(message).toContain("hardline uninstall");
   });
 
-  // Le scenario qui motive toute la vague : PC en 192.168.1.50/24 statique,
-  // sshd desactive. L'amorcage efface cet adressage, puis le second preflight
-  // bloque sur le GPU. Si le releve n'est pas rapatrie AVANT cette porte, le
-  // manifeste reste vide et l'adressage d'origine du PC n'existe plus nulle part.
   test("rapatrie le releve d'amorcage avant de buter sur une precondition", async () => {
-    remoteRounds = [[ko("ssh")], [ok("ssh"), ko("gpu")]];
+    remoteRounds = [[ok("ssh"), ko("gpu")]];
     await installCommand();
 
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
@@ -434,10 +399,6 @@ describe("installCommand", () => {
       "preflight-local",
       "providePassword",
       "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
-      "preflight-remote",
-      "serve",
-      "wait",
-      "stop",
       "preflight-remote",
       "apply:bootstrap-windows",
       "forgetPassword",
@@ -483,10 +444,9 @@ describe("installCommand", () => {
     expect(finishes.join("\n")).toContain("Mac's previous state is recorded");
   });
 
-  test("SSH en echec accompagne d'un autre blocage n'ouvre pas l'amorcage", async () => {
+  test("SSH en echec accompagne d'un autre blocage ne relance pas le preflight", async () => {
     remoteRounds = [[ko("ssh"), ko("lien-windows")]];
     await installCommand();
-    expect(serveCalls).toBe(0);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
     expect(process.exitCode).toBe(1);
   });
@@ -496,30 +456,7 @@ describe("installCommand", () => {
     await installCommand();
     expect(trace).toEqual(["preflight-local", "forgetPassword"]);
     expect(appliedGroups).toEqual([]);
-    expect(serveCalls).toBe(0);
     expect(finishes.join("\n")).toContain("Nothing was changed");
-    expect(process.exitCode).toBe(1);
-  });
-
-  test("une cle disparue entre la phase 1 et l'amorcage sort en disant l'etat du Mac", async () => {
-    // Le fichier existait a la phase 1 et n'existe plus a l'amorcage : le seul
-    // cas que la precondition locale ne peut pas couvrir.
-    remoteRounds = [[ko("ssh")]];
-    publicKey = null;
-    await installCommand();
-    expect(trace).toEqual([
-      "preflight-local",
-      "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
-      "preflight-remote",
-      "forgetPassword",
-    ]);
-    expect(serveCalls).toBe(0);
-    expect(appliedGroups).toEqual([LOCAL_GROUP]);
-    expect(failures.join("\n")).toContain("ssh-keygen -t ed25519");
-    const message = finishes.join("\n");
-    expect(message).toContain("Mac remains configured");
-    expect(message).toContain("hardline uninstall");
     expect(process.exitCode).toBe(1);
   });
 
@@ -564,8 +501,7 @@ describe("installCommand", () => {
 
     expect(trace).toEqual([]);
     expect(appliedGroups).toEqual([]);
-    expect(failures.join("\n")).toContain("Another Command Run is active");
-    expect(finishes.join("\n")).toContain("Installation could not start");
+    expect(failures.join("\n")).toContain("Installation failed safely");
     expect(process.exitCode).toBe(1);
   });
 
@@ -574,6 +510,19 @@ describe("installCommand", () => {
     await installCommand();
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP, REMOTE_GROUP]);
     expect(process.exitCode).toBe(0);
+  });
+
+  test("passe l'intention install et publie installed au succes", async () => {
+    await installCommand();
+    expect(intents).toEqual(["install"]);
+    expect(lifecycleOutcomes).toEqual(["installed"]);
+  });
+
+  test("conserve installed sur un echec avant mutation", async () => {
+    profileLifecycle = "installed";
+    localChecks = [ko("service-mac")];
+    await installCommand();
+    expect(lifecycleOutcomes).toEqual(["unchanged"]);
   });
 });
 
@@ -673,6 +622,19 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
 });
 
 describe("installCommand, mot de passe Windows", () => {
+  test("ne consulte ni ne fournit de mot de passe sans partage SMB", async () => {
+    targetConfig = {
+      ...CONFIG,
+      smb: { ...CONFIG.smb, shares: [] },
+    };
+    await installCommand();
+
+    expect(getSecretForCredentials).not.toHaveBeenCalled();
+    expect(askSecret).not.toHaveBeenCalled();
+    expect(providePassword).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+  });
+
   test("le demande une seule fois quand le trousseau est vide, avant la convergence locale", async () => {
     windowsSecretPresent = false;
     await installCommand();
