@@ -2,8 +2,10 @@ import { test, expect, describe } from "bun:test";
 import {
   encodePowerShell,
   withRemotePreamble,
+  buildPowerShellTransport,
   buildSSHArgs,
   parseRemoteJson,
+  runRemote,
   type SSHTarget,
 } from "../../src/lib/ssh";
 
@@ -89,6 +91,46 @@ describe("preambule pose au point d'entree commun", () => {
   });
 });
 
+describe("transport des scripts volumineux", () => {
+  test("garde la commande Windows sous sa limite et transporte le script par stdin", () => {
+    const script = `Write-Output 'nettoyage'\n${"# contenu volumineux\n".repeat(2_000)}`;
+    const transport = buildPowerShellTransport(script);
+
+    expect(transport.remoteCommand.length).toBeLessThan(8_191);
+    expect(Buffer.from(transport.stdin, "base64").toString("utf16le")).toBe(
+      withRemotePreamble(script),
+    );
+    expect(transport.remoteCommand).not.toContain(transport.stdin);
+  });
+
+  test("confie une entrée bornée à spawn pour fermer stdin sans attendre", async () => {
+    const originalSpawn = Bun.spawn;
+    let capturedStdin: unknown;
+    try {
+      Bun.spawn = ((_command: string[], options: { stdin?: unknown }) => {
+        capturedStdin = options.stdin;
+        return {
+          get stdin() {
+            throw new Error("incremental stdin must not be used");
+          },
+          stdout: new Response("done\n").body,
+          stderr: new Response("").body,
+          exited: Promise.resolve(0),
+        };
+      }) as unknown as typeof Bun.spawn;
+
+      await expect(runRemote(TARGET, "Write-Output 'done'")).resolves.toEqual({
+        exitCode: 0,
+        stdout: "done",
+        stderr: "",
+      });
+      expect(capturedStdin).toBeInstanceOf(Uint8Array);
+    } finally {
+      Bun.spawn = originalSpawn;
+    }
+  });
+});
+
 describe("buildSSHArgs", () => {
   test("refuse tout appel sans confiance d'hote epinglee", () => {
     expect(() =>
@@ -128,7 +170,7 @@ describe("buildSSHArgs", () => {
       "-o",
       "StrictHostKeyChecking=yes",
       "-o",
-      "UserKnownHostsFile=/Users/arthur/Library/Application Support/Hardline/known_hosts",
+      'UserKnownHostsFile="/Users/arthur/Library/Application Support/Hardline/known_hosts"',
       "-o",
       "GlobalKnownHostsFile=/dev/null",
       "-o",

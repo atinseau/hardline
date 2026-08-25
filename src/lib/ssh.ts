@@ -63,6 +63,21 @@ export function withRemotePreamble(script: string): string {
   return `${OUTPUT_UTF8}\n${SILENT_PROGRESS}\n${script}`;
 }
 
+const STDIN_LOADER = `$encoded = [Console]::In.ReadToEnd()
+$source = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+& ([ScriptBlock]::Create($source))`;
+
+export function buildPowerShellTransport(script: string): Readonly<{
+  remoteCommand: string;
+  stdin: string;
+}> {
+  return {
+    remoteCommand:
+      `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(STDIN_LOADER)}`,
+    stdin: encodePowerShell(withRemotePreamble(script)),
+  };
+}
+
 export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[] {
   if (!target.knownHostsFile || !target.hostKeyAlias) {
     throw new Error("SSH requires a pinned Hardline known-hosts file and HostKeyAlias.");
@@ -83,7 +98,7 @@ export function buildSSHArgs(target: SSHTarget, remoteCommand: string): string[]
     "-o",
     "StrictHostKeyChecking=yes",
     "-o",
-    `UserKnownHostsFile=${target.knownHostsFile}`,
+    `UserKnownHostsFile="${target.knownHostsFile}"`,
     "-o",
     "GlobalKnownHostsFile=/dev/null",
     "-o",
@@ -114,9 +129,13 @@ export async function runRemote(
   script: string,
   timeoutMs = 120_000,
 ): Promise<RemoteResult> {
-  const remoteCommand = `powershell -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(withRemotePreamble(script))}`;
+  const transport = buildPowerShellTransport(script);
 
-  const proc = Bun.spawn(buildSSHArgs(target, remoteCommand), {
+  const proc = Bun.spawn(buildSSHArgs(target, transport.remoteCommand), {
+    // Une entrée bornée laisse Bun écrire puis fermer le descripteur. Avec un
+    // FileSink manuel, OpenSSH pouvait ne jamais observer l'EOF et le loader
+    // PowerShell restait bloqué dans ReadToEnd().
+    stdin: Buffer.from(transport.stdin, "utf8"),
     stdout: "pipe",
     stderr: "pipe",
     timeout: timeoutMs,
