@@ -64,7 +64,12 @@ const strictSsh: SSHTarget = {
 function projected(candidate: TargetProfile): Config {
   return {
     mac: { serviceName: candidate.mac.ethernet.serviceName, ip: candidate.directLink.macAddress, subnetMask: "255.255.255.252" },
-    windows: { interfaceAlias: candidate.windows.ethernet.interfaceAlias, ip: candidate.directLink.windowsAddress, prefixLength: 30 },
+    windows: {
+      interfaceAlias: candidate.windows.ethernet.interfaceAlias,
+      ip: candidate.directLink.windowsAddress,
+      prefixLength: 30,
+      macAddress: candidate.windows.ethernet.macAddress,
+    },
     ssh: {
       host: candidate.directLink.windowsAddress,
       user: "Arthur",

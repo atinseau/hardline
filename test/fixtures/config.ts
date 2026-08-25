@@ -15,6 +15,7 @@ export const CONFIG: Config = {
     interfaceAlias: "Ethernet",
     ip: "10.10.10.1",
     prefixLength: 24,
+    macAddress: "E8-9C-25-2A-70-E1",
   },
   ssh: {
     host: "10.10.10.1",

@@ -9,6 +9,7 @@ import {
   TargetResolutionRefusedError,
   writeTargetProfile,
 } from "../../src/target-resolution";
+import { DirectLinkUnavailableError } from "../../src/target-resolution/link-recovery";
 import type {
   TargetProfile,
   TargetResolutionDependencies,
@@ -273,6 +274,61 @@ test("Link Recovery runs under the lock before projection and exposes recovered 
     "link:recovered",
     "config:projected",
     "callback",
+    "lock:released",
+  ]);
+});
+
+test("up reaches its callback when the paired PC is inaccessible so it can wake it", async () => {
+  const { dependencies, events } = await setup();
+  const resolution = new TargetResolution({
+    ...dependencies,
+    recoverLink: async () => {
+      events.push("link:pc-inaccessible");
+      throw new DirectLinkUnavailableError("pc-inaccessible");
+    },
+  });
+
+  const outcome = await resolution.during("up", async (target) => {
+    events.push("callback:wake");
+    expect(target.resolution).toBe("validated");
+    return { lifecycle: "unchanged", result: "wake attempted" };
+  });
+
+  expect(outcome.result).toBe("wake attempted");
+  expect(events).toEqual([
+    "lock:acquired",
+    "profile:validated",
+    "link:pc-inaccessible",
+    "config:projected",
+    "callback:wake",
+    "lock:released",
+  ]);
+});
+
+test("doctor still refuses an inaccessible paired PC before callback entry", async () => {
+  const { dependencies, events } = await setup();
+  const resolution = new TargetResolution({
+    ...dependencies,
+    recoverLink: async () => {
+      events.push("link:pc-inaccessible");
+      throw new DirectLinkUnavailableError("pc-inaccessible");
+    },
+  });
+  let callbacks = 0;
+
+  await expect(resolution.during("doctor", async () => {
+    callbacks += 1;
+    return { lifecycle: "unchanged", result: null };
+  })).rejects.toMatchObject({
+    name: "DirectLinkUnavailableError",
+    diagnosis: "pc-inaccessible",
+  });
+
+  expect(callbacks).toBe(0);
+  expect(events).toEqual([
+    "lock:acquired",
+    "profile:validated",
+    "link:pc-inaccessible",
     "lock:released",
   ]);
 });

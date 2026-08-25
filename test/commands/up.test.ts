@@ -10,12 +10,13 @@ import type {
   TargetIntent,
   TargetResolution,
 } from "../../src/target-resolution";
+import { TargetResolution as RealTargetResolution } from "../../src/target-resolution/resolution";
+import { DirectLinkUnavailableError } from "../../src/target-resolution/link-recovery";
 
 /** Journal d'appels partage : c'est l'ORDRE qui porte les garanties de up. */
 const order: string[] = [];
 
 let reachable = true;
-let arpMac: string | null = "e8:9c:25:2a:70:e1";
 let displays: Array<{
   widthPx: number;
   heightPx: number;
@@ -53,11 +54,10 @@ const runRemoteChecked = mock(async (..._args: unknown[]) => {
 });
 mock.module("../../src/lib/ssh", () => ({ runRemoteJson, runRemoteChecked }));
 
-const lookupMac = mock(async (..._args: unknown[]) => arpMac);
 const sendMagicPacket = mock(async (..._args: unknown[]) => {
   order.push("sendMagicPacket");
 });
-mock.module("../../src/lib/wol", () => ({ lookupMac, sendMagicPacket }));
+mock.module("../../src/lib/wol", () => ({ sendMagicPacket }));
 
 const waitForRemote = mock(async (..._args: unknown[]) => {
   order.push("waitForRemote");
@@ -211,7 +211,6 @@ async function upCommand(cli: Parameters<typeof executeUpCommand>[0]["cli"]): Pr
 beforeEach(() => {
   order.length = 0;
   reachable = true;
-  arpMac = "e8:9c:25:2a:70:e1";
   wakeSucceeds = true;
   displays = [
     {
@@ -243,7 +242,6 @@ beforeEach(() => {
 
   runRemoteJson.mockClear();
   runRemoteChecked.mockClear();
-  lookupMac.mockClear();
   sendMagicPacket.mockClear();
   waitForRemote.mockClear();
   listDisplays.mockClear();
@@ -450,10 +448,9 @@ describe("runUp, PC injoignable au depart", () => {
     reachable = false;
   });
 
-  test("lit l'adresse materielle dans la table ARP avant d'emettre le paquet magique", async () => {
+  test("utilise l'adresse materielle persistée pour réveiller un PC sans entrée ARP", async () => {
     await runUp(CONFIG, NO_OPTIONS);
-    expect(lookupMac).toHaveBeenCalledWith("10.10.10.1");
-    expect(sendMagicPacket).toHaveBeenCalledWith("e8:9c:25:2a:70:e1", "10.10.10.255");
+    expect(sendMagicPacket).toHaveBeenCalledWith("E8-9C-25-2A-70-E1", "10.10.10.255");
   });
 
   test("attend le lien apres avoir envoye le paquet magique", async () => {
@@ -462,12 +459,6 @@ describe("runUp, PC injoignable au depart", () => {
     const waited = order.indexOf("waitForRemote");
     expect(sent).toBeGreaterThanOrEqual(0);
     expect(waited).toBeGreaterThan(sent);
-  });
-
-  test("echoue explicitement si aucune adresse materielle n'est connue", async () => {
-    arpMac = null;
-    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/hardware address/);
-    expect(sendMagicPacket).not.toHaveBeenCalled();
   });
 
   test("echoue si le PC ne repond pas apres le reveil", async () => {
@@ -636,6 +627,39 @@ describe("upCommand", () => {
       resolution: { width: 2560, height: 1440 },
       fps: 144,
     });
+  });
+});
+
+describe("upCommand avec la vraie résolution de cible", () => {
+  test("réveille le PC quand Link Recovery le déclare inaccessible", async () => {
+    reachable = false;
+    const profile = { lifecycle: "installed" } as ResolvedTarget<Config>["profile"];
+    const realTargetResolution = new RealTargetResolution<Config>({
+      paths: { profile: "/state/target-profile.json", manifest: "/state/manifest.json" },
+      profiles: {
+        read: async () => profile,
+        write: async () => {},
+        remove: async () => {},
+      },
+      acquireLock: async () => ({ release: async () => {} }),
+      validateProfile: async () => profile,
+      projectConfig: () => CONFIG,
+      recoverLink: async () => {
+        throw new DirectLinkUnavailableError("pc-inaccessible");
+      },
+      removeManifest: async () => {},
+      removeIdentity: async () => {},
+    });
+
+    const result = await executeUpCommand({
+      targetResolution: realTargetResolution,
+      output,
+      cli: { fullscreen: false },
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(sendMagicPacket).toHaveBeenCalledWith("E8-9C-25-2A-70-E1", "10.10.10.255");
+    expect(order.indexOf("waitForRemote")).toBeGreaterThan(order.indexOf("sendMagicPacket"));
   });
 });
 

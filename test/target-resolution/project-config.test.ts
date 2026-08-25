@@ -53,6 +53,7 @@ test("projects command-only Config from the validated Target Profile and fixed c
     interfaceAlias: "Ethernet 2",
     ip: "10.0.0.1",
     prefixLength: 30,
+    macAddress: profile.windows.ethernet.macAddress,
   });
   expect(config.ssh).toEqual({
     host: "10.0.0.1",

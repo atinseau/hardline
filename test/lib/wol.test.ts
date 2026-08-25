@@ -37,6 +37,13 @@ describe("magicPacket", () => {
     expect(Array.from(packet.slice(96, 102))).toEqual(macBytes);
   });
 
+  test("accepte l'adresse persistée au format Windows avec des tirets", () => {
+    const packet = magicPacket("E8-9C-25-2A-70-E1");
+    const macBytes = [0xe8, 0x9c, 0x25, 0x2a, 0x70, 0xe1];
+    expect(Array.from(packet.slice(6, 12))).toEqual(macBytes);
+    expect(Array.from(packet.slice(96, 102))).toEqual(macBytes);
+  });
+
   test("lève une erreur sur une adresse illisible", () => {
     expect(() => magicPacket("pas une adresse")).toThrow();
   });

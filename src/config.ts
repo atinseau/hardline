@@ -54,7 +54,13 @@ export type SMBConfig = {
 
 export type Config = {
   mac: { serviceName: string; ip: string; subnetMask: string };
-  windows: { interfaceAlias: string; ip: string; prefixLength: number };
+  windows: {
+    interfaceAlias: string;
+    ip: string;
+    prefixLength: number;
+    /** Adresse matérielle persistée, disponible même quand ARP ne connaît plus le PC éteint. */
+    macAddress: string;
+  };
   ssh: SSHTarget;
   bootstrapPort: number;
   apollo: ApolloConfig;

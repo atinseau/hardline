@@ -10,11 +10,12 @@ const MAC_PATTERN = /^([0-9a-fA-F]{1,2}:){5}[0-9a-fA-F]{1,2}$/;
 
 /** Fonction pure. Compose les 102 octets : 6 fois 0xFF puis 16 fois l'adresse. */
 export function magicPacket(mac: string): Uint8Array {
-  if (!MAC_PATTERN.test(mac)) {
+  const normalizedMac = mac.replaceAll("-", ":");
+  if (!MAC_PATTERN.test(normalizedMac)) {
     throw new Error(`Invalid hardware address: ${mac}`);
   }
 
-  const macBytes = mac.split(":").map((part) => Number.parseInt(part, 16));
+  const macBytes = normalizedMac.split(":").map((part) => Number.parseInt(part, 16));
 
   const packet = new Uint8Array(MAGIC_PACKET_BYTES);
   packet.fill(0xff, 0, PREAMBLE_BYTES);

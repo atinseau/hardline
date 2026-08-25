@@ -2,7 +2,7 @@ import type { Config } from "../config";
 import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
 import { runCommand } from "../command-run";
 import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
-import { lookupMac, sendMagicPacket } from "../lib/wol";
+import { sendMagicPacket } from "../lib/wol";
 import { waitForRemote } from "../lib/preflight";
 import { colorProfileIssue, listDisplays, type Display } from "../lib/display";
 import { getSecret } from "../lib/keychain";
@@ -125,11 +125,10 @@ async function pcReachable(config: Config): Promise<boolean> {
 }
 
 async function wakePC(config: Config): Promise<void> {
-  const mac = await lookupMac(config.windows.ip);
-  if (!mac) {
-    throw new Error(`No hardware address was found for ${config.windows.ip}. Has the PC responded on this link before?`);
-  }
-  await sendMagicPacket(mac, broadcastAddress(config.mac.ip, config.mac.subnetMask));
+  await sendMagicPacket(
+    config.windows.macAddress,
+    broadcastAddress(config.mac.ip, config.mac.subnetMask),
+  );
   if (!(await waitForRemote(config, WAKE_DEADLINE_MS))) {
     throw new Error(`The PC did not respond within ${WAKE_DEADLINE_MS / 60_000} minutes after wake.`);
   }

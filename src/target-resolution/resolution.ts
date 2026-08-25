@@ -6,6 +6,7 @@ import type {
   ResolutionKind,
   TargetResolutionDependencies,
 } from "./types";
+import { DirectLinkUnavailableError } from "./link-recovery";
 
 export type TargetResolutionRefusalReason =
   | "profile-absent"
@@ -101,9 +102,17 @@ export class TargetResolution<ProjectedConfig> {
 
       let profile = await dependencies.validateProfile(stored);
       if (profile.lifecycle !== "retirement-incomplete" && dependencies.recoverLink) {
-        const recovered = await dependencies.recoverLink(profile);
-        profile = recovered.profile;
-        if (resolution !== "bootstrapped") resolution = recovered.resolution;
+        try {
+          const recovered = await dependencies.recoverLink(profile);
+          profile = recovered.profile;
+          if (resolution !== "bootstrapped") resolution = recovered.resolution;
+        } catch (error) {
+          const wakeablePc =
+            intent === "up" &&
+            error instanceof DirectLinkUnavailableError &&
+            error.diagnosis === "pc-inaccessible";
+          if (!wakeablePc) throw error;
+        }
       }
       if (profile.lifecycle !== "retirement-incomplete") {
         await dependencies.prepareOperation?.(profile, intent);

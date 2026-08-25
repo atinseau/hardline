@@ -25,6 +25,7 @@ export function projectTargetConfig(profile: TargetProfile): Config {
       interfaceAlias: profile.windows.ethernet.interfaceAlias,
       ip: profile.directLink.windowsAddress,
       prefixLength: 30,
+      macAddress: profile.windows.ethernet.macAddress,
     },
     ssh: {
       host: profile.directLink.windowsAddress,
