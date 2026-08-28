@@ -138,6 +138,10 @@ function hasAddress(addresses: readonly string[], expected: string): boolean {
   return addresses.some((address) => address.split("/", 1)[0] === expected);
 }
 
+function hasDirectAddress(addresses: readonly string[], expected: string): boolean {
+  return addresses.includes(`${expected}/30`);
+}
+
 function isIpv4Address(value: string): boolean {
   const parsed = parseIpv4Cidr(value);
   return parsed.kind === "parsed" && parsed.prefixLength === 32 && value === parsed.firstAddress;
@@ -202,22 +206,7 @@ function collisionInputs(
       ? [profile.pendingMigration.oldLink, profile.pendingMigration.proposedLink]
       : []),
   ];
-  const currentOwnedCidrs = ownedLinks.flatMap((link) => [
-    parseIpv4Cidr(link.subnet),
-    parseIpv4Cidr(`${link.macAddress}/32`),
-    parseIpv4Cidr(`${link.windowsAddress}/32`),
-  ]);
-  const included = (entry: OccupiedCidrObservation) => {
-    if (entry.ownership !== "hardline") return true;
-    const parsed = parseIpv4Cidr(entry.cidr);
-    if (parsed.kind === "invalid") return true;
-    return !currentOwnedCidrs.some(
-      (owned) =>
-        owned.kind === "parsed" &&
-        owned.firstAddress === parsed.firstAddress &&
-        owned.lastAddress === parsed.lastAddress,
-    );
-  };
+  const included = (entry: OccupiedCidrObservation) => entry.ownership !== "hardline";
   const macOccupied = mac.occupiedCidrs.filter(included);
   const windowsOccupied = windows.occupiedCidrs.filter(included);
   const macAddresses = [
@@ -302,7 +291,7 @@ export class LinkRecovery {
         mac.selectedEthernet.macAddress,
       );
     }
-    const missingInitialMacAddress = !hasAddress(
+    const missingInitialMacAddress = !hasDirectAddress(
       mac.selectedEthernet.addresses,
       profile.directLink.macAddress,
     );
@@ -387,11 +376,11 @@ export class LinkRecovery {
         windowsAddress: allocation.windowsAddress,
       };
     }
-    const macHasProposedAddress = hasAddress(
+    const macHasProposedAddress = hasDirectAddress(
       mac.selectedEthernet.addresses,
       nextLink.macAddress,
     );
-    const windowsHasProposedAddress = hasAddress(
+    const windowsHasProposedAddress = hasDirectAddress(
       access.windows.selectedEthernet.addresses,
       nextLink.windowsAddress,
     );
@@ -459,7 +448,7 @@ export class LinkRecovery {
     profile: TargetProfile,
     mac: MacLinkObservation,
   ): Promise<LinkRecoveryResult> {
-    if (!hasAddress(mac.selectedEthernet.addresses, profile.directLink.macAddress)) {
+    if (!hasDirectAddress(mac.selectedEthernet.addresses, profile.directLink.macAddress)) {
       await this.adapters.macAddressing.addMacAddress(
         mac.selectedEthernet.interfaceId,
         profile.directLink.macAddress,
@@ -471,7 +460,7 @@ export class LinkRecovery {
       throw new DirectLinkUnavailableError("pc-alive/direct-link-broken");
     }
     validateWindowsIdentity(profile, proof.windows);
-    if (!hasAddress(proof.windows.selectedEthernet.addresses, profile.directLink.windowsAddress)) {
+    if (!hasDirectAddress(proof.windows.selectedEthernet.addresses, profile.directLink.windowsAddress)) {
       throw new DirectLinkUnavailableError("pc-alive/direct-link-broken");
     }
     const { pendingMigration: _, ...withoutPending } = profile;
@@ -513,7 +502,7 @@ export class LinkRecovery {
   ): Promise<LinkRecoveryResult> {
     const migration = profile.pendingMigration!;
     const proposed: TargetProfile = { ...profile, directLink: migration.proposedLink };
-    if (!hasAddress(mac.selectedEthernet.addresses, migration.proposedLink.macAddress)) {
+    if (!hasDirectAddress(mac.selectedEthernet.addresses, migration.proposedLink.macAddress)) {
       await this.adapters.macAddressing.addMacAddress(
         mac.selectedEthernet.interfaceId,
         migration.proposedLink.macAddress,
@@ -521,9 +510,9 @@ export class LinkRecovery {
       );
     }
     const windowsNeedsMutation =
-      !hasAddress(access.windows.selectedEthernet.addresses, migration.proposedLink.windowsAddress) ||
+      !hasDirectAddress(access.windows.selectedEthernet.addresses, migration.proposedLink.windowsAddress) ||
       (access.kind === "recovery" &&
-        hasAddress(mac.selectedEthernet.addresses, migration.proposedLink.macAddress));
+        hasDirectAddress(mac.selectedEthernet.addresses, migration.proposedLink.macAddress));
     if (windowsNeedsMutation) {
       if (access.kind === "direct") {
         await this.adapters.directLinkAddressing.addWindowsAddressOverDirectLink(
@@ -545,7 +534,7 @@ export class LinkRecovery {
       throw new DirectLinkUnavailableError("pc-alive/direct-link-broken");
     }
     validateWindowsIdentity(profile, proof.windows);
-    if (!hasAddress(proof.windows.selectedEthernet.addresses, migration.proposedLink.windowsAddress)) {
+    if (!hasDirectAddress(proof.windows.selectedEthernet.addresses, migration.proposedLink.windowsAddress)) {
       throw new DirectLinkUnavailableError("pc-alive/direct-link-broken");
     }
 

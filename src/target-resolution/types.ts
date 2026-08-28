@@ -60,7 +60,7 @@ export type TargetStatePaths = {
   readonly manifest: string;
 };
 
-export type TargetIntent = "install" | "up" | "doctor" | "uninstall";
+export type TargetIntent = "install" | "up" | "down" | "doctor" | "uninstall";
 export type ResolutionKind = "validated" | "recovered" | "bootstrapped";
 
 export type ResolvedTarget<ProjectedConfig = Config> = {

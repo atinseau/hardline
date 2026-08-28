@@ -98,6 +98,12 @@ hardline up --resolution 2560x1440 --fps 120
 hardline up --monitor
 ```
 
+Shut down the Windows PC:
+
+```bash
+hardline down
+```
+
 Diagnose the paired machines and Direct Link:
 
 ```bash
@@ -158,6 +164,7 @@ The Target Profile is generated, atomically replaced, owner-readable, and tamper
 |---|---|
 | `hardline install` | Discover, bootstrap, and converge both machines |
 | `hardline up` | Validate or repair the link, then open the Windows session |
+| `hardline down` | Validate or repair the link, then request a forced Windows shutdown |
 | `hardline doctor` | Diagnose the link and managed services |
 | `hardline uninstall` | Restore recorded state and retire the pair |
 

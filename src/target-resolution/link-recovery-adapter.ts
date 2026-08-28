@@ -1,8 +1,8 @@
 import type { Config } from "../config";
 import { psQuote } from "../lib/powershell";
 import {
+  runRemote as defaultRunRemote,
   runRemoteChecked as defaultRunRemoteChecked,
-  runRemoteJson as defaultRunRemoteJson,
   type RemoteResult,
   type SSHTarget,
 } from "../lib/ssh";
@@ -26,7 +26,7 @@ import {
 import { projectTargetConfig as defaultProjectConfig } from "./project-config";
 import { writeTargetProfile as defaultWriteProfile } from "./target-profile";
 import type { TargetProfile } from "./types";
-import { canonicalEthernetHardwareId } from "./network";
+import { canonicalEthernetHardwareId, parseIpv4Cidr } from "./network";
 
 export type WindowsLinkObservationPayload = {
   readonly machineId: string;
@@ -36,7 +36,6 @@ export type WindowsLinkObservationPayload = {
     readonly hardwareId: string;
     readonly macAddress: string;
     readonly ifIndex: number;
-    readonly addresses: readonly string[];
   } | null;
   readonly addresses: readonly { readonly cidr: string; readonly ifIndex: number }[];
   readonly routes: readonly {
@@ -53,10 +52,10 @@ export type LinkRecoveryAdapterOptions = {
   readonly observeMac?: (options?: MacObservationOptions) => Promise<MacBootstrapObservations>;
   readonly runMacCommand?: MacObservationCommandRunner;
   readonly projectConfig?: (profile: TargetProfile) => Config;
-  readonly runRemoteJson?: (
+  readonly runRemote?: (
     target: SSHTarget,
     script: string,
-  ) => Promise<readonly WindowsLinkObservationPayload[]>;
+  ) => Promise<RemoteResult>;
   readonly runRemoteChecked?: (target: SSHTarget, script: string) => Promise<RemoteResult>;
   readonly writeProfile?: (path: string, profile: TargetProfile) => Promise<void>;
 };
@@ -101,7 +100,6 @@ function ownership(
   selectedInterfaceId: string | number,
 ): OccupiedCidrObservation["ownership"] {
   if (observation.interfaceId !== selectedInterfaceId) return "other";
-  if (source === "route" && observation.connected !== true) return "other";
   const links = [
     profile.directLink,
     ...(profile.pendingMigration
@@ -109,12 +107,25 @@ function ownership(
       : []),
   ];
   return links.some((link) =>
-    observation.cidr === (source === "route"
-      ? link.subnet
-      : source === "address"
+    source === "route" || source === "active-use"
+      ? cidrContainedBy(observation.cidr, link.subnet)
+      : observation.cidr === (source === "address"
         ? `${machine === "mac" ? link.macAddress : link.windowsAddress}/30`
         : `${machine === "mac" ? link.windowsAddress : link.macAddress}/32`),
   ) ? "hardline" : "other";
+}
+
+function cidrContainedBy(value: string, parent: string): boolean {
+  const child = parseIpv4Cidr(value);
+  const container = parseIpv4Cidr(parent);
+  return child.kind === "parsed" &&
+    container.kind === "parsed" &&
+    ipv4Value(child.firstAddress) >= ipv4Value(container.firstAddress) &&
+    ipv4Value(child.lastAddress) <= ipv4Value(container.lastAddress);
+}
+
+function ipv4Value(address: string): number {
+  return address.split(".").reduce((value, octet) => value * 256 + Number(octet), 0);
 }
 
 function occupiedCidrs(
@@ -150,28 +161,82 @@ function normalizedMacAddress(value: string): string {
 
 function windowsObservationScript(hardwareId: string): string {
   const hardwareIdQ = psQuote(hardwareId, "persisted Windows Ethernet hardware ID");
-  return `$machineId = [string](Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID
+  // Windows PowerShell 5.1 can hang while serializing combined NetTCPIP collections.
+  return `$ErrorActionPreference = 'Stop'
+$separator = [char]9
+$machineId = [string](Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID
 $computerName = [string]$env:COMPUTERNAME
 $adapter = Get-NetAdapter -IncludeHidden | Where-Object { ([string]$_.InterfaceGuid).Trim('{}') -ieq ${hardwareIdQ}.Trim('{}') } | Select-Object -First 1
 $allAddresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)
 $allRoutes = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue)
 $activeIpv4Addresses = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop | Where-Object { [string]$_.State -notin @('Unreachable', 'Incomplete') } | ForEach-Object { [pscustomobject]@{ cidr = "$([string]$_.IPAddress)/32"; ifIndex = [int]$_.InterfaceIndex } })
-[pscustomobject]@{
-  machineId = $machineId
-  computerName = $computerName
-  selectedAdapter = if ($adapter) {
-    [pscustomobject]@{
-      alias = [string]$adapter.Name
-      hardwareId = [string]$adapter.InterfaceGuid
-      macAddress = [string]$adapter.MacAddress
-      ifIndex = [int]$adapter.ifIndex
-      addresses = @($allAddresses | Where-Object InterfaceIndex -eq $adapter.ifIndex | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" })
+"machine$separator$machineId$separator$computerName"
+if ($adapter) {
+  "adapter$separator$($adapter.Name)$separator$($adapter.InterfaceGuid)$separator$($adapter.MacAddress)$separator$([int]$adapter.ifIndex)"
+}
+$allAddresses | ForEach-Object { "address$separator$($_.IPAddress)/$($_.PrefixLength)$separator$([int]$_.InterfaceIndex)" }
+$allRoutes | ForEach-Object { "route$separator$($_.DestinationPrefix)$separator$([int]$_.InterfaceIndex)$separator$($_.NextHop)" }
+$activeIpv4Addresses | ForEach-Object { "active-use$separator$($_.cidr)$separator$([int]$_.ifIndex)" }`;
+}
+
+function parseWindowsIfIndex(value: string): number {
+  if (!/^\d+$/.test(value)) throw new Error("Invalid Windows interface index.");
+  return Number(value);
+}
+
+function parseWindowsObservation(lines: readonly string[]): WindowsLinkObservationPayload {
+  let machineId: string | undefined;
+  let computerName: string | undefined;
+  let selectedAdapter: WindowsLinkObservationPayload["selectedAdapter"] = null;
+  const addresses: Array<{ cidr: string; ifIndex: number }> = [];
+  const routes: Array<{ cidr: string; ifIndex: number; nextHop: string }> = [];
+  const activeIpv4Addresses: Array<{ cidr: string; ifIndex: number }> = [];
+
+  for (const line of lines) {
+    const fields = line.split("\t");
+    switch (fields[0]) {
+      case "machine":
+        if (fields.length !== 3 || machineId !== undefined) throw new Error("Invalid Windows machine observation.");
+        machineId = fields[1]!;
+        computerName = fields[2]!;
+        break;
+      case "adapter":
+        if (fields.length !== 5 || selectedAdapter !== null) throw new Error("Invalid Windows adapter observation.");
+        selectedAdapter = {
+          alias: fields[1]!,
+          hardwareId: fields[2]!,
+          macAddress: fields[3]!,
+          ifIndex: parseWindowsIfIndex(fields[4]!),
+        };
+        break;
+      case "address":
+        if (fields.length !== 3) throw new Error("Invalid Windows address observation.");
+        addresses.push({ cidr: fields[1]!, ifIndex: parseWindowsIfIndex(fields[2]!) });
+        break;
+      case "route":
+        if (fields.length !== 4) throw new Error("Invalid Windows route observation.");
+        routes.push({
+          cidr: fields[1]!,
+          ifIndex: parseWindowsIfIndex(fields[2]!),
+          nextHop: fields[3]!,
+        });
+        break;
+      case "active-use":
+        if (fields.length !== 3) throw new Error("Invalid Windows active-use observation.");
+        activeIpv4Addresses.push({
+          cidr: fields[1]!,
+          ifIndex: parseWindowsIfIndex(fields[2]!),
+        });
+        break;
+      default:
+        throw new Error("Invalid Windows observation record.");
     }
-  } else { $null }
-  addresses = @($allAddresses | ForEach-Object { [pscustomobject]@{ cidr = "$($_.IPAddress)/$($_.PrefixLength)"; ifIndex = [int]$_.InterfaceIndex } })
-  routes = @($allRoutes | ForEach-Object { [pscustomobject]@{ cidr = [string]$_.DestinationPrefix; ifIndex = [int]$_.InterfaceIndex; nextHop = [string]$_.NextHop } })
-  activeIpv4Addresses = $activeIpv4Addresses
-}`;
+  }
+
+  if (machineId === undefined || computerName === undefined) {
+    throw new Error("Windows machine observation is missing.");
+  }
+  return { machineId, computerName, selectedAdapter, addresses, routes, activeIpv4Addresses };
 }
 
 function normalizeWindows(
@@ -186,7 +251,9 @@ function normalizeWindows(
       interfaceAlias: payload.selectedAdapter.alias,
       hardwareId: payload.selectedAdapter.hardwareId,
       macAddress: payload.selectedAdapter.macAddress,
-      addresses: [...payload.selectedAdapter.addresses],
+      addresses: payload.addresses
+        .filter(({ ifIndex }) => ifIndex === payload.selectedAdapter!.ifIndex)
+        .map(({ cidr }) => cidr),
     },
     occupiedCidrs: occupiedCidrs(
       profile,
@@ -268,10 +335,8 @@ export function createLinkRecoveryAdapters(
   const observeMac = options.observeMac ?? defaultObserveMac;
   const macRunner = options.runMacCommand ?? runMacCommand;
   const projectConfig = options.projectConfig ?? defaultProjectConfig;
-  const runJson =
-    options.runRemoteJson ??
-    ((target: SSHTarget, script: string) =>
-      defaultRunRemoteJson<WindowsLinkObservationPayload>(target, script));
+  const runObservation = options.runRemote ??
+    ((target: SSHTarget, script: string) => defaultRunRemote(target, script, 30_000));
   const runChecked = options.runRemoteChecked ?? defaultRunRemoteChecked;
   const writeProfile = options.writeProfile ?? defaultWriteProfile;
   const observationScript = windowsObservationScript(profile.windows.ethernet.hardwareId);
@@ -333,6 +398,7 @@ export function createLinkRecoveryAdapters(
           interfaceId,
           "alias",
           address,
+          "netmask",
           "255.255.255.252",
         ]);
       },
@@ -343,8 +409,11 @@ export function createLinkRecoveryAdapters(
     strictDirectProbe: {
       probeDirect: async (candidate) => {
         try {
-          const payload = (await runJson(projectConfig(candidate).ssh, observationScript))[0];
-          if (!payload) return { kind: "unavailable" };
+          const result = await runObservation(projectConfig(candidate).ssh, observationScript);
+          if (result.exitCode !== 0) return { kind: "unavailable" };
+          const payload = parseWindowsObservation(
+            result.stdout.split(/\r?\n/).filter(Boolean),
+          );
           const windows = normalizeWindows(candidate, payload);
           return windows ? { kind: "reachable", windows } : { kind: "unavailable" };
         } catch {
@@ -385,11 +454,17 @@ export function createLinkRecoveryAdapters(
         const directTarget = projectConfig(candidate).ssh;
         for (const alias of candidate.windows.hostAliases) {
           try {
-            const payload = (await runJson(recoveryTarget(directTarget, alias), observationScript))[0];
-            const observation = payload ? normalizeWindows(candidate, payload) : null;
+            const result = await runObservation(recoveryTarget(directTarget, alias), observationScript);
+            if (result.exitCode !== 0) continue;
+            const payload = parseWindowsObservation(
+              result.stdout.split(/\r?\n/).filter(Boolean),
+            );
+            const observation = normalizeWindows(candidate, payload);
             if (observation?.machineId === candidate.windows.machineId) {
-              const windowsAddress = payload!.selectedAdapter?.addresses
-                .map((address) => address.split("/")[0]!)
+              const selectedIfIndex = payload!.selectedAdapter?.ifIndex;
+              const windowsAddress = payload!.addresses
+                .filter(({ ifIndex }) => ifIndex === selectedIfIndex)
+                .map(({ cidr }) => cidr.split("/")[0]!)
                 .find((address) => address.startsWith("169.254."));
               const mac = latestMac?.selectedEthernet.addresses
                 .map((address) => address.split("/")[0]!)
