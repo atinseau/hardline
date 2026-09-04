@@ -136,7 +136,6 @@ const windowsPayload: WindowsLinkObservationPayload = {
     hardwareId: "{ADAPTER-GUID}",
     macAddress: "02-00-00-00-00-01",
     ifIndex: 22,
-    addresses: ["10.0.0.1/30", "192.168.60.8/24"],
   },
   addresses: [
     { cidr: "10.0.0.1/30", ifIndex: 22 },
@@ -149,9 +148,32 @@ const windowsPayload: WindowsLinkObservationPayload = {
   ],
   activeIpv4Addresses: [
     { cidr: "10.0.0.2/32", ifIndex: 22 },
+    { cidr: "10.0.0.3/32", ifIndex: 22 },
     { cidr: "10.0.0.5/32", ifIndex: 30 },
   ],
 };
+
+function windowsObservationLines(payload: WindowsLinkObservationPayload): string[] {
+  return [
+    ["machine", payload.machineId, payload.computerName].join("\t"),
+    ...(payload.selectedAdapter
+      ? [[
+          "adapter",
+          payload.selectedAdapter.alias,
+          payload.selectedAdapter.hardwareId,
+          payload.selectedAdapter.macAddress,
+          String(payload.selectedAdapter.ifIndex),
+        ].join("\t")]
+      : []),
+    ...payload.addresses.map(({ cidr, ifIndex }) => ["address", cidr, String(ifIndex)].join("\t")),
+    ...payload.routes.map(({ cidr, ifIndex, nextHop }) =>
+      ["route", cidr, String(ifIndex), nextHop].join("\t")
+    ),
+    ...payload.activeIpv4Addresses.map(({ cidr, ifIndex }) =>
+      ["active-use", cidr, String(ifIndex)].join("\t")
+    ),
+  ];
+}
 
 function harness(
   payloads: WindowsLinkObservationPayload[][] = [[windowsPayload]],
@@ -161,7 +183,7 @@ function harness(
   observedNetstat: string = netstat,
 ) {
   const macArgv: Array<readonly string[]> = [];
-  const jsonCalls: Array<{ target: SSHTarget; script: string }> = [];
+  const remoteCalls: Array<{ target: SSHTarget; script: string }> = [];
   const checkedCalls: Array<{ target: SSHTarget; script: string }> = [];
   const observedOptions: MacObservationOptions[] = [];
   const persisted: Array<{ path: string; value: TargetProfile }> = [];
@@ -182,9 +204,13 @@ function harness(
     },
     runMacCommand,
     projectConfig: projected,
-    runRemoteJson: async (target, script) => {
-      jsonCalls.push({ target, script });
-      return payloads[payloadIndex++] ?? [];
+    runRemote: async (target, script) => {
+      remoteCalls.push({ target, script });
+      return {
+        exitCode: 0,
+        stdout: (payloads[payloadIndex++] ?? []).flatMap(windowsObservationLines).join("\r\n"),
+        stderr: "",
+      };
     },
     runRemoteChecked: async (target, script) => {
       checkedCalls.push({ target, script });
@@ -194,7 +220,7 @@ function harness(
       persisted.push({ path, value });
     },
   });
-  return { adapters, macArgv, jsonCalls, checkedCalls, observedOptions, persisted, runMacCommand };
+  return { adapters, macArgv, remoteCalls, checkedCalls, observedOptions, persisted, runMacCommand };
 }
 
 describe("createLinkRecoveryAdapters", () => {
@@ -264,6 +290,7 @@ describe("createLinkRecoveryAdapters", () => {
   test("owns a matching Mac connected route only on the selected Ethernet interface", async () => {
     const duplicateNetstat = `Destination        Gateway            Flags               Netif Expire
 10.0.0/30          link#22            UCS                   en8
+10.0.0.1           02:00:00:00:00:01  UHLWI                 en8
 10.0.0/30          link#23            UCS                   en9`;
     const { adapters } = harness(
       [[windowsPayload]],
@@ -278,6 +305,7 @@ describe("createLinkRecoveryAdapters", () => {
     expect(result.occupiedCidrs).toEqual(
       expect.arrayContaining([
         { cidr: "10.0.0.0/30", source: "route", ownership: "hardline" },
+        { cidr: "10.0.0.1/32", source: "route", ownership: "hardline" },
         { cidr: "10.0.0.0/30", source: "route", ownership: "other" },
       ]),
     );
@@ -302,14 +330,16 @@ describe("createLinkRecoveryAdapters", () => {
   });
 
   test("uses one fixed read-only observation over the strict Direct target and normalizes Windows", async () => {
-    const { adapters, jsonCalls } = harness();
+    const { adapters, remoteCalls } = harness();
 
     const result = await adapters.strictDirectProbe.probeDirect(profile);
 
-    expect(jsonCalls).toHaveLength(1);
-    expect(jsonCalls[0]!.target).toEqual(strictSsh);
-    expect(jsonCalls[0]!.script).toContain("Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop");
-    expect(jsonCalls[0]!.script).not.toContain("Test-Connection");
+    expect(remoteCalls).toHaveLength(1);
+    expect(remoteCalls[0]!.target).toEqual(strictSsh);
+    expect(remoteCalls[0]!.script).toContain("Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop");
+    expect(remoteCalls[0]!.script).toContain('"route$separator');
+    expect(remoteCalls[0]!.script).not.toContain("Where-Object InterfaceIndex -eq $adapter.ifIndex");
+    expect(remoteCalls[0]!.script).not.toContain("Test-Connection");
     expect(result).toEqual({
       kind: "reachable",
       windows: {
@@ -328,6 +358,7 @@ describe("createLinkRecoveryAdapters", () => {
           { cidr: "10.0.0.0/30", source: "route", ownership: "hardline" },
           { cidr: "0.0.0.0/0", source: "route", ownership: "other" },
           { cidr: "10.0.0.2/32", source: "active-use", ownership: "hardline" },
+          { cidr: "10.0.0.3/32", source: "active-use", ownership: "hardline" },
           { cidr: "10.0.0.5/32", source: "active-use", ownership: "other" },
         ],
       },
@@ -339,6 +370,7 @@ describe("createLinkRecoveryAdapters", () => {
       ...windowsPayload,
       routes: [
         { cidr: "10.0.0.0/30", ifIndex: 22, nextHop: "0.0.0.0" },
+        { cidr: "10.0.0.1/32", ifIndex: 22, nextHop: "0.0.0.0" },
         { cidr: "10.0.0.0/30", ifIndex: 44, nextHop: "0.0.0.0" },
       ],
     };
@@ -351,6 +383,7 @@ describe("createLinkRecoveryAdapters", () => {
       windows: {
         occupiedCidrs: expect.arrayContaining([
           { cidr: "10.0.0.0/30", source: "route", ownership: "hardline" },
+          { cidr: "10.0.0.1/32", source: "route", ownership: "hardline" },
           { cidr: "10.0.0.0/30", source: "route", ownership: "other" },
         ]),
       },
@@ -372,10 +405,6 @@ describe("createLinkRecoveryAdapters", () => {
     };
     const pendingPayload = {
       ...windowsPayload,
-      selectedAdapter: {
-        ...windowsPayload.selectedAdapter!,
-        addresses: ["10.0.0.1/30", "10.0.0.5/30"],
-      },
       addresses: [
         { cidr: "10.0.0.1/30", ifIndex: 22 },
         { cidr: "10.0.0.5/30", ifIndex: 22 },
@@ -435,7 +464,7 @@ describe("createLinkRecoveryAdapters", () => {
 
   test("recovery tries only Windows host aliases without Direct source binding and requires paired identity", async () => {
     const replacement = { ...windowsPayload, machineId: "REPLACEMENT-PC" };
-    const { adapters, jsonCalls, checkedCalls } = harness([[replacement], [windowsPayload]]);
+    const { adapters, remoteCalls, checkedCalls } = harness([[replacement], [windowsPayload]]);
 
     await expect(adapters.recoveryChannel.observeRecovery(profile)).resolves.toMatchObject({
       kind: "pc-alive",
@@ -448,8 +477,8 @@ describe("createLinkRecoveryAdapters", () => {
       },
     });
 
-    expect(jsonCalls.map(({ target }) => target.host)).toEqual(["GAMING-PC", "gaming-pc.local"]);
-    for (const { target } of jsonCalls) {
+    expect(remoteCalls.map(({ target }) => target.host)).toEqual(["GAMING-PC", "gaming-pc.local"]);
+    for (const { target } of remoteCalls) {
       expect(target).toMatchObject({
         identityFile: "/state/id_ed25519",
         knownHostsFile: "/state/known_hosts",
@@ -458,7 +487,7 @@ describe("createLinkRecoveryAdapters", () => {
       expect(target).not.toHaveProperty("sourceAddress");
       expect(target).not.toHaveProperty("bindInterface");
     }
-    expect(jsonCalls[0]!.script).toBe(jsonCalls[1]!.script);
+    expect(remoteCalls[0]!.script).toBe(remoteCalls[1]!.script);
     expect(checkedCalls).toEqual([]);
 
     const inaccessible = harness([[replacement], [replacement], [replacement]]);
@@ -475,7 +504,7 @@ describe("createLinkRecoveryAdapters", () => {
     await adapters.profilePersistence.persistProfileAtomically(profile);
 
     expect(macArgv).toEqual([
-      ["sudo", "ifconfig", "en8", "alias", "10.0.0.6", "255.255.255.252"],
+      ["sudo", "ifconfig", "en8", "alias", "10.0.0.6", "netmask", "255.255.255.252"],
       ["sudo", "ifconfig", "en8", "-alias", "10.0.0.2"],
     ]);
     expect(persisted).toEqual([{ path: "/state/target-profile.json", value: profile }]);
@@ -489,13 +518,13 @@ describe("createLinkRecoveryAdapters", () => {
         ethernet: { ...profile.windows.ethernet, hardwareId: "guid'; Remove-Item C:\\ -Recurse" },
       },
     };
-    const { adapters, jsonCalls } = harness([[windowsPayload]], injected);
+    const { adapters, remoteCalls } = harness([[windowsPayload]], injected);
 
     await adapters.strictDirectProbe.probeDirect(injected);
-    expect(jsonCalls[0]?.script).toContain(
+    expect(remoteCalls[0]?.script).toContain(
       "'guid''; Remove-Item C:\\ -Recurse'",
     );
-    expect(jsonCalls[0]?.script).not.toContain(
+    expect(remoteCalls[0]?.script).not.toContain(
       "'guid'; Remove-Item C:\\ -Recurse",
     );
   });

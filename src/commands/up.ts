@@ -125,11 +125,12 @@ async function pcReachable(config: Config): Promise<boolean> {
 }
 
 async function wakePC(config: Config): Promise<void> {
-  await sendMagicPacket(
-    config.windows.macAddress,
-    broadcastAddress(config.mac.ip, config.mac.subnetMask),
-  );
-  if (!(await waitForRemote(config, WAKE_DEADLINE_MS))) {
+  const broadcast = broadcastAddress(config.mac.ip, config.mac.subnetMask);
+  const wake = () => sendMagicPacket(config.windows.macAddress, broadcast);
+  await wake();
+  // Re-emit before every probe: a freshly plugged adapter may not have been
+  // configured yet when the first burst left, so it went out the default route.
+  if (!(await waitForRemote(config, WAKE_DEADLINE_MS, Bun.sleep, Date.now, wake))) {
     throw new Error(`The PC did not respond within ${WAKE_DEADLINE_MS / 60_000} minutes after wake.`);
   }
 }

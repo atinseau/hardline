@@ -286,6 +286,17 @@ describe("waitForRemote", () => {
     expect(clockMs).toBeLessThanOrEqual(40_000);
   });
 
+  test("reemet le reveil avant chaque sonde", async () => {
+    setup();
+    probeCostMs = SSH_TIMEOUT_MS;
+    remoteThrows = new Error("injoignable");
+    const clock = fakeClock();
+    let wakes = 0;
+    await waitForRemote(CONFIG, 60_000, clock.sleep, clock.now, async () => { wakes += 1; });
+    // Un reveil avant chaque sonde, l'adaptateur pouvant ne pas etre pret au premier.
+    expect(wakes).toBe(clock.slept.length + 1);
+  });
+
   test("abandonne sans depasser le budget d'attente en temps reel", async () => {
     setup();
     probeCostMs = SSH_TIMEOUT_MS;

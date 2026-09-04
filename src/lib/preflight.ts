@@ -205,11 +205,13 @@ export async function waitForRemote(
   deadlineMs: number,
   sleep: (ms: number) => Promise<void> = Bun.sleep,
   now: () => number = Date.now,
+  beforeProbe: () => Promise<void> = async () => {},
 ): Promise<boolean> {
   const deadline = now() + deadlineMs;
 
   for (;;) {
     try {
+      await beforeProbe();
       await runRemoteJson(config.ssh, "[pscustomobject]@{ ok = $true }");
       return true;
     } catch {

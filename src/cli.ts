@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { installCommand } from "./commands/install";
 import { upCommand, type UpCliOptions } from "./commands/up";
+import { downCommand } from "./commands/down";
 import { uninstallCommand } from "./commands/uninstall";
 import { doctorCommand } from "./commands/doctor";
 import type { Config } from "./config";
@@ -107,6 +108,17 @@ export function buildProgram(dependencies: CliDependencies = defaults): Command 
         targetResolution: dependencies.targetResolution(output),
         output,
         cli: options,
+      }));
+    });
+
+  program
+    .command("down")
+    .description("Force shut down the PC after 5 seconds")
+    .action(async (_options: unknown, command: Command) => {
+      const output = outputFor(command);
+      return execute(downCommand({
+        targetResolution: dependencies.targetResolution(output),
+        output,
       }));
     });
 

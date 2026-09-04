@@ -1,11 +1,11 @@
 import { test, expect } from "bun:test";
 import { buildProgram, VERSION } from "../src/cli";
 
-test("the program exposes all four commands", () => {
+test("the program exposes all five commands", () => {
   const names = buildProgram()
     .commands.map((c) => c.name())
     .sort();
-  expect(names).toEqual(["doctor", "install", "uninstall", "up"]);
+  expect(names).toEqual(["doctor", "down", "install", "uninstall", "up"]);
 });
 
 test("the program has a semantic version", () => {
@@ -24,6 +24,11 @@ test("install exposes explicit authorization", () => {
   const install = buildProgram().commands.find((c) => c.name() === "install");
   const optionNames = install?.options.map((o) => o.long) ?? [];
   expect(optionNames).toEqual(expect.arrayContaining(["--yes"]));
+});
+
+test("down discloses that shutdown is forced", () => {
+  const down = buildProgram().commands.find((c) => c.name() === "down");
+  expect(down?.description()).toContain("Force shut down");
 });
 
 test("verbose is global and accepted before or after a command", () => {

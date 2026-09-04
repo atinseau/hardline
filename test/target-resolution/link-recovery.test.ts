@@ -133,6 +133,30 @@ describe("LinkRecovery", () => {
     expect(events).toEqual(["observe-mac", "probe:10.0.0.1"]);
   });
 
+  test("Hardline-owned derived routes and neighbors do not trigger migration", async () => {
+    const derived = [
+      { cidr: "10.0.0.3/32", source: "route" as const, ownership: "hardline" as const },
+      { cidr: "10.0.0.3/32", source: "active-use" as const, ownership: "hardline" as const },
+    ];
+    const { events, recovery } = harness({
+      macObservation: {
+        observeMacLink: async () => ({ ...macObservation, occupiedCidrs: derived }),
+      },
+      strictDirectProbe: {
+        probeDirect: async (candidate) => {
+          events.push(`probe:${candidate.directLink.windowsAddress}`);
+          return {
+            kind: "reachable",
+            windows: { ...windowsObservation, occupiedCidrs: derived },
+          };
+        },
+      },
+    });
+
+    await expect(recovery.recover(profile)).resolves.toEqual({ profile, resolution: "validated" });
+    expect(events).toEqual(["probe:10.0.0.1"]);
+  });
+
   test("default routes do not trigger a pointless migration", async () => {
     const defaultRoute = {
       cidr: "0.0.0.0/0",
@@ -295,6 +319,29 @@ describe("LinkRecovery", () => {
     ]);
     expect(events).not.toContain("observe-recovery");
     expect(events.some((event) => event.startsWith("add-windows:"))).toBe(false);
+  });
+
+  test("post-bootstrap repairs the Mac address when it has the wrong prefix", async () => {
+    const bootstrapProfile: TargetProfile = {
+      ...profile,
+      lifecycle: "installation-incomplete",
+    };
+    const { events, recovery } = harness({
+      macObservation: {
+        observeMacLink: async () => ({
+          ...macObservation,
+          selectedEthernet: {
+            ...macObservation.selectedEthernet,
+            addresses: ["10.0.0.2/8"],
+          },
+        }),
+      },
+    });
+
+    await expect(recovery.recover(bootstrapProfile)).resolves.toMatchObject({
+      resolution: "recovered",
+    });
+    expect(events).toContain("add-mac:10.0.0.2");
   });
 
   test("an interrupted clean post-bootstrap Mac setup resumes from its durable journal", async () => {
