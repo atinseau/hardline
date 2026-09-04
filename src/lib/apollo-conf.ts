@@ -1,17 +1,21 @@
 /**
- * Les huit cles que hardline impose. Rien d'autre n'est touche.
+ * Les onze cles que hardline impose. Rien d'autre n'est touche.
  *
- * Les six premieres decident de l'ecran virtuel ; les deux dernieres, de la
+ * Les six premieres decident de l'ecran virtuel ; les cinq dernieres, de la
  * qualite de l'encodage. Le journal d'Apollo revelait
  * « NvEnc: created encoder HEVC P1 » : P1 est le preset le PLUS RAPIDE de
  * NVENC, donc celui de moindre qualite, et c'est le defaut. Sur une carte qui
- * encode ce flux sans effort et un lien direct qui porte 106 Mbps, le payer
- * en qualite n'a aucune contrepartie utile. P5 garde une marge confortable
- * avant P7, que rien ne justifie en temps reel.
+ * encode ce flux sans effort et un lien direct mesure a 947 Mbps, le payer
+ * en qualite n'a aucune contrepartie utile. P5 conserve une excellente
+ * efficacite sans prendre au jeu la capacite NVENC dont il a besoin. Le
+ * multipass quart de resolution divise environ par deux la charge mesuree par
+ * rapport au multipass pleine resolution.
  *
  * spatial_aq repartit le debit vers les zones peu detaillees — un fond uni
  * parseme de texte, c'est-a-dire exactement un bureau. C'est ce qui evite le
- * grain autour des caracteres.
+ * grain autour des caracteres. Le VBV maximal autorise une image complexe a
+ * utiliser jusqu'a cinq fois le budget nominal d'une image au lieu de la
+ * pixeliser pour respecter strictement le profil ultra-basse latence.
  */
 export const REQUIRED_CONF: Readonly<Record<string, string>> = {
   headless_mode: "enabled",
@@ -22,6 +26,9 @@ export const REQUIRED_CONF: Readonly<Record<string, string>> = {
   capture: "ddx",
   nvenc_preset: "5",
   nvenc_spatial_aq: "enabled",
+  nvenc_twopass: "quarter_res",
+  nvenc_vbv_increase: "400",
+  max_bitrate: "0",
 };
 
 /** Fonction pure. Lit un sunshine.conf en paires cle/valeur. */

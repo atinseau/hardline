@@ -3,9 +3,15 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 # Keep this file ASCII: it can be displayed by an OEM-code-page console.
-if (-not $HardlineUrl -or -not $HardlineToken -or -not $c) {
+if (-not $HardlineUrl -or -not $HardlineToken -or -not $HardlineFingerprint) {
     throw 'Bootstrap must be started with the Hardline rendezvous command.'
 }
+
+if (-not ('HardlinePinnedClient' -as [type])) {
+    Add-Type -AssemblyName System.Net.Http
+    Add-Type -ReferencedAssemblies System.Net.Http -TypeDefinition 'using System;using System.Net.Http;using System.Net.Http.Headers;using System.Security.Cryptography;public static class HardlinePinnedClient{public static HttpClient Create(string fingerprint,string token){var h=new HttpClientHandler();h.ServerCertificateCustomValidationCallback=(r,c,ch,e)=>c!=null&&StringComparer.Ordinal.Equals(c.GetCertHashString(HashAlgorithmName.SHA256),fingerprint);var client=new HttpClient(h);client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Bearer",token);return client;}}'
+}
+$c = [HardlinePinnedClient]::Create($HardlineFingerprint, $HardlineToken)
 
 function Invoke-HardlinePost($path, $value) {
     $json = $value | ConvertTo-Json -Depth 8 -Compress

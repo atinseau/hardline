@@ -84,9 +84,9 @@ export function renderInstallFact(value: InstallFact): string {
     case "cancelled": return "Installation cancelled. No unauthorized destructive action was taken.";
     case "mac-not-ready": return "Installation stopped: the Mac is not ready. Nothing was changed.";
     case "pc-not-ready": return `Installation stopped: the PC is not ready. ${v.recovery}`;
-    case "convergence-failed": return `${v.area} failed. Previous state for every touched step is recorded. Fix the problem and run 'hardline install' to resume, or 'hardline uninstall' to restore it.`;
+    case "convergence-failed": return `${v.area} failed. Previous state for every touched step is recorded. Fix the problem and run 'hardline install' to resume, or 'hardline uninstall' to restore it. Cause: ${v.error}`;
     case "foreign-kept": return "Installation stopped: the foreign Apollo installation was preserved. Non-interactive replacement requires explicit 'hardline install --yes' authorization.";
-    case "unexpected": return "Installation failed safely. No unrecorded result is being reported.";
+    case "unexpected": return `Installation failed safely. No unrecorded result is being reported. Cause: ${v.error}`;
   }
 }
 

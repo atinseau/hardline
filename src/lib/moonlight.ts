@@ -8,42 +8,8 @@ export type StreamOptions = {
   monitor?: boolean;
 };
 
-const BITRATE_STEPS = [
-  { pixels: 640 * 360, factor: 1 },
-  { pixels: 854 * 480, factor: 2 },
-  { pixels: 1280 * 720, factor: 5 },
-  { pixels: 1920 * 1080, factor: 10 },
-  { pixels: 2560 * 1440, factor: 20 },
-  { pixels: 3840 * 2160, factor: 40 },
-] as const;
-
-/** Le debit recommande par Moonlight, double pour la chrominance 4:4:4. */
-export function desktopBitrateKbps(width: number, height: number, fps: number): number {
-  const pixels = width * height;
-  let resolutionFactor = BITRATE_STEPS.at(-1)!.factor;
-
-  for (let i = 0; i < BITRATE_STEPS.length; i++) {
-    const upper = BITRATE_STEPS[i]!;
-    if (pixels === upper.pixels || i === 0) {
-      resolutionFactor = upper.factor;
-      if (pixels <= upper.pixels) break;
-      continue;
-    }
-    if (pixels < upper.pixels) {
-      const lower = BITRATE_STEPS[i - 1]!;
-      const position = (pixels - lower.pixels) / (upper.pixels - lower.pixels);
-      resolutionFactor = lower.factor + position * (upper.factor - lower.factor);
-      break;
-    }
-  }
-
-  // Moonlight croit encore etre en 4:2:0 quand il calcule son debit, car son
-  // parseur applique --yuv444 apres ce calcul. Le facteur deux corrige cet
-  // ordre et reprend son propre cout estime pour le 4:4:4.
-  resolutionFactor *= 2;
-  const frameRateFactor = (fps <= 60 ? fps : Math.sqrt(fps / 60) * 60) / 30;
-  return Math.round(resolutionFactor * frameRateFactor) * 1000;
-}
+/** Plafond experimental accepte par Moonlight 6.1 avec Sunshine/Apollo. */
+const DESKTOP_BITRATE_KBPS = 500_000;
 
 /** Fonction pure. Compose `moonlight pair <hote> --pin <code>`. */
 export function pairArgs(config: Config, pin: string): string[] {
@@ -84,6 +50,13 @@ export function streamArgs(
     // demande « si le serveur le sait faire » et retombe seul en 4:2:0 sinon,
     // donc le passer n'est jamais un pari.
     "--yuv444",
+    // La RTX 4090 sait encoder HEVC 4:4:4 mais pas AV1 4:4:4. Forcer HEVC
+    // empeche une preference Moonlight persistante de sacrifier le 4:4:4.
+    "--video-codec",
+    "HEVC",
+    // Apollo ne change la definition du bureau que lorsque le client autorise
+    // l'optimisation. L'imposer garantit une capture et un flux de meme taille.
+    "--game-optimization",
   ];
 
   if (options.monitor) {
@@ -102,9 +75,7 @@ export function streamArgs(
     args.push("--fps", String(fps));
   }
 
-  if (resolution && fps !== null) {
-    args.push("--bitrate", String(desktopBitrateKbps(resolution.width, resolution.height, fps)));
-  }
+  args.push("--bitrate", String(DESKTOP_BITRATE_KBPS));
 
   return args;
 }
@@ -160,12 +131,17 @@ export async function isPairedFromMac(
   return code === 0;
 }
 
-export function spawnPair(config: Config, pin: string): { kill(): void } {
+export function spawnPair(config: Config, pin: string): { ready: Promise<void>; kill(): void } {
   const proc = Bun.spawn([config.moonlight.binary, ...pairArgs(config, pin)], {
     stdout: "ignore",
     stderr: "ignore",
   });
-  return { kill: () => proc.kill() };
+  return {
+    // Moonlight detache son journal puis initialise la session GameStream.
+    // Apollo rejette un PIN envoye avant la fin de cette initialisation.
+    ready: new Promise((resolve) => setTimeout(resolve, 3_000)),
+    kill: () => proc.kill(),
+  };
 }
 
 /** Lance le flux et attend sa fin. Rend le code de sortie. */

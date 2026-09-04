@@ -47,10 +47,12 @@ const SHARE_D: SMBShare = { name: "hardline-d", path: "D:\\", mountPoint: "/Volu
 type SpawnCall = { cmd: string[] };
 
 let spawnCalls: SpawnCall[];
-let mountSmbfsExit: number;
+let mountSmbfsExit: Promise<number> | number;
 let mountSmbfsStderr: string;
 let mountOutput: string;
 let lsExit: number;
+let umountExit: Promise<number>;
+let killedProcesses: string[];
 let originalSpawn: typeof Bun.spawn;
 
 beforeEach(() => {
@@ -60,27 +62,30 @@ beforeEach(() => {
   mountSmbfsStderr = "";
   mountOutput = "";
   lsExit = 0;
+  umountExit = Promise.resolve(0);
+  killedProcesses = [];
   originalSpawn = Bun.spawn;
   Bun.spawn = ((cmd: string[]) => {
     spawnCalls.push({ cmd });
+    const process = (exited: Promise<number> | number, stdout = "", stderr = "") => ({
+      stdout,
+      stderr,
+      exited: Promise.resolve(exited),
+      kill: () => {
+        killedProcesses.push(cmd[0]!);
+      },
+    });
     if (cmd[0] === "mount_smbfs") {
-      return {
-        stdout: "",
-        stderr: mountSmbfsStderr,
-        exited: Promise.resolve(mountSmbfsExit),
-      };
+      return process(mountSmbfsExit, "", mountSmbfsStderr);
     }
     if (cmd[0] === "mount") {
-      return {
-        stdout: mountOutput,
-        stderr: "",
-        exited: Promise.resolve(0),
-      };
+      return process(0, mountOutput);
     }
     if (cmd[0] === "/bin/ls") {
-      return { stdout: "", stderr: "", exited: Promise.resolve(lsExit) };
+      return process(lsExit);
     }
-    return { stdout: "", stderr: "", exited: Promise.resolve(0) };
+    if (cmd[0] === "umount") return process(umountExit);
+    return process(0);
   }) as unknown as typeof Bun.spawn;
 });
 
@@ -172,6 +177,27 @@ describe("mountShare", () => {
     ]);
     expect(spawnCalls[2]!.cmd).toEqual(["umount", "-f", SHARE_D.mountPoint]);
   });
+
+  test("echoue dans un delai borne quand mount_smbfs reste bloque", async () => {
+    mountSmbfsExit = new Promise(() => {});
+
+    await expect(mountShare(SHARE_D, CONFIG, "s3cret!", 1)).rejects.toThrow(
+      "timed out mounting share 'hardline-d'",
+    );
+    expect(killedProcesses).toEqual(["mount_smbfs"]);
+  });
+
+  test("echoue dans un delai borne quand le recyclage reste bloque", async () => {
+    mountOutput = `//arthur@10.10.10.1/hardline-d on ${SHARE_D.mountPoint} (smbfs, nodev, nosuid, mounted by arthur)`;
+    lsExit = 137;
+    umountExit = new Promise(() => {});
+
+    await expect(mountShare(SHARE_D, CONFIG, "s3cret!", 1)).rejects.toThrow(
+      "timed out recycling unresponsive SMB share 'hardline-d'",
+    );
+    expect(killedProcesses).toEqual(["umount"]);
+    expect(spawnCalls.some((call) => call.cmd[0] === "mount_smbfs")).toBe(false);
+  });
 });
 
 describe("unmountShare", () => {
@@ -190,6 +216,14 @@ describe("unmountShare", () => {
     expect(
       spawnCalls.some((c) => c.cmd[0] === "umount" && c.cmd[1] === SHARE_D.mountPoint),
     ).toBe(true);
+  });
+
+  test("ne reste pas bloque quand umount ne rend jamais la main", async () => {
+    mountOutput = `//arthur@10.10.10.1/hardline-d on ${SHARE_D.mountPoint} (smbfs, nodev, nosuid, mounted by arthur)`;
+    umountExit = new Promise(() => {});
+
+    await expect(unmountShare(SHARE_D, 1)).resolves.toBeUndefined();
+    expect(killedProcesses).toEqual(["umount"]);
   });
 });
 

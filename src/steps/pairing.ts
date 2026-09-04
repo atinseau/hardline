@@ -155,6 +155,7 @@ export const pairingStep: Step<PairingState> = {
     const pin = generatePin();
     const pairing = spawnPair(config, pin);
     try {
+      await pairing.ready;
       await sendPin(config, creds, pin, config.moonlight.clientName);
 
       const confirmed = await listClients(config, creds);

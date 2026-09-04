@@ -94,6 +94,11 @@ function publicKeyFields(source: string): string | null {
   return match?.[1] ?? null;
 }
 
+function derivedPublicKeyFields(source: string): string | null {
+  const match = /^(ssh-ed25519 [A-Za-z0-9+/]+={0,3})(?: [^\r\n]+)?\n?$/.exec(source);
+  return match?.[1] ?? null;
+}
+
 async function readIdentityPublicKey(
   sourcePaths: HardlineIdentityPaths,
   errorPaths: HardlineIdentityPaths,
@@ -125,7 +130,7 @@ async function validateExistingIdentity(
 ): Promise<void> {
   const expectedPublicKey = await readIdentityPublicKey(paths, paths);
   const result = await runner(["ssh-keygen", "-y", "-f", paths.privateKeyPath]);
-  if (result.exitCode !== 0 || result.stdout.trim() !== expectedPublicKey) {
+  if (result.exitCode !== 0 || derivedPublicKeyFields(result.stdout) !== expectedPublicKey) {
     throw new InvalidHardlineIdentityError(paths);
   }
 }

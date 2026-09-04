@@ -1,0 +1,215 @@
+{
+  "node_count": 781,
+  "unverified_node_count": 0,
+  "raw_edge_count": 1792,
+  "non_object_edges": 0,
+  "missing_endpoint_edges": 0,
+  "dangling_endpoint_edges": 133,
+  "self_loop_edges": 0,
+  "valid_candidate_edges": 1659,
+  "exact_duplicate_edges": 1,
+  "directed_unique_endpoint_pairs": 1621,
+  "directed_same_endpoint_collapsed_edges": 38,
+  "undirected_unique_endpoint_pairs": 1621,
+  "undirected_same_endpoint_collapsed_edges": 38,
+  "same_endpoint_group_count": 26,
+  "relation_variant_groups": 16,
+  "source_file_variant_groups": 0,
+  "source_location_variant_groups": 13,
+  "context_variant_groups": 4,
+  "post_build_graph_type": "Graph",
+  "post_build_node_count": 781,
+  "post_build_edge_count": 1621,
+  "post_build_error": "",
+  "producer_suppression": {
+    "path": "/Users/arthur/.local/share/uv/tools/graphifyy/lib/python3.12/site-packages/graphify/extract.py",
+    "total_sites": 12,
+    "sites": [
+      {
+        "line": 1154,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 1420,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 1422,
+        "name": "seen_doc_refs",
+        "tuple_arity": 0,
+        "sample": "seen_doc_refs: set[str] = set()"
+      },
+      {
+        "line": 1782,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 1929,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n.get(\"id\") for n in nodes}"
+      },
+      {
+        "line": 2460,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 2629,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 4035,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 4143,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 4222,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 4737,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 4738,
+        "name": "seen_edges",
+        "tuple_arity": 4,
+        "sample": "seen_edges: set[tuple[str, str, str, str | None]] = set()"
+      }
+    ],
+    "error": ""
+  },
+  "examples": [
+    {
+      "source": "test_lib_orchestrator_test",
+      "target": "test_lib_orchestrator_test_restore",
+      "edge_count": 9,
+      "relations": [
+        "contains"
+      ],
+      "source_files": [
+        "test/lib/orchestrator.test.ts"
+      ],
+      "source_locations": [
+        "L208",
+        "L255",
+        "L276",
+        "L296",
+        "L315",
+        "L324",
+        "L350",
+        "L368",
+        "L407"
+      ],
+      "contexts": [
+        ""
+      ]
+    },
+    {
+      "source": "src_steps_moonlight_install",
+      "target": "src_lib_brew",
+      "edge_count": 4,
+      "relations": [
+        "imports_from",
+        "re_exports"
+      ],
+      "source_files": [
+        "src/steps/moonlight-install.ts"
+      ],
+      "source_locations": [
+        "L1",
+        "L2",
+        "L6"
+      ],
+      "contexts": [
+        "export",
+        "import",
+        "re-export"
+      ]
+    },
+    {
+      "source": "src_command_run_index",
+      "target": "src_command_run_types",
+      "edge_count": 3,
+      "relations": [
+        "imports_from",
+        "re_exports"
+      ],
+      "source_files": [
+        "src/command-run/index.ts"
+      ],
+      "source_locations": [
+        "L1",
+        "L8"
+      ],
+      "contexts": [
+        "export",
+        "import",
+        "re-export"
+      ]
+    },
+    {
+      "source": "src_command_run_index",
+      "target": "src_command_run_text",
+      "edge_count": 3,
+      "relations": [
+        "imports_from",
+        "re_exports"
+      ],
+      "source_files": [
+        "src/command-run/index.ts"
+      ],
+      "source_locations": [
+        "L3",
+        "L7"
+      ],
+      "contexts": [
+        "export",
+        "import",
+        "re-export"
+      ]
+    },
+    {
+      "source": "src_command_run_index",
+      "target": "src_command_run_clack",
+      "edge_count": 3,
+      "relations": [
+        "imports_from",
+        "re_exports"
+      ],
+      "source_files": [
+        "src/command-run/index.ts"
+      ],
+      "source_locations": [
+        "L4",
+        "L6"
+      ],
+      "contexts": [
+        "export",
+        "import",
+        "re-export"
+      ]
+    }
+  ]
+}

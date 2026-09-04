@@ -2,6 +2,7 @@ import { mkdir, rmdir, stat } from "node:fs/promises";
 import type { Config, SMBShare } from "../config";
 
 const SHARE_PROBE_DEADLINE_MS = 3_000;
+const SHARE_OPERATION_DEADLINE_MS = 15_000;
 
 /** Fonction pure. Compose l'URL smb://utilisateur:motdepasse@hote/partage. */
 export function smbUrl(
@@ -13,14 +14,22 @@ export function smbUrl(
   return `smb://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}/${encodeURIComponent(share)}`;
 }
 
-/**
- * Retire toute occurrence du secret, brut ou encode pour une URL, d'un texte
- * destine a un message d'erreur. mount_smbfs peut echoer l'URL complete dans
- * son flux d'erreur : le secret ne doit jamais y survivre.
- */
-function stripSecret(text: string, secret: string): string {
-  if (secret === "") return text;
-  return text.split(secret).join("***").split(encodeURIComponent(secret)).join("***");
+/** Attend un processus sans laisser un appel systeme fige retenir Hardline. */
+async function exitCodeWithin(
+  proc: ReturnType<typeof Bun.spawn>,
+  deadlineMs: number,
+): Promise<number | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      proc.exited,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), deadlineMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 // --- Frontiere systeme. ---
@@ -36,6 +45,7 @@ export async function mountShare(
   share: SMBShare,
   config: Config,
   password: string,
+  operationDeadlineMs = SHARE_OPERATION_DEADLINE_MS,
 ): Promise<void> {
   if (await isMounted(share)) {
     if (await isResponsive(share)) return;
@@ -44,7 +54,13 @@ export async function mountShare(
       stdout: "ignore",
       stderr: "ignore",
     });
-    const exitCode = await unmount.exited;
+    const exitCode = await exitCodeWithin(unmount, operationDeadlineMs);
+    if (exitCode === null) {
+      unmount.kill("SIGKILL");
+      throw new Error(
+        `timed out recycling unresponsive SMB share '${share.name}' at ${share.mountPoint}`,
+      );
+    }
     if (exitCode !== 0) {
       throw new Error(
         `could not recycle unresponsive SMB share '${share.name}' at ${share.mountPoint}`,
@@ -56,14 +72,17 @@ export async function mountShare(
 
   const url = smbUrl(config.ssh.host, config.smb.user, password, share.name);
   const proc = Bun.spawn(["mount_smbfs", url, share.mountPoint], {
-    stdout: "pipe",
-    stderr: "pipe",
+    stdout: "ignore",
+    stderr: "ignore",
   });
 
-  const [_stderr, exitCode] = await Promise.all([
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+  const exitCode = await exitCodeWithin(proc, operationDeadlineMs);
+  if (exitCode === null) {
+    proc.kill("SIGKILL");
+    throw new Error(
+      `timed out mounting share '${share.name}' at ${share.mountPoint}`,
+    );
+  }
 
   if (exitCode !== 0) {
     throw new Error(
@@ -95,14 +114,17 @@ export async function isMounted(share: SMBShare): Promise<boolean> {
 }
 
 /** Demonte. Ne leve pas si le partage n'etait pas monte. */
-export async function unmountShare(share: SMBShare): Promise<void> {
+export async function unmountShare(
+  share: SMBShare,
+  operationDeadlineMs = SHARE_OPERATION_DEADLINE_MS,
+): Promise<void> {
   if (!(await isMounted(share))) return;
 
   const proc = Bun.spawn(["umount", share.mountPoint], {
     stdout: "ignore",
     stderr: "ignore",
   });
-  await proc.exited;
+  if ((await exitCodeWithin(proc, operationDeadlineMs)) === null) proc.kill("SIGKILL");
 }
 
 /** Vrai si le point de montage existe deja, et est bien un repertoire. */

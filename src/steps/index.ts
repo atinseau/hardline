@@ -2,6 +2,7 @@ import { bootstrapWindowsStep } from "./bootstrap-windows";
 import { macNetworkStep } from "./network-mac";
 import { windowsNetworkStep } from "./network-windows";
 import { windowsProfileTaskStep } from "./network-profile-task";
+import { windowsFastStartupStep } from "./windows-fast-startup";
 import { apolloInstallStep } from "./apollo-install";
 import { apolloConfigStep } from "./apollo-config";
 import { apolloServiceStep } from "./apollo-service";
@@ -52,6 +53,7 @@ export const CAPTURE_STEPS: Step<any>[] = [bootstrapWindowsStep];
 export const REMOTE_STEPS: Step<any>[] = [
   windowsNetworkStep,
   windowsProfileTaskStep,
+  windowsFastStartupStep,
   apolloInstallStep,
   apolloConfigStep,
   apolloServiceStep,

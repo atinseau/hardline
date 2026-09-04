@@ -5,6 +5,8 @@ const PREAMBLE_BYTES = 6;
 const MAC_BYTES = 6;
 const MAC_REPETITIONS = 16;
 const WOL_PORT = 9;
+const WOL_PACKET_COUNT = 10;
+const WOL_PACKET_INTERVAL_MS = 250;
 
 const MAC_PATTERN = /^([0-9a-fA-F]{1,2}:){5}[0-9a-fA-F]{1,2}$/;
 
@@ -53,7 +55,10 @@ export async function sendMagicPacket(mac: string, broadcast: string): Promise<v
   const socket = await Bun.udpSocket({});
   try {
     socket.setBroadcast(true);
-    socket.send(packet, WOL_PORT, broadcast);
+    for (let sent = 0; sent < WOL_PACKET_COUNT; sent++) {
+      socket.send(packet, WOL_PORT, broadcast);
+      if (sent < WOL_PACKET_COUNT - 1) await Bun.sleep(WOL_PACKET_INTERVAL_MS);
+    }
   } finally {
     socket.close();
   }

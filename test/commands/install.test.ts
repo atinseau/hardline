@@ -190,7 +190,12 @@ const MANIFEST_PATH = join(
   "manifest.json",
 );
 
-const { installCommand: executeInstallCommand } = await import("../../src/commands/install");
+const { installCommand: executeInstallCommand, renderInstallFact } = await import("../../src/commands/install");
+
+test("an unexpected failure includes its normalized cause", () => {
+  expect(renderInstallFact({ id: "unexpected", values: { error: "link recovery failed" } }))
+    .toContain("link recovery failed");
+});
 
 const output: CommandOutput = {
   interactive: true,
@@ -280,6 +285,7 @@ const CAPTURE_GROUP = ["bootstrap-windows"];
 const REMOTE_GROUP = [
   "network-windows",
   "network-profile-task",
+  "windows-fast-startup",
   "apollo-install",
   "apollo-config",
   "apollo-service",
@@ -344,7 +350,7 @@ describe("installCommand", () => {
       "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
       "preflight-remote",
       "apply:bootstrap-windows",
-      "apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing",
+      `apply:${REMOTE_GROUP.join("+")}`,
       "forgetPassword",
     ]);
     expect(process.exitCode).toBe(0);
@@ -372,7 +378,7 @@ describe("installCommand", () => {
     await installCommand();
     expect(remoteCalls).toBe(1);
     expect(appliedGroups).toEqual([LOCAL_GROUP]);
-    expect(trace).not.toContain("apply:network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing");
+    expect(trace).not.toContain(`apply:${REMOTE_GROUP.join("+")}`);
     expect(process.exitCode).toBe(1);
     const message = finishes.join("\n");
     expect(message).toContain("hardline install");
@@ -474,8 +480,7 @@ describe("installCommand", () => {
   });
 
   test("un echec de la convergence du PC dit comment reprendre", async () => {
-    applyThrowsOn =
-      "network-windows+network-profile-task+apollo-install+apollo-config+apollo-service+smb-shares+pairing";
+    applyThrowsOn = REMOTE_GROUP.join("+");
     await installCommand();
     expect(failures.join("\n")).toContain("PC configuration failed");
     const message = finishes.join("\n");

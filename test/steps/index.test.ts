@@ -29,6 +29,7 @@ describe("decoupage des etapes", () => {
     expect(names(REMOTE_STEPS)).toEqual([
       "network-windows",
       "network-profile-task",
+      "windows-fast-startup",
       "apollo-install",
       "apollo-config",
       "apollo-service",
@@ -45,6 +46,7 @@ describe("decoupage des etapes", () => {
       "bootstrap-windows",
       "network-windows",
       "network-profile-task",
+      "windows-fast-startup",
       "apollo-install",
       "apollo-config",
       "apollo-service",
@@ -65,6 +67,7 @@ describe("decoupage des etapes", () => {
       "bootstrap-windows",
       "network-windows",
       "network-profile-task",
+      "windows-fast-startup",
       "apollo-install",
       "apollo-config",
       "apollo-service",
