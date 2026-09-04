@@ -152,16 +152,20 @@ describe("localBootstrapCommand", () => {
       urls: ["https://mac.local:7443", "https://169.254.10.2:7443"],
       token: "ab".repeat(32),
       fingerprint: "12AB34CD",
+      publicKeyPin: `sha256//${"c".repeat(43)}=`,
     });
 
     expect(command).not.toContain("\n");
+    expect(command.length).toBeLessThan(800);
     expect(command).toContain("$HardlineUrls=@('https://mac.local:7443','https://169.254.10.2:7443')");
     expect(command).toContain("foreach($candidate in $HardlineUrls)");
     expect(command).toContain(`$HardlineToken='${"ab".repeat(32)}'`);
     expect(command).toContain("$HardlineFingerprint='12AB34CD'");
-    expect(command).toContain("ServerCertificateCustomValidationCallback");
-    expect(command).toContain("StringComparer.Ordinal.Equals(c.GetCertHashString(HashAlgorithmName.SHA256),fingerprint)");
-    expect(command).toContain("[HardlinePinnedClient]::Create($HardlineFingerprint,$HardlineToken)");
+    expect(command).toContain("curl.exe");
+    expect(command).toContain("--pinnedpubkey");
+    expect(command).toContain(`sha256//${"c".repeat(43)}=`);
+    expect(command).not.toContain("Add-Type");
+    expect(command).not.toContain("ServerCertificateCustomValidationCallback");
     expect(command).not.toContain("ServicePointManager");
     expect(command).not.toContain("DangerousAcceptAnyServerCertificateValidator");
     expect(command).not.toContain("-SkipCertificateCheck");
@@ -213,6 +217,11 @@ describe("bootstrap.ps1", () => {
 
   test("is ASCII and never weakens TLS validation", () => {
     expect([...BOOTSTRAP_SCRIPT].filter((character) => character.charCodeAt(0) > 127)).toEqual([]);
+    expect(BOOTSTRAP_SCRIPT).toContain("ServerCertificateCustomValidationCallback");
+    expect(BOOTSTRAP_SCRIPT).toContain("GetCertHashString(HashAlgorithmName.SHA256)");
+    expect(BOOTSTRAP_SCRIPT).toContain("Add-Type -ReferencedAssemblies System.Net.Http");
+    expect(BOOTSTRAP_SCRIPT).toContain('AuthenticationHeaderValue("Bearer",token)');
+    expect(BOOTSTRAP_SCRIPT).not.toContain('AuthenticationHeaderValue(\\"Bearer\\",token)');
     expect(BOOTSTRAP_SCRIPT).not.toContain("ServerCertificateValidationCallback");
     expect(BOOTSTRAP_SCRIPT).not.toContain("-SkipCertificateCheck");
   });
@@ -246,6 +255,10 @@ describe("serveBootstrap", () => {
         .toUpperCase();
       expect(rendezvous.fingerprint).toBe(expectedFingerprint);
       expect(rendezvous.command).toContain(expectedFingerprint);
+      const expectedPin = `sha256//${createHash("sha256")
+        .update(new X509Certificate(CERTIFICATE).publicKey.export({ format: "der", type: "spki" }))
+        .digest("base64")}`;
+      expect(rendezvous.command).toContain(expectedPin);
       expect((await stat(directory)).mode & 0o777).toBe(0o700);
 
       const script = await httpsFetch(

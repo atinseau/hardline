@@ -77,6 +77,23 @@ test("a valid pair is reused only from its exact managed paths", async () => {
   expect((await stat(privateKeyPath)).mode & 0o777).toBe(0o600);
 });
 
+test("a valid derived key is accepted when ssh-keygen preserves its comment", async () => {
+  directory = await mkdtemp(join(tmpdir(), "hardline-identity-"));
+  const privateKeyPath = join(directory, "id_ed25519");
+  await writeFile(privateKeyPath, privateKey);
+  await writeFile(`${privateKeyPath}.pub`, `${publicKey}\n`);
+  const runner: HardlineIdentityCommandRunner = async () => ({
+    exitCode: 0,
+    stdout: `${publicKey}\n`,
+    stderr: "",
+  });
+
+  await expect(ensureHardlineIdentity({ directory, runner })).resolves.toEqual({
+    privateKeyPath,
+    publicKeyPath: `${privateKeyPath}.pub`,
+  });
+});
+
 test("a partial or invalid managed pair fails with a typed error instead of replacing keys", async () => {
   directory = await mkdtemp(join(tmpdir(), "hardline-identity-"));
   const privateKeyPath = join(directory, "id_ed25519");

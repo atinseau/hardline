@@ -6,6 +6,7 @@ const STEP_LABELS: Record<string, string> = {
   "bootstrap-windows": "PC bootstrap: OpenSSH, firewall, key, and addressing (PC)",
   "network-windows": "Static address and private direct-link profile (PC)",
   "network-profile-task": "Private profile at startup (PC)",
+  "windows-fast-startup": "Full shutdown compatible with Wake-on-LAN (PC)",
   "apollo-install": "Apollo server installed (PC)",
   "apollo-config": "Apollo configuration and credentials (PC)",
   "apollo-service": "Apollo service at startup (PC)",

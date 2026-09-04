@@ -1,5 +1,5 @@
-import { test, expect, describe } from "bun:test";
-import { magicPacket, parseArpMac } from "../../src/lib/wol";
+import { test, expect, describe, mock } from "bun:test";
+import { magicPacket, parseArpMac, sendMagicPacket } from "../../src/lib/wol";
 
 const ARP_FULL =
   "? (10.10.10.1) at e8:9c:25:2a:70:e1 on en14 ifscope [ethernet]\n";
@@ -64,5 +64,33 @@ describe("parseArpMac", () => {
 
   test("rend null sur une sortie vide", () => {
     expect(parseArpMac("")).toBeNull();
+  });
+});
+
+describe("sendMagicPacket", () => {
+  test("emet une rafale pour traverser la renegociation du lien en S5", async () => {
+    const originalUdpSocket = Bun.udpSocket;
+    const originalSleep = Bun.sleep;
+    const send = mock((_packet: unknown, _port: number, _address: string) => true);
+    const setBroadcast = mock((_enabled: boolean) => true);
+    const close = mock(() => {});
+    const sleep = mock(async (..._args: unknown[]) => {});
+
+    Bun.udpSocket = mock(async () => ({ send, setBroadcast, close }) as never);
+    Bun.sleep = sleep as typeof Bun.sleep;
+    try {
+      await sendMagicPacket("E8-9C-25-2A-70-E1", "10.0.0.3");
+    } finally {
+      Bun.udpSocket = originalUdpSocket;
+      Bun.sleep = originalSleep;
+    }
+
+    expect(send).toHaveBeenCalledTimes(10);
+    expect(send.mock.calls.every((call) => call[1] === 9 && call[2] === "10.0.0.3"))
+      .toBe(true);
+    expect(sleep).toHaveBeenCalledTimes(9);
+    expect(sleep.mock.calls.every((call) => call[0] === 250)).toBe(true);
+    expect(setBroadcast).toHaveBeenCalledWith(true);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });

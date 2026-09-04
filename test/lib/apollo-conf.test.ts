@@ -13,7 +13,7 @@ const CONF_FIXTURE = [
 ].join("\n");
 
 describe("REQUIRED_CONF", () => {
-  test("contient exactement les huit cles imposees par Apollo", () => {
+  test("contient exactement les onze cles imposees par Apollo", () => {
     expect(REQUIRED_CONF).toEqual({
       headless_mode: "enabled",
       dd_configuration_option: "ensure_only_display",
@@ -23,6 +23,9 @@ describe("REQUIRED_CONF", () => {
       capture: "ddx",
       nvenc_preset: "5",
       nvenc_spatial_aq: "enabled",
+      nvenc_twopass: "quarter_res",
+      nvenc_vbv_increase: "400",
+      max_bitrate: "0",
     });
   });
 });
@@ -43,7 +46,7 @@ describe("parseConf", () => {
 });
 
 describe("confConforms", () => {
-  test("est faux tant que les huit cles ne sont pas exactement imposees", () => {
+  test("est faux tant que les onze cles ne sont pas exactement imposees", () => {
     expect(confConforms(CONF_FIXTURE, REQUIRED_CONF)).toBe(false);
   });
 
@@ -54,7 +57,7 @@ describe("confConforms", () => {
       "dd_resolution_option = auto",
       "dd_refresh_rate_option = auto",
       "dd_config_revert_on_disconnect = enabled",
-      "capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled",
+      "capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled\nnvenc_twopass = quarter_res\nnvenc_vbv_increase = 400\nmax_bitrate = 0",
     ].join("\n");
     expect(confConforms(conforming, REQUIRED_CONF)).toBe(true);
   });
@@ -117,7 +120,8 @@ describe("patchConf", () => {
         "dd_resolution_option = auto\n" +
         "dd_refresh_rate_option = auto\n" +
         "dd_config_revert_on_disconnect = enabled\n" +
-        "capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled\n",
+        "capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled\n" +
+        "nvenc_twopass = quarter_res\nnvenc_vbv_increase = 400\nmax_bitrate = 0\n",
     );
   });
 });

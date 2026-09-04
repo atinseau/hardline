@@ -89,12 +89,15 @@ describe("streamArgs", () => {
       "fullscreen",
       "--absolute-mouse",
       "--yuv444",
+      "--video-codec",
+      "HEVC",
+      "--game-optimization",
       "--resolution",
       "3840x2160",
       "--fps",
       "60",
       "--bitrate",
-      "160000",
+      "500000",
     ]);
   });
 
@@ -113,12 +116,15 @@ describe("streamArgs", () => {
       "windowed",
       "--absolute-mouse",
       "--yuv444",
+      "--video-codec",
+      "HEVC",
+      "--game-optimization",
       "--resolution",
       "3456x2234",
       "--fps",
       "120",
       "--bitrate",
-      "212000",
+      "500000",
     ]);
   });
 
@@ -129,7 +135,20 @@ describe("streamArgs", () => {
       fps: null,
     });
 
-    expect(args).toEqual(["stream", "10.10.10.1", "Desktop", "--display-mode", "windowed", "--absolute-mouse", "--yuv444"]);
+    expect(args).toEqual([
+      "stream",
+      "10.10.10.1",
+      "Desktop",
+      "--display-mode",
+      "windowed",
+      "--absolute-mouse",
+      "--yuv444",
+      "--video-codec",
+      "HEVC",
+      "--game-optimization",
+      "--bitrate",
+      "500000",
+    ]);
     expect(args).not.toContain("--resolution");
     expect(args).not.toContain("--fps");
   });
@@ -160,8 +179,13 @@ describe("streamArgs", () => {
       "windowed",
       "--absolute-mouse",
       "--yuv444",
+      "--video-codec",
+      "HEVC",
+      "--game-optimization",
       "--resolution",
       "3456x2234",
+      "--bitrate",
+      "500000",
     ]);
     expect(args).not.toContain("--fps");
   });
@@ -230,12 +254,15 @@ describe("frontiere systeme", () => {
       "windowed",
       "--absolute-mouse",
       "--yuv444",
+      "--video-codec",
+      "HEVC",
+      "--game-optimization",
       "--resolution",
       "3456x2234",
       "--fps",
       "120",
       "--bitrate",
-      "212000",
+      "500000",
     ]);
     expect(spawnCalls[0]!.env).toMatchObject({
       COLOR_SPACE_OVERRIDE: "1",

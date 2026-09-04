@@ -43,9 +43,23 @@ Mac  <========== dedicated Ethernet ==========>  Windows PC
 
 No existing SSH key is required. Hardline creates and owns a separate identity under `~/Library/Application Support/Hardline`.
 
-## Build
+## Install the CLI
 
-There are no published binaries yet. Build the current source on the Mac:
+There are no published binaries, Homebrew formula, or standalone installer yet. On a Mac that already has Bun 1.4+, Git, and the Swift compiler, build and install the latest source with:
+
+```bash
+tmp="$(mktemp -d)" &&
+git clone --depth 1 https://github.com/atinseau/hardline.git "$tmp/hardline" &&
+(
+  cd "$tmp/hardline" &&
+  bun install --frozen-lockfile &&
+  bun run build &&
+  sudo install -m 0755 dist/hardline /usr/local/bin/hardline
+) &&
+rm -rf "$tmp"
+```
+
+Or keep a local checkout for development:
 
 ```bash
 git clone https://github.com/atinseau/hardline.git
@@ -55,7 +69,7 @@ bun run build
 sudo install -m 0755 dist/hardline /usr/local/bin/hardline
 ```
 
-The build compiles the macOS display probe and produces an Apple Silicon executable at `dist/hardline`.
+The build compiles the macOS display probe and produces a standalone Apple Silicon executable at `dist/hardline`. Bun and Swift are not required to run the installed executable. Although the CLI is installed globally, its Target Profile, restoration manifest, SSH identity, and credentials remain scoped to the macOS user who runs it.
 
 For development, run the TypeScript entry point directly:
 
@@ -64,6 +78,8 @@ bun run dev -- --help
 ```
 
 ## Install
+
+`hardline install` configures the Mac, the Windows PC, and their Direct Link. It does not install the Hardline CLI itself.
 
 1. Connect the Mac and Windows PC with an Ethernet cable.
 2. On the Mac, start installation:
@@ -136,6 +152,12 @@ Two deliberate exceptions remain:
 - An Apollo Rescue Backup created for a pre-existing Apollo installation remains under `C:\ProgramData\hardline\` for the operator.
 
 The final Windows tail becomes physically unobservable after it removes the Direct Link. Hardline reports that cleanup as **launched**, not falsely as verified.
+
+`hardline uninstall` restores the managed environment but does not remove the global CLI binary. Remove that separately if needed:
+
+```bash
+sudo rm /usr/local/bin/hardline
+```
 
 ## Safety Model
 

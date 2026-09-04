@@ -29,6 +29,7 @@ export type LocalBootstrapCommandOptions = Readonly<{
   urls: readonly string[];
   token: string;
   fingerprint: string;
+  publicKeyPin: string;
 }>;
 
 export type CertificatePaths = Readonly<{
@@ -98,12 +99,14 @@ export function localBootstrapCommand(
   }
   assertNoApostrophe(options.token, "token");
   assertNoApostrophe(options.fingerprint, "fingerprint");
+  assertNoApostrophe(options.publicKeyPin, "publicKeyPin");
+  if (!/^sha256\/[\/][A-Za-z0-9+/]{43}=$/.test(options.publicKeyPin)) {
+    throw new Error("The Bootstrap Rendezvous public-key pin is invalid.");
+  }
   const urls = options.urls.map((url) => `'${url}'`).join(",");
-  const prefix = `$HardlineUrls=@(${urls});$HardlineToken='${options.token}';$HardlineFingerprint='${options.fingerprint}'`;
-  const source = "using System;using System.Net.Http;using System.Net.Http.Headers;using System.Security.Cryptography;public static class HardlinePinnedClient{public static HttpClient Create(string fingerprint,string token){var h=new HttpClientHandler();h.ServerCertificateCustomValidationCallback=(r,c,ch,e)=>c!=null&&StringComparer.Ordinal.Equals(c.GetCertHashString(HashAlgorithmName.SHA256),fingerprint);var client=new HttpClient(h);client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue(\"Bearer\",token);return client;}}";
-  const client = `if(-not ('HardlinePinnedClient' -as [type])){Add-Type -AssemblyName System.Net.Http;Add-Type -TypeDefinition '${source}'};$c=[HardlinePinnedClient]::Create($HardlineFingerprint,$HardlineToken)`;
-  const retrieve = `$payload=$null;foreach($candidate in $HardlineUrls){$HardlineUrl=$candidate;try{$payload=$c.GetStringAsync(\"$HardlineUrl/bootstrap.ps1\").GetAwaiter().GetResult();break}catch{}};if(-not $payload){throw 'No authenticated Hardline rendezvous path responded.'};iex $payload`;
-  return `& { ${prefix};${client};${retrieve} }`;
+  const prefix = `$HardlineUrls=@(${urls});$HardlineToken='${options.token}';$HardlineFingerprint='${options.fingerprint}';$HardlinePin='${options.publicKeyPin}'`;
+  const retrieve = `$payload=$null;foreach($candidate in $HardlineUrls){$HardlineUrl=$candidate;$payload=& curl.exe --fail --silent --show-error --insecure --connect-timeout 2 --pinnedpubkey $HardlinePin --header "Authorization: Bearer $HardlineToken" "$HardlineUrl/bootstrap.ps1" 2>$null;if($LASTEXITCODE -eq 0){break};$payload=$null};if(-not $payload){throw 'No authenticated Hardline rendezvous path responded.'};iex($payload-join[Environment]::NewLine)`;
+  return `& { ${prefix};${retrieve} }`;
 }
 
 function localAdvertiseHosts(): string[] {
@@ -143,10 +146,14 @@ export async function serveBootstrap(
         ? loadBootstrapTemplate()
         : Promise.resolve(options.template),
     ]);
+    const parsedCertificate = new X509Certificate(certificate);
     const fingerprint = createHash("sha256")
-      .update(new X509Certificate(certificate).raw)
+      .update(parsedCertificate.raw)
       .digest("hex")
       .toUpperCase();
+    const publicKeyPin = `sha256//${createHash("sha256")
+      .update(parsedCertificate.publicKey.export({ format: "der", type: "spki" }))
+      .digest("base64")}`;
     const token = randomBytes(32).toString("hex");
     protocol = new BootstrapProtocol({
       token,
@@ -193,7 +200,7 @@ export async function serveBootstrap(
       port: server.port,
       token,
       fingerprint,
-      command: localBootstrapCommand({ urls, token, fingerprint }),
+      command: localBootstrapCommand({ urls, token, fingerprint, publicKeyPin }),
       stop,
     };
   } catch (error) {

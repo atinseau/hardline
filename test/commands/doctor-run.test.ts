@@ -85,6 +85,7 @@ mock.module("../../src/lib/ssh", () => ({
   runRemoteJson: async (_target: unknown, script: string) => {
     if (!reachable) throw new Error("PC injoignable");
     if (script.includes("Get-ScheduledTask")) return [{ present: true, state: "Ready" }];
+    if (script.includes("HiberbootEnabled")) return [{ enabled: false }];
     if (script.includes("bootstrap-state.json")) {
       return [{
         acknowledged: true,

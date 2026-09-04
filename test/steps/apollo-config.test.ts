@@ -60,10 +60,10 @@ dd_configuration_option = ensure_only_display
 dd_resolution_option = auto
 dd_refresh_rate_option = auto
 dd_config_revert_on_disconnect = enabled
-capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled`;
+capture = ddx\nnvenc_preset = 5\nnvenc_spatial_aq = enabled\nnvenc_twopass = quarter_res\nnvenc_vbv_increase = 400\nmax_bitrate = 0`;
 
 describe("inspect", () => {
-  test("conforme quand les identifiants et les huit cles sont deja poses", async () => {
+  test("conforme quand les identifiants et les onze cles sont deja poses", async () => {
     jsonQueue.push([{ conf: CONFORME_CONF, hadCredentials: true }]);
     const state = await apolloConfigStep.inspect(CONFIG);
     expect(state.conforming).toBe(true);

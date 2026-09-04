@@ -11,10 +11,11 @@ let sendPinResult = true;
 let plistHosts: Array<{ address: string }> = [];
 let killCalls = 0;
 let forgetHostResult = true;
+let pairReady: Promise<void> = Promise.resolve();
 
 const spawnPair = mock((..._args: unknown[]) => {
   order.push("spawnPair");
-  return { kill: () => { killCalls += 1; } };
+  return { ready: pairReady, kill: () => { killCalls += 1; } };
 });
 const sendPin = mock(async (..._args: unknown[]) => {
   order.push("sendPin");
@@ -96,6 +97,7 @@ beforeEach(() => {
   plistHosts = [];
   killCalls = 0;
   forgetHostResult = true;
+  pairReady = Promise.resolve();
   dejaAppaire = false;
   isPairedFromMac.mockClear();
   listClients.mockImplementation(async () => {
@@ -152,6 +154,21 @@ describe("apply, sequence nominale", () => {
     const pinPosteAApollo = (sendPin.mock.calls[0] as unknown[])[2];
     expect(pinPasseAMoonlight).toBe(pinPosteAApollo);
     expect(pinPasseAMoonlight).toMatch(/^\d{4}$/);
+  });
+
+  test("attend que Moonlight soit prêt avant d'envoyer le PIN", async () => {
+    const ready = Promise.withResolvers<void>();
+    pairReady = ready.promise;
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-3" }];
+
+    const applying = pairingStep.apply(CONFIG);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendPin).not.toHaveBeenCalled();
+
+    ready.resolve();
+    await applying;
+    expect(sendPin).toHaveBeenCalledTimes(1);
   });
 
   /**
