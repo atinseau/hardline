@@ -3,4 +3,4 @@
  * publication par `hardline update`. Isolee de `cli.ts` pour qu'une commande
  * puisse la lire sans importer le programme qui l'enregistre.
  */
-export const VERSION = "0.1.10";
+export const VERSION = "0.1.11";
