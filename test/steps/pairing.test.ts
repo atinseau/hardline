@@ -98,7 +98,10 @@ function etatApresAppairage(booleensEnChaines: boolean): string {
   });
 }
 
-const { pairingStep, waitForApollo } = await import("../../src/steps/pairing");
+const { pairingStep, waitForApollo, PAIRING_TIMINGS } = await import("../../src/steps/pairing");
+// Les tests n'attendent pas Apollo : ils vérifient la logique, pas l'horloge.
+PAIRING_TIMINGS.waitMs = 0;
+PAIRING_TIMINGS.pollMs = 0;
 
 beforeEach(() => {
   order.length = 0;
@@ -516,6 +519,34 @@ describe("Mac déjà appairé sous un autre nom", () => {
 
     await pairingStep.apply(CONFIG);
     expect(spawnPair).toHaveBeenCalled();
+  });
+});
+
+describe("Apollo enregistre le client apres avoir repondu", () => {
+  test("la liste est relue jusqu'à ce que le client paraisse, pas une seule fois", async () => {
+    // Apollo répond à /api/pin avant d'avoir inscrit le client. Une lecture
+    // unique tombe donc sur une liste encore vide, et l'appairage était déclaré
+    // manqué alors qu'il aboutissait une seconde plus tard.
+    dejaAppaire = false;
+    clientListAfterPin = [];
+    PAIRING_TIMINGS.waitMs = 50;
+    let lectures = 0;
+    listClients.mockImplementation(async () => {
+      order.push("listClients");
+      lectures += 1;
+      return lectures >= 3 ? [{ name: "hardline-mac", uuid: "u-6" }] : [];
+    });
+
+    try {
+      await pairingStep.apply(CONFIG);
+      expect(spawnPair.mock.calls.length).toBe(1);
+    } finally {
+      PAIRING_TIMINGS.waitMs = 0;
+      listClients.mockImplementation(async () => {
+        order.push("listClients");
+        return clientListAfterPin ?? clientList;
+      });
+    }
   });
 });
 
