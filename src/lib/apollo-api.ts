@@ -107,6 +107,10 @@ export async function login(
  * jamais par NODE_TLS_REJECT_UNAUTHORIZED : cette variable n'est pas fiable
  * sous Bun et porterait bien au-dela de ce client.
  */
+
+/** Au-dela, Apollo ne repond pas : on rend la main plutot que d'attendre. */
+export const APOLLO_TIMEOUT_MS = 20_000;
+
 async function apolloFetch(
   config: Config,
   creds: ApolloCredentials,
@@ -119,6 +123,11 @@ async function apolloFetch(
       body: init.body,
       headers: { ...init.headers, cookie },
       tls: { rejectUnauthorized: false },
+      // Apollo garde une requete ouverte quand elle attend un pair qui ne vient
+      // pas : un PIN envoye a cote d'une session, et l'installation reste
+      // suspendue indefiniment sans rien dire. Une requete qui n'aboutit pas
+      // doit rendre la main, pour que l'appairage puisse recommencer.
+      signal: AbortSignal.timeout(APOLLO_TIMEOUT_MS),
     });
 
   const cached = sessions.get(sessionKey(config, creds));

@@ -165,7 +165,9 @@ export function spawnPair(
   return {
     // Moonlight detache son journal puis initialise la session GameStream.
     // Apollo rejette un PIN envoye avant la fin de cette initialisation.
-    ready: new Promise((resolve) => setTimeout(resolve, 3_000)),
+    // Le tout premier lancement qui suit l'installation du cask est le plus
+    // lent : c'est celui qui decide de la marge.
+    ready: new Promise((resolve) => setTimeout(resolve, 6_000)),
     said: async () => {
       const [out, err] = await Promise.all([
         new Response(proc.stdout).text(),

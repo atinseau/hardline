@@ -96,7 +96,7 @@ export async function waitForApollo(
 export async function pairWithRetry(
   config: Config,
   creds: ApolloCredentials,
-  attempts = 2,
+  attempts = 3,
 ): Promise<void> {
   let said = "";
 
