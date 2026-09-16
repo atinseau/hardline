@@ -102,7 +102,7 @@ It stops before touching either machine if the Mac is missing something it needs
    hardline install
    ```
 
-3. Hardline prints one command. Paste it into an **Administrator PowerShell** on Windows.
+3. Hardline prints one command and puts it in your clipboard. Paste it into an **Administrator PowerShell** on Windows. Press <kbd>c</kbd> in the Mac terminal to put it back in the clipboard if anything overwrites it while you wait.
 4. Leave both terminals open. Installation resumes automatically after the PC authenticates with the Bootstrap Rendezvous.
 5. Verify the result:
 

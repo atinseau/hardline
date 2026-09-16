@@ -1,5 +1,63 @@
 import { test, expect } from "bun:test";
-import { buildProgram, parseRunLink, VERSION } from "../src/cli";
+import {
+  bootstrapKeyAction,
+  buildProgram,
+  copyOnKeypress,
+  parseRunLink,
+  VERSION,
+  type KeypressInput,
+} from "../src/cli";
+
+/** Un terminal de laboratoire : il retient ce qu'on lui fait. */
+function fakeTerminal(isTTY = true) {
+  const listeners = new Set<(chunk: Buffer) => void>();
+  const rawModes: boolean[] = [];
+  const input: KeypressInput & { press: (key: string) => void } = {
+    isTTY,
+    isRaw: false,
+    setRawMode: (raw) => rawModes.push(raw),
+    resume: () => {},
+    pause: () => {},
+    on: (_event, listener) => listeners.add(listener),
+    off: (_event, listener) => listeners.delete(listener),
+    press: (key) => {
+      for (const listener of listeners) listener(Buffer.from(key));
+    },
+  };
+  return { input, listeners, rawModes };
+}
+
+test("'c' recopie la commande tant que l'attente dure, et plus apres", async () => {
+  const { input, listeners, rawModes } = fakeTerminal();
+  const copies: string[] = [];
+  const stop = copyOnKeypress(
+    "la-commande",
+    input,
+    async (text) => {
+      copies.push(text);
+      return true;
+    },
+  );
+
+  input.press("c");
+  input.press("a");
+  expect(copies).toEqual(["la-commande"]);
+
+  stop();
+  input.press("c");
+  expect(copies).toEqual(["la-commande"]);
+  // Le terminal est rendu tel qu'il etait : sans cela, les questions posees
+  // ensuite ne recevraient plus rien.
+  expect(rawModes).toEqual([true, false]);
+  expect(listeners.size).toBe(0);
+});
+
+test("hors terminal, rien n'est mis en mode brut", () => {
+  const { input, listeners, rawModes } = fakeTerminal(false);
+  copyOnKeypress("la-commande", input, async () => true)();
+  expect(rawModes).toEqual([]);
+  expect(listeners.size).toBe(0);
+});
 
 test("the program exposes all six commands", () => {
   const names = buildProgram()
@@ -10,6 +68,17 @@ test("the program exposes all six commands", () => {
 
 test("the program has a semantic version", () => {
   expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+});
+
+test("pendant l'attente du PC, seule 'c' recopie et Ctrl+C reste une interruption", () => {
+  expect(bootstrapKeyAction("c")).toBe("copy");
+  expect(bootstrapKeyAction("C")).toBe("copy");
+  // Le mode brut prive le terminal de SIGINT : sans ce cas, l'attente ne se
+  // quitte plus.
+  expect(bootstrapKeyAction("\u0003")).toBe("interrupt");
+  for (const key of ["a", "\r", "\u001b[A", ""]) {
+    expect(bootstrapKeyAction(key)).toBeNull();
+  }
 });
 
 test("up exposes its stream options", () => {

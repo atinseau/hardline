@@ -31,12 +31,17 @@ const defaults: CliDependencies = {
       link,
       reportBootstrapCommand: async (command) => {
         const copied = await copyToClipboard(command);
+        const endKeypress = copyOnKeypress(command);
+        const again = process.stdin.isTTY
+          ? " Press c here to put it back if something else overwrites your clipboard."
+          : "";
         const howToPaste = copied
-          ? "It is already in your clipboard: paste it there with Ctrl+V. Selecting it above would copy the frame with it."
-          : "Copying it to the clipboard failed. Select it above knowing the frame is not part of the command, or run 'hardline install | cat' to print it unframed.";
+          ? `It is already in your clipboard: paste it there with Ctrl+V. Selecting it above would copy the frame with it.${again}`
+          : `Copying it to the clipboard failed. Select it above knowing the frame is not part of the command, or run 'hardline install | cat' to print it unframed.${again}`;
         output.report("Bootstrap PC", [
           `Run this command in an Administrator PowerShell on the PC:\n\n  ${command}\n\n${howToPaste}\n\nInstallation will resume when the PC responds.`,
         ]);
+        return endKeypress;
       },
       ask: async (question) => {
         const choices = question.kind === "adapter"
@@ -82,6 +87,65 @@ async function copyToClipboard(text: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Ce qu'une touche vaut pendant l'attente du PC, et rien d'autre. */
+export function bootstrapKeyAction(key: string): "copy" | "interrupt" | null {
+  if (key === "c" || key === "C") return "copy";
+  // En mode brut, le terminal n'envoie plus SIGINT : sans ce cas, la seule
+  // sortie d'une attente de dix minutes serait de tuer le terminal.
+  if (key === "\u0003") return "interrupt";
+  return null;
+}
+
+/**
+ * Reposer la commande dans le presse-papiers tant que le PC n'a pas repondu.
+ * Un presse-papiers ecrase pendant l'attente laissait l'operateur devant un
+ * encadre qu'il ne peut pas selectionner proprement.
+ *
+ * L'ecouteur ne survit pas a l'attente : en mode brut il capterait les touches
+ * des questions posees ensuite.
+ */
+export type KeypressInput = {
+  isTTY?: boolean;
+  isRaw?: boolean;
+  setRawMode(raw: boolean): unknown;
+  resume(): unknown;
+  pause(): unknown;
+  on(event: "data", listener: (chunk: Buffer) => void): unknown;
+  off(event: "data", listener: (chunk: Buffer) => void): unknown;
+};
+
+export function copyOnKeypress(
+  command: string,
+  stdin: KeypressInput = process.stdin,
+  copy: (text: string) => Promise<boolean> = copyToClipboard,
+): () => void {
+  if (!stdin.isTTY) return () => {};
+
+  const onData = (chunk: Buffer): void => {
+    const action = bootstrapKeyAction(chunk.toString());
+    if (action === "interrupt") process.kill(process.pid, "SIGINT");
+    if (action !== "copy") return;
+    void copy(command).then((copied) => {
+      process.stdout.write(
+        copied
+          ? "  The command is in your clipboard again.\n"
+          : "  Copying the command to the clipboard failed.\n",
+      );
+    });
+  };
+
+  const wasRaw = Boolean(stdin.isRaw);
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.on("data", onData);
+
+  return () => {
+    stdin.off("data", onData);
+    stdin.setRawMode(wasRaw);
+    stdin.pause();
+  };
 }
 
 /**
