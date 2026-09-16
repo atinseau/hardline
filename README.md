@@ -66,6 +66,9 @@ sudo mv hardline /usr/local/bin/hardline
 
 The release carries a standalone Apple Silicon executable. Bun, Git and Swift are needed only to build it yourself:
 
+> [!NOTE]
+> Downloading with `curl` as above leaves no quarantine flag, so the binary runs straight away. A browser download does flag it, and macOS then refuses to open it; clear the flag with `xattr -d com.apple.quarantine hardline`.
+
 ```bash
 git clone https://github.com/atinseau/hardline.git
 cd hardline
@@ -85,6 +88,8 @@ bun run dev -- --help
 ## Install
 
 `hardline install` configures the Mac, the Windows PC, and their Direct Link. It does not install the Hardline CLI itself.
+
+It stops before touching either machine if the Mac is missing something it needs, and says what to install.
 
 1. Connect the Mac and Windows PC with an Ethernet cable, or put both on the same network.
 2. On the Mac, start installation:

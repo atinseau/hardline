@@ -3,6 +3,13 @@
 Date de l'audit : 2026-08-23  
 Périmètre : état courant du worktree, y compris les modifications non commitées.
 
+> [!WARNING]
+> Audit daté. Deux de ses constats ne tiennent plus : le dépôt a désormais une CI
+> (`.github/workflows/checks.yml`) qui rejoue types, tests et build à chaque
+> poussée, et la configuration personnelle a quitté le binaire — le lien, les
+> adresses et les adaptateurs sont observés à l'exécution, plus aucune valeur de
+> la machine de l'auteur n'est compilée. Le reste vaut encore lecture.
+
 ## Synthèse
 
 Le projet présente une architecture saine et adaptée à son domaine : une CLI mince déclenche des cas d'usage, eux-mêmes appuyés sur un orchestrateur transactionnel et un registre d'étapes idempotentes. Le manifeste persistant tient lieu de journal de restauration. Cette idée centrale est bien exprimée, bien documentée dans le code et fortement testée.
