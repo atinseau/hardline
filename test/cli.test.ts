@@ -3,6 +3,7 @@ import {
   bootstrapKeyAction,
   buildProgram,
   copyOnKeypress,
+  NOTICE_MS,
   parseRunLink,
   VERSION,
   type KeypressInput,
@@ -27,9 +28,13 @@ function fakeTerminal(isTTY = true) {
   return { input, listeners, rawModes };
 }
 
+/** Laisse les promesses de la copie se resoudre avant d'observer l'ecran. */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 test("'c' recopie la commande tant que l'attente dure, et plus apres", async () => {
   const { input, listeners, rawModes } = fakeTerminal();
   const copies: string[] = [];
+  const ecran: string[] = [];
   const stop = copyOnKeypress(
     "la-commande",
     input,
@@ -37,19 +42,60 @@ test("'c' recopie la commande tant que l'attente dure, et plus apres", async () 
       copies.push(text);
       return true;
     },
+    (text) => ecran.push(text),
   );
 
   input.press("c");
   input.press("a");
+  await flush();
   expect(copies).toEqual(["la-commande"]);
 
   stop();
   input.press("c");
+  await flush();
   expect(copies).toEqual(["la-commande"]);
   // Le terminal est rendu tel qu'il etait : sans cela, les questions posees
   // ensuite ne recevraient plus rien.
   expect(rawModes).toEqual([true, false]);
   expect(listeners.size).toBe(0);
+});
+
+test("la notification tient sur une ligne, reecrite puis effacee", async () => {
+  const { input } = fakeTerminal();
+  const ecran: string[] = [];
+  const stop = copyOnKeypress("la-commande", input, async () => true, (text) =>
+    ecran.push(text),
+  );
+
+  input.press("c");
+  await flush();
+  input.press("c");
+  await flush();
+
+  // Deux appuis, deux ecritures, et aucun saut de ligne : la seconde reecrit
+  // la premiere au lieu de s'empiler sous l'encadre.
+  expect(ecran).toEqual(["\u001b[2K\r  Command copied.", "\u001b[2K\r  Command copied."]);
+  expect(ecran.join("")).not.toContain("\n");
+
+  stop();
+  // Et l'attente ne laisse pas sa derniere notification derriere elle.
+  expect(ecran.at(-1)).toBe("\u001b[2K\r");
+});
+
+test("la notification disparait d'elle-meme, sans rien attendre de l'operateur", async () => {
+  const { input } = fakeTerminal();
+  const ecran: string[] = [];
+  const stop = copyOnKeypress("la-commande", input, async () => true, (text) =>
+    ecran.push(text),
+  );
+
+  try {
+    input.press("c");
+    await new Promise((resolve) => setTimeout(resolve, NOTICE_MS + 100));
+    expect(ecran).toEqual(["\u001b[2K\r  Command copied.", "\u001b[2K\r"]);
+  } finally {
+    stop();
+  }
 });
 
 test("hors terminal, rien n'est mis en mode brut", () => {

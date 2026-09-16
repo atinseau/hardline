@@ -32,12 +32,10 @@ const defaults: CliDependencies = {
       reportBootstrapCommand: async (command) => {
         const copied = await copyToClipboard(command);
         const endKeypress = copyOnKeypress(command);
-        const again = process.stdin.isTTY
-          ? " Press c here to put it back if something else overwrites your clipboard."
-          : "";
+        const again = process.stdin.isTTY ? " Press c to copy it again." : "";
         const howToPaste = copied
-          ? `It is already in your clipboard: paste it there with Ctrl+V. Selecting it above would copy the frame with it.${again}`
-          : `Copying it to the clipboard failed. Select it above knowing the frame is not part of the command, or run 'hardline install | cat' to print it unframed.${again}`;
+          ? `It is in your clipboard: paste it with Ctrl+V.${again}`
+          : `Copying it to your clipboard failed. Select it above without the frame, which is not part of the command.${again}`;
         output.report("Bootstrap PC", [
           `Run this command in an Administrator PowerShell on the PC:\n\n  ${command}\n\n${howToPaste}\n\nInstallation will resume when the PC responds.`,
         ]);
@@ -89,6 +87,9 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/** Combien de temps la notification de copie reste a l'ecran. */
+export const NOTICE_MS = 1_500;
+
 /** Ce qu'une touche vaut pendant l'attente du PC, et rien d'autre. */
 export function bootstrapKeyAction(key: string): "copy" | "interrupt" | null {
   if (key === "c" || key === "C") return "copy";
@@ -120,19 +121,28 @@ export function copyOnKeypress(
   command: string,
   stdin: KeypressInput = process.stdin,
   copy: (text: string) => Promise<boolean> = copyToClipboard,
+  write: (text: string) => void = (text) => void process.stdout.write(text),
 ): () => void {
   if (!stdin.isTTY) return () => {};
+
+  // Une notification, pas une trace : elle occupe UNE ligne, que la suivante
+  // reecrit et qu'un delai efface. Empilee, elle noyait l'encadre portant la
+  // commande, qui est la seule chose a lire a ce moment.
+  let erase: ReturnType<typeof setTimeout> | undefined;
+  const flash = (text: string): void => {
+    clearTimeout(erase);
+    write(`\u001b[2K\r  ${text}`);
+    erase = setTimeout(() => write("\u001b[2K\r"), NOTICE_MS);
+    // Une attente qui dure dix minutes ne doit pas etre prolongee par ce delai.
+    erase.unref?.();
+  };
 
   const onData = (chunk: Buffer): void => {
     const action = bootstrapKeyAction(chunk.toString());
     if (action === "interrupt") process.kill(process.pid, "SIGINT");
     if (action !== "copy") return;
     void copy(command).then((copied) => {
-      process.stdout.write(
-        copied
-          ? "  The command is in your clipboard again.\n"
-          : "  Copying the command to the clipboard failed.\n",
-      );
+      flash(copied ? "Command copied." : "Copying failed.");
     });
   };
 
@@ -145,6 +155,8 @@ export function copyOnKeypress(
     stdin.off("data", onData);
     stdin.setRawMode(wasRaw);
     stdin.pause();
+    clearTimeout(erase);
+    write("\u001b[2K\r");
   };
 }
 
