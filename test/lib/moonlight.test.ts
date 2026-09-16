@@ -228,6 +228,28 @@ describe("frontiere systeme", () => {
     expect(killCalls).toBe(1);
   });
 
+  test("said() ne suspend jamais l'installation, même sur un flux qui ne se ferme pas", async () => {
+    // `moonlight pair` ne rend pas la main de lui-même : lire ses flux jusqu'à
+    // leur fin, c'est attendre sa mort, et l'installation s'endormait là au
+    // lieu de rapporter son échec.
+    Bun.spawn = ((_cmd: string[]) => ({
+      exited: new Promise(() => {}),
+      // Un flux que personne ne ferme, exactement comme le vrai.
+      stdout: new ReadableStream({ start() {} }),
+      stderr: new ReadableStream({ start() {} }),
+      kill: () => {
+        killCalls += 1;
+      },
+    })) as unknown as typeof Bun.spawn;
+
+    const handle = spawnPair(CONFIG, "4821");
+    const said = await handle.said();
+
+    expect(typeof said).toBe("string");
+    // Le processus abandonné est tué avant la lecture, pas après.
+    expect(killCalls).toBeGreaterThanOrEqual(1);
+  }, 10_000);
+
   test("runStream rend le code de sortie du processus moonlight", async () => {
     exitCode = 7;
 

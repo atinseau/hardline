@@ -169,11 +169,21 @@ export function spawnPair(
     // lent : c'est celui qui decide de la marge.
     ready: new Promise((resolve) => setTimeout(resolve, 6_000)),
     said: async () => {
-      const [out, err] = await Promise.all([
+      // Lire jusqu'a la fin des flux, c'est attendre la fin du processus. Or
+      // `moonlight pair` ne rend jamais la main tout seul : l'installation
+      // s'endormait ici pour toujours au lieu de rapporter son echec. On
+      // abandonne donc le processus AVANT de lire ce qu'il a laisse.
+      proc.kill();
+      const lu = Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
+      ]).then(([out, err]) => `${out}${err}`.trim());
+      // Et meme mort, ses flux peuvent rester ouverts par un enfant : ce que
+      // Moonlight a dit ne vaut pas de suspendre l'installation.
+      return Promise.race([
+        lu,
+        new Promise<string>((resolve) => setTimeout(() => resolve(""), 2_000)),
       ]);
-      return `${out}${err}`.trim();
     },
     kill: () => proc.kill(),
   };
