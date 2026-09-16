@@ -252,7 +252,9 @@ describe("apply, le processus Moonlight est toujours arrete", () => {
   test("arrete le processus de pairage meme quand la relecture ne confirme rien", async () => {
     clientListAfterPin = [];
     await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/Appairage non confirmé/);
-    expect(killCalls).toBe(1);
+    // Deux tentatives, deux processus, deux arrets : aucun Moonlight ne reste
+    // en attente d'un code qui ne viendra plus.
+    expect(killCalls).toBe(2);
   });
 
   test("arrete le processus de pairage meme quand sendPin leve", async () => {
@@ -474,7 +476,7 @@ describe("désamorçage de l'état Apollo", () => {
 
     await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/non confirmé/);
     expect(remoteWrites).toHaveLength(0);
-    expect(killCalls).toBe(1);
+    expect(killCalls).toBe(2);
   });
 });
 
@@ -514,6 +516,34 @@ describe("Mac déjà appairé sous un autre nom", () => {
 
     await pairingStep.apply(CONFIG);
     expect(spawnPair).toHaveBeenCalled();
+  });
+});
+
+describe("premier lancement de Moonlight apres son installation", () => {
+  test("recommence une fois, parce que le premier lancement meurt sans joindre le serveur", async () => {
+    // Moonlight fraichement pose echoue a charger ses greffons Qt au premier
+    // demarrage et meurt avant la moindre requete. Le suivant part.
+    dejaAppaire = false;
+    // Le client n'apparaît qu'apres un SECOND lancement de Moonlight.
+    clientListAfterPin = [];
+    listClients.mockImplementation(async () => {
+      order.push("listClients");
+      return spawnPair.mock.calls.length >= 2
+        ? [{ name: "hardline-mac", uuid: "u-5" }]
+        : [];
+    });
+
+    try {
+      await pairingStep.apply(CONFIG);
+    } finally {
+      listClients.mockImplementation(async () => {
+        order.push("listClients");
+        return clientListAfterPin ?? clientList;
+      });
+    }
+
+    expect(spawnPair.mock.calls.length).toBe(2);
+    expect(killCalls).toBe(2);
   });
 });
 
