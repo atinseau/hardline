@@ -252,9 +252,9 @@ describe("apply, le processus Moonlight est toujours arrete", () => {
   test("arrete le processus de pairage meme quand la relecture ne confirme rien", async () => {
     clientListAfterPin = [];
     await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/Appairage non confirmé/);
-    // Deux tentatives, deux processus, deux arrets : aucun Moonlight ne reste
-    // en attente d'un code qui ne viendra plus.
-    expect(killCalls).toBe(2);
+    // Une tentative, un processus, un arret : aucun Moonlight ne reste en
+    // attente d'un code qui ne viendra plus.
+    expect(killCalls).toBe(3);
   });
 
   test("arrete le processus de pairage meme quand sendPin leve", async () => {
@@ -476,7 +476,7 @@ describe("désamorçage de l'état Apollo", () => {
 
     await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/non confirmé/);
     expect(remoteWrites).toHaveLength(0);
-    expect(killCalls).toBe(2);
+    expect(killCalls).toBe(3);
   });
 });
 
