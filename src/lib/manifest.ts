@@ -540,7 +540,15 @@ export async function acquireManifestLock(
   if (first) return first;
 
   const holder = await readHolder(path);
-  if (!holder) throw new ManifestLockedError(unreadableMessage(path));
+  if (!holder) {
+    // Le nom existait a notre EEXIST et ne dit plus rien : soit le detenteur
+    // l'a rendu entre les deux appels, soit le contenu est illisible. Une
+    // nouvelle tentative separe les deux cas sans rien supposer, et evite de
+    // conseiller la suppression d'un verrou qui n'existe deja plus.
+    const freed = await claim(path);
+    if (freed) return freed;
+    throw new ManifestLockedError(unreadableMessage(path));
+  }
   if (!isReclaimable(holder)) {
     throw new ManifestLockedError(heldMessage(holder, path));
   }
