@@ -81,7 +81,32 @@ export async function waitForApollo(
 }
 
 /**
- * Ouvre une session d'appairage, et recommence une fois si le client n'est pas
+ * Apollo n'enregistre pas le client dans la seconde ou le code arrive : la
+ * poignee de main de Moonlight s'acheve cote serveur APRES la reponse a
+ * /api/pin. Relire la liste une seule fois, c'est la lire avant qu'elle ne soit
+ * ecrite — mesure sur la machine, ou « hardline-mac » est apparu quelques
+ * secondes apres que l'installation eut renonce.
+ */
+export const PAIRING_TIMINGS = { waitMs: 20_000, pollMs: 1_000 };
+
+async function clientApparait(
+  config: Config,
+  creds: ApolloCredentials,
+  now: () => number = Date.now,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<boolean> {
+  const limit = now() + PAIRING_TIMINGS.waitMs;
+  for (;;) {
+    const clients = await listClients(config, creds);
+    if (clients.some((c) => c.name === config.moonlight.clientName)) return true;
+    if (now() >= limit) return false;
+    await sleep(PAIRING_TIMINGS.pollMs);
+  }
+}
+
+/**
+ * Ouvre une session d'appairage, et recommence si le client n'est pas
  * apparu.
  *
  * Le PREMIER lancement de Moonlight qui suit son installation echoue a charger
@@ -107,8 +132,7 @@ export async function pairWithRetry(
       await pairing.ready;
       await sendPin(config, creds, pin, config.moonlight.clientName);
 
-      const confirmed = await listClients(config, creds);
-      if (confirmed.some((c) => c.name === config.moonlight.clientName)) return;
+      if (await clientApparait(config, creds)) return;
       said = await pairing.said().catch(() => "");
     } finally {
       pairing.kill();
