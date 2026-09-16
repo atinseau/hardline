@@ -189,7 +189,21 @@ export const pairingStep: Step<PairingState> = {
     }
 
     const creds = await credentials(config);
-    const clients = await listClients(config, creds);
+    // Apollo vient d'etre installe puis relance par les etapes precedentes : il
+    // n'accepte pas encore de connexion. Lever ICI faisait echouer l'etape
+    // AVANT apply, donc avant waitForApollo — la seule attente qui sait
+    // patienter. Toute la robustesse posee dans apply n'etait jamais atteinte,
+    // et l'installation echouait sur le message brut d'une connexion refusee.
+    let clients;
+    try {
+      clients = await listClients(config, creds);
+    } catch (error) {
+      return {
+        conforming: false,
+        current: { clients: [], hostKnown: containsHost(await readHosts(), config.ssh.host) },
+        detail: `Apollo ne répond pas encore\u00a0: ${errorMessage(error)}`,
+      };
+    }
     const hostKnown = containsHost(await readHosts(), config.ssh.host);
 
     const conforming = clients.some((c) => c.name === config.moonlight.clientName);
