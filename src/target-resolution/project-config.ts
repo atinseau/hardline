@@ -43,8 +43,6 @@ export function projectTargetConfig(profile: TargetProfile): Config {
     moonlight: {
       version: catalog.moonlight.version,
       cask: catalog.moonlight.cask,
-      recipeUrl: catalog.moonlight.recipeUrl,
-      recipeSha256: catalog.moonlight.recipeSha256,
       artifactSha256: catalog.moonlight.artifactSha256,
       binary: catalog.moonlight.binary,
       clientName: catalog.moonlight.clientName,

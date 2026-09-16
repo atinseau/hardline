@@ -15,8 +15,6 @@ export type InstallationCatalog = Readonly<{
   moonlight: Readonly<{
     version: "6.1.0";
     cask: string;
-    recipeUrl: string;
-    recipeSha256: string;
     artifactSha256: string;
     binary: string;
     clientName: string;
@@ -41,10 +39,6 @@ export const INSTALLATION_CATALOG = Object.freeze({
   moonlight: Object.freeze({
     version: "6.1.0",
     cask: "moonlight",
-    recipeUrl:
-      "https://raw.githubusercontent.com/Homebrew/homebrew-cask/b3aa32a45349e4e62e4ba3a33a98d380d50e9152/Casks/m/moonlight.rb",
-    recipeSha256:
-      "453205f2822696919c2aa553e556b20312a0f1adb65c11b7fabf138d0b696479",
     artifactSha256:
       "d494740eead8ad4e620cdc8feedb56083bc29cabbbeef34cb82585fd87725fa2",
     binary: "/Applications/Moonlight.app/Contents/MacOS/Moonlight",

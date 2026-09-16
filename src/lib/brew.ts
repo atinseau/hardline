@@ -1,8 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 /** Etat d'un cask Homebrew : installe ou non, et sa version le cas echeant. */
 export type MoonlightState = {
   installed: boolean;
@@ -12,18 +7,23 @@ export type MoonlightState = {
 export type PinnedCaskRecipe = {
   cask: string;
   version: string;
-  recipeUrl: string;
-  recipeSha256: string;
   artifactSha256: string;
 };
 
 type CaskInfoJson = {
-  casks?: Array<{ token?: string; installed?: string | null }>;
+  casks?: Array<{
+    token?: string;
+    installed?: string | null;
+    version?: string | null;
+    sha256?: string | null;
+  }>;
 };
 
 type CommandResult = {
   exitCode: number;
   stdout: string;
+  /** Ce que la commande a dit en echouant. Sans lui, un refus n'a pas de cause. */
+  stderr?: string;
 };
 
 export type BrewCommandRunner = (
@@ -42,21 +42,6 @@ export type BrewCommandRunner = (
 export function brewInstalled(): boolean {
   return Bun.which("brew", { PATH: process.env.PATH ?? "" }) !== null;
 }
-
-type InstallCaskDependencies = {
-  fetch: (url: string) => Promise<Response>;
-  mkdtemp: (prefix: string) => Promise<string>;
-  writeFile: (
-    path: string,
-    contents: Uint8Array,
-    options: { mode: number },
-  ) => Promise<void>;
-  rm: (
-    path: string,
-    options: { recursive: true; force: true },
-  ) => Promise<void>;
-  run: BrewCommandRunner;
-};
 
 /**
  * Fonction pure. Lit la sortie de `brew info --cask --json=v2 <cask>`.
@@ -81,12 +66,13 @@ export function parseCaskInfo(stdout: string, cask: string): MoonlightState {
 }
 
 async function runCommand(argv: readonly string[]): Promise<CommandResult> {
-  const process = Bun.spawn([...argv], { stdout: "pipe", stderr: "ignore" });
-  const [stdout, exitCode] = await Promise.all([
+  const process = Bun.spawn([...argv], { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([
     new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
     process.exited,
   ]);
-  return { exitCode, stdout };
+  return { exitCode, stdout, stderr };
 }
 
 export async function caskInfo(
@@ -97,79 +83,62 @@ export async function caskInfo(
   return parseCaskInfo(result.stdout, cask);
 }
 
-function validSha256(value: string): boolean {
-  return /^[a-f0-9]{64}$/.test(value);
-}
-
-function hashesMatch(actual: string, expected: string): boolean {
-  return validSha256(expected) && timingSafeEqual(
-    Buffer.from(actual, "hex"),
-    Buffer.from(expected, "hex"),
-  );
-}
-
-function verifyRecipeFacts(contents: Uint8Array, recipe: PinnedCaskRecipe): void {
-  const text = new TextDecoder().decode(contents);
-  const declaredVersion = /^\s*version\s+"([^"]+)"\s*$/m.exec(text)?.[1];
-  const declaredArtifactSha256 = /^\s*sha256\s+"([a-f0-9]{64})"\s*$/m.exec(text)?.[1];
-
-  if (declaredVersion !== recipe.version) {
-    throw new Error(
-      `La recette Moonlight declare la version ${declaredVersion ?? "inconnue"}, pas ${recipe.version}.`,
-    );
-  }
-  if (declaredArtifactSha256 !== recipe.artifactSha256) {
-    throw new Error("L'empreinte de l'artefact Moonlight ne correspond pas au catalogue.");
+/**
+ * Fonction pure. Lit ce que Homebrew PROPOSE pour un cask : la version et
+ * l'empreinte de l'artefact, avant toute installation.
+ */
+export function parseCaskOffer(
+  stdout: string,
+  cask: string,
+): { version: string | null; artifactSha256: string | null } {
+  try {
+    const parsed = JSON.parse(stdout.trim()) as CaskInfoJson;
+    const entry = parsed.casks?.find((c) => c.token === cask);
+    return {
+      version: entry?.version ?? null,
+      artifactSha256: entry?.sha256 ?? null,
+    };
+  } catch {
+    return { version: null, artifactSha256: null };
   }
 }
 
+/**
+ * Pose le cask du tap Homebrew, apres avoir verifie qu'il porte EXACTEMENT ce
+ * que le catalogue epingle.
+ *
+ * Hardline posait auparavant une recette telechargee dans un fichier
+ * temporaire, ce qui fixait la version quoi qu'il arrive en amont. Homebrew a
+ * ferme ce chemin : « Homebrew requires casks to be in a tap ». L'epinglage ne
+ * peut donc plus imposer une version, seulement la CONSTATER : on lit ce que le
+ * tap propose, on refuse si cela s'ecarte du catalogue, et on n'installe que du
+ * connu. Un artefact republie sous la meme version est refuse par l'empreinte.
+ */
 export async function installCask(
   recipe: PinnedCaskRecipe,
-  dependencies: Partial<InstallCaskDependencies> = {},
-): Promise<number> {
-  const url = new URL(recipe.recipeUrl);
-  if (url.protocol !== "https:") {
-    throw new Error("La recette Moonlight doit etre telechargee via HTTPS.");
+  run: BrewCommandRunner = runCommand,
+): Promise<CommandResult> {
+  const info = await run(["brew", "info", "--cask", "--json=v2", recipe.cask]);
+  const offer = parseCaskOffer(info.stdout, recipe.cask);
+
+  if (
+    offer.version !== recipe.version ||
+    offer.artifactSha256 !== recipe.artifactSha256
+  ) {
+    throw new Error(
+      `Homebrew propose ${recipe.cask} ${offer.version ?? "de version inconnue"} ` +
+        `(empreinte ${offer.artifactSha256 ?? "inconnue"}), le catalogue Hardline attend ` +
+        `${recipe.version} (${recipe.artifactSha256}). Rien n'a ete installe : mettre le ` +
+        `catalogue a jour, ou 'brew update' si le tap est en retard.`,
+    );
   }
 
-  const io: InstallCaskDependencies = {
-    fetch: async (input) => fetch(input),
-    mkdtemp,
-    writeFile,
-    rm,
-    run: runCommand,
-    ...dependencies,
-  };
-  const directory = await io.mkdtemp(join(tmpdir(), "hardline-moonlight-"));
-  const recipePath = join(directory, `${recipe.cask}.rb`);
-
-  try {
-    const response = await io.fetch(recipe.recipeUrl);
-    if (!response.ok) {
-      throw new Error(
-        `Impossible de telecharger la recette Moonlight (HTTP ${response.status}).`,
-      );
-    }
-    const contents = new Uint8Array(await response.arrayBuffer());
-    await io.writeFile(recipePath, contents, { mode: 0o600 });
-
-    const actualSha256 = createHash("sha256").update(contents).digest("hex");
-    if (!hashesMatch(actualSha256, recipe.recipeSha256)) {
-      throw new Error("L'empreinte de la recette Moonlight ne correspond pas au catalogue.");
-    }
-    verifyRecipeFacts(contents, recipe);
-
-    const result = await io.run(["brew", "install", "--cask", recipePath]);
-    return result.exitCode;
-  } finally {
-    await io.rm(directory, { recursive: true, force: true });
-  }
+  return run(["brew", "install", "--cask", recipe.cask]);
 }
 
 export async function uninstallCask(
   cask: string,
   run: BrewCommandRunner = runCommand,
-): Promise<number> {
-  const result = await run(["brew", "uninstall", "--cask", cask]);
-  return result.exitCode;
+): Promise<CommandResult> {
+  return run(["brew", "uninstall", "--cask", cask]);
 }

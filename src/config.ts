@@ -23,11 +23,7 @@ export type MoonlightConfig = {
   version: string;
   /** Nom du cask Homebrew. */
   cask: string;
-  /** Recette Homebrew immuable, epinglee a un commit du depot de casks. */
-  recipeUrl: string;
-  /** Empreinte SHA-256 de la recette, verifiee avant d'invoquer Homebrew. */
-  recipeSha256: string;
-  /** Empreinte SHA-256 de l'artefact, imposee par la recette authentifiee. */
+  /** Empreinte SHA-256 de l'artefact, exigee de ce que Homebrew propose. */
   artifactSha256: string;
   /** Chemin du binaire en ligne de commande, pose par le cask. */
   binary: string;

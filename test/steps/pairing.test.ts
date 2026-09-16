@@ -15,7 +15,11 @@ let pairReady: Promise<void> = Promise.resolve();
 
 const spawnPair = mock((..._args: unknown[]) => {
   order.push("spawnPair");
-  return { ready: pairReady, kill: () => { killCalls += 1; } };
+return {
+  ready: pairReady,
+  said: async () => "Redirecting log output to /tmp/Moonlight-1.log",
+  kill: () => { killCalls += 1; },
+};
 });
 const sendPin = mock(async (..._args: unknown[]) => {
   order.push("sendPin");

@@ -160,9 +160,11 @@ export const pairingStep: Step<PairingState> = {
 
       const confirmed = await listClients(config, creds);
       if (!confirmed.some((c) => c.name === config.moonlight.clientName)) {
+        const said = await pairing.said().catch(() => "");
         throw new Error(
           `Appairage non confirmé\u00a0: «\u00a0${config.moonlight.clientName}\u00a0» n'apparaît pas ` +
-            "dans la liste des clients relue après l'envoi du code.",
+            "dans la liste des clients relue après l'envoi du code." +
+            (said ? `\u00a0Moonlight a dit\u00a0: ${said}` : ""),
         );
       }
     } finally {

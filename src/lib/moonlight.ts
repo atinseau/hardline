@@ -151,15 +151,28 @@ export async function isPairedFromMac(
   return code === 0;
 }
 
-export function spawnPair(config: Config, pin: string): { ready: Promise<void>; kill(): void } {
+export function spawnPair(
+  config: Config,
+  pin: string,
+): { ready: Promise<void>; said(): Promise<string>; kill(): void } {
+  // Moonlight etait lance muet. Quand l'appairage n'aboutissait pas, il ne
+  // restait que « le client n'apparait pas », sans la seule piste utile : la
+  // premiere chose que Moonlight ecrit est le chemin de son journal.
   const proc = Bun.spawn([config.moonlight.binary, ...pairArgs(config, pin)], {
-    stdout: "ignore",
-    stderr: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
   return {
     // Moonlight detache son journal puis initialise la session GameStream.
     // Apollo rejette un PIN envoye avant la fin de cette initialisation.
     ready: new Promise((resolve) => setTimeout(resolve, 3_000)),
+    said: async () => {
+      const [out, err] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      return `${out}${err}`.trim();
+    },
     kill: () => proc.kill(),
   };
 }
