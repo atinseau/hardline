@@ -26,7 +26,12 @@ export type BootstrapWorkflowDependencies = Readonly<{
   installationCatalogVersion: string;
   now: () => number;
   deadline: number;
-  reportCommand: (command: string) => void | Promise<void>;
+  /**
+   * Rend, s'il y a lieu, de quoi defaire ce que le rapport a installe. Le
+   * rapport reste vivant tant que le PC n'a pas repondu : c'est la fenetre
+   * pendant laquelle l'operateur peut encore demander la commande.
+   */
+  reportCommand: (command: string) => void | (() => void) | Promise<void | (() => void)>;
   ask: AskLink;
 }>;
 
@@ -213,11 +218,11 @@ export class BootstrapWorkflow {
     });
 
     try {
-      await this.dependencies.reportCommand(server.command);
+      const endReport = await this.dependencies.reportCommand(server.command);
       return await waitForCheckpoint(
         checkpoint.promise,
         this.dependencies.deadline - this.dependencies.now(),
-      );
+      ).finally(() => endReport?.());
     } finally {
       await server.stop();
     }

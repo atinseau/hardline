@@ -45,7 +45,7 @@ import type { TargetProfile, TargetStatePaths } from "./types";
 const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
 export type ProductionTargetResolutionOptions = {
   readonly paths?: TargetStatePaths;
-  readonly reportBootstrapCommand: (command: string) => void | Promise<void>;
+  readonly reportBootstrapCommand: BootstrapWorkflowDependencies["reportCommand"];
   readonly ask: BootstrapWorkflowDependencies["ask"];
   /** Le chemin exige pour cette execution. Absent vaut `auto`. */
   readonly link?: RunLink;
