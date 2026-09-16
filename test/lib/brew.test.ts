@@ -4,6 +4,7 @@ import {
   caskInfo,
   installCask,
   parseCaskInfo,
+  parseCaskOffer,
   uninstallCask,
 } from "../../src/lib/brew";
 
@@ -15,27 +16,11 @@ const ABSENT = JSON.stringify({
   casks: [{ token: "moonlight", installed: null }],
 });
 
-const RECIPE = `cask "moonlight" do
-  version "6.1.0"
-  sha256 "d494740eead8ad4e620cdc8feedb56083bc29cabbbeef34cb82585fd87725fa2"
+/** Ce que `brew info --json=v2` annonce d'un cask avant installation. */
+const offer = (version: string, sha256: string): string =>
+  JSON.stringify({ casks: [{ token: "moonlight", version, sha256 }] });
 
-  url "https://github.com/moonlight-stream/moonlight-qt/releases/download/v#{version}/Moonlight-#{version}.dmg",
-      verified: "github.com/moonlight-stream/moonlight-qt/"
-  name "Moonlight"
-  desc "GameStream client"
-  homepage "https://moonlight-stream.org/"
-
-  depends_on macos: ">= :mojave"
-
-  app "Moonlight.app"
-
-  zap trash: [
-    "~/Library/Caches/Moonlight Game Streaming Project",
-    "~/Library/Preferences/com.moonlight-stream.Moonlight.plist",
-    "~/Library/Saved Application State/com.moonlight-stream.Moonlight.savedState",
-  ]
-end
-`;
+const CATALOGUE = INSTALLATION_CATALOG.moonlight;
 
 describe("parseCaskInfo", () => {
   test("lit un cask installe et sa version", () => {
@@ -78,60 +63,62 @@ describe("parseCaskInfo", () => {
 });
 
 describe("installCask", () => {
-  function dependencies(contents = RECIPE) {
-    const files = new Map<string, Uint8Array>();
-    const run = mock(async (argv: readonly string[]) => {
-      const recipePath = argv.at(-1)!;
-      expect(new TextDecoder().decode(files.get(recipePath))).toBe(contents);
-      return { exitCode: 0, stdout: "" };
-    });
-    const rm = mock(async (..._args: unknown[]) => {});
-
-    return {
-      files,
-      run,
-      rm,
-      io: {
-        fetch: async () => new Response(contents),
-        mkdtemp: async () => "/tmp/hardline-moonlight-test",
-        writeFile: async (path: string, data: Uint8Array) => {
-          files.set(path, data);
-        },
-        rm,
-        run,
-      },
-    };
+  /** Un brew qui annonce `offered`, puis accepte l'installation. */
+  function brewOffering(offered: string) {
+    return mock(async (argv: readonly string[]) => ({
+      exitCode: 0,
+      stdout: argv[1] === "info" ? offered : "",
+      stderr: "",
+    }));
   }
 
-  test("installe la recette locale authentifiee avec un argv explicite puis la nettoie", async () => {
-    const { io, run, rm } = dependencies();
+  test("pose le cask du tap quand il porte exactement ce que le catalogue epingle", async () => {
+    const run = brewOffering(offer(CATALOGUE.version, CATALOGUE.artifactSha256));
 
-    await expect(installCask(INSTALLATION_CATALOG.moonlight, io)).resolves.toBe(0);
+    await expect(installCask(CATALOGUE, run)).resolves.toMatchObject({ exitCode: 0 });
 
-    expect(run).toHaveBeenCalledWith([
-      "brew",
-      "install",
-      "--cask",
-      "/tmp/hardline-moonlight-test/moonlight.rb",
+    expect(run.mock.calls.map(([argv]) => argv)).toEqual([
+      ["brew", "info", "--cask", "--json=v2", "moonlight"],
+      ["brew", "install", "--cask", "moonlight"],
     ]);
-    expect(rm).toHaveBeenCalledWith("/tmp/hardline-moonlight-test", {
-      recursive: true,
-      force: true,
+  });
+
+  test("n'installe rien quand le tap propose une autre version", async () => {
+    const run = brewOffering(offer("6.2.0", CATALOGUE.artifactSha256));
+
+    await expect(installCask(CATALOGUE, run)).rejects.toThrow(/6\.2\.0/);
+    expect(run.mock.calls).toHaveLength(1);
+  });
+
+  test("n'installe rien quand l'artefact a ete republie sous la meme version", async () => {
+    // Meme numero, autre contenu : c'est precisement ce que l'empreinte est la
+    // pour voir, et la version seule ne le verrait pas.
+    const run = brewOffering(offer(CATALOGUE.version, "f".repeat(64)));
+
+    await expect(installCask(CATALOGUE, run)).rejects.toThrow(/empreinte/);
+    expect(run.mock.calls).toHaveLength(1);
+  });
+
+  test("n'installe rien quand brew ne dit rien de lisible", async () => {
+    const run = brewOffering("{ceci n'est pas du json");
+
+    await expect(installCask(CATALOGUE, run)).rejects.toThrow(/inconnue/);
+    expect(run.mock.calls).toHaveLength(1);
+  });
+});
+
+describe("parseCaskOffer", () => {
+  test("lit la version et l'empreinte proposees", () => {
+    expect(parseCaskOffer(offer("6.1.0", "a".repeat(64)), "moonlight")).toEqual({
+      version: "6.1.0",
+      artifactSha256: "a".repeat(64),
     });
   });
 
-  test("refuse une empreinte de recette incorrecte sans invoquer brew et nettoie", async () => {
-    const { io, run, rm } = dependencies(`${RECIPE}# altered\n`);
-
-    await expect(installCask(INSTALLATION_CATALOG.moonlight, io)).rejects.toThrow(
-      /empreinte de la recette Moonlight/,
-    );
-
-    expect(run).not.toHaveBeenCalled();
-    expect(rm).toHaveBeenCalledWith("/tmp/hardline-moonlight-test", {
-      recursive: true,
-      force: true,
-    });
+  test("ne rend rien pour un autre cask ou une sortie illisible", () => {
+    const rien = { version: null, artifactSha256: null };
+    expect(parseCaskOffer(offer("6.1.0", "a".repeat(64)), "autre")).toEqual(rien);
+    expect(parseCaskOffer("", "moonlight")).toEqual(rien);
   });
 });
 
@@ -145,7 +132,7 @@ test("les autres commandes brew utilisent aussi des argv explicites", async () =
     installed: true,
     version: "6.1.0",
   });
-  await expect(uninstallCask("moonlight", run)).resolves.toBe(0);
+  await expect(uninstallCask("moonlight", run)).resolves.toMatchObject({ exitCode: 0 });
 
   expect(run.mock.calls.map(([argv]) => argv)).toEqual([
     ["brew", "info", "--cask", "--json=v2", "moonlight"],

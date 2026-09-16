@@ -3,8 +3,10 @@ import { CONFIG } from "../fixtures/config";
 import type { MoonlightState } from "../../src/lib/brew";
 
 let currentState: MoonlightState;
-const install = mock(async (..._args: unknown[]) => 0);
-const uninstall = mock(async (..._args: unknown[]) => 0);
+let installResult = { exitCode: 0, stdout: "", stderr: "" };
+let uninstallResult = { exitCode: 0, stdout: "", stderr: "" };
+const install = mock(async (..._args: unknown[]) => installResult);
+const uninstall = mock(async (..._args: unknown[]) => uninstallResult);
 const info = mock(async () => currentState);
 
 mock.module("../../src/lib/brew", () => ({
@@ -17,6 +19,8 @@ const { moonlightInstallStep } = await import("../../src/steps/moonlight-install
 
 beforeEach(() => {
   currentState = { installed: true, version: CONFIG.moonlight.version };
+  installResult = { exitCode: 0, stdout: "", stderr: "" };
+  uninstallResult = { exitCode: 0, stdout: "", stderr: "" };
   info.mockClear();
   install.mockClear();
   uninstall.mockClear();
@@ -61,9 +65,15 @@ describe("apply", () => {
   });
 
   test("rejette quand brew refuse l'installation", async () => {
-    install.mockImplementationOnce(async () => 1);
+    install.mockImplementationOnce(async () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "Error: Homebrew requires casks to be in a tap, rejecting:\n  /tmp/x.rb",
+    }));
+    // Le code seul ne dit rien. La cause que brew a ecrite doit remonter, sinon
+    // l'operateur lit « code 1 » devant un refus parfaitement explique.
     await expect(moonlightInstallStep.apply(CONFIG)).rejects.toThrow(
-      /Homebrew a refusé/,
+      /casks to be in a tap/,
     );
   });
 });
@@ -83,7 +93,7 @@ describe("restore", () => {
   });
 
   test("rejette quand brew refuse la desinstallation", async () => {
-    uninstall.mockImplementationOnce(async () => 1);
+    uninstall.mockImplementationOnce(async () => ({ exitCode: 1, stdout: "", stderr: "" }));
     await expect(
       moonlightInstallStep.restore(
         CONFIG,

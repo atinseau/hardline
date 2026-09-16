@@ -168,7 +168,16 @@ if (Test-Path $statePath) {
         $recorded.hardwareId -ne $hardwareId -or
         $recorded.address -cne $target -or
         $recorded.authorizedKeys.publicKey -cne $publicKey) {
-        throw 'The immutable bootstrap recovery record belongs to another plan.'
+        # Ce fichier retient l'etat d'avant une installation qui n'a jamais ete
+        # retiree. Le refus est juste, mais muet il condamne la machine : sans
+        # le chemin ni le geste, l'operateur ne peut ni restaurer ni repartir.
+        $written = (Get-Item $statePath).LastWriteTime.ToString('yyyy-MM-dd')
+        throw ("The immutable bootstrap recovery record at $statePath belongs to another plan. " +
+            "It was written on $written and holds what this PC looked like before that " +
+            "installation, for an adapter, address or Mac identity that no longer match. " +
+            "Run 'hardline uninstall' on the Mac that created it to restore the PC and remove " +
+            "it. If that Mac is gone and the recorded state no longer matters, move the file " +
+            "aside and run the bootstrap command again.")
     }
 } else {
     $addresses = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 `

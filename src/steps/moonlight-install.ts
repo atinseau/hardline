@@ -9,11 +9,20 @@ export type { MoonlightState } from "../lib/brew";
  * Le code de retour de brew ne doit jamais etre ignore : sans cette
  * verification l'etape se declare accomplie meme quand l'operation a echoue,
  * et l'orchestrateur enregistre une convergence qui n'a pas eu lieu.
+ *
+ * Le code seul ne suffit pas non plus. « code 1 » a longtemps ete tout ce que
+ * l'operateur voyait la ou brew disait precisement ce qui le genait.
  */
-function ensureAccepted(exitCode: number, action: string, cask: string): void {
-  if (exitCode === 0) return;
+function ensureAccepted(
+  result: { exitCode: number; stderr?: string },
+  action: string,
+  cask: string,
+): void {
+  if (result.exitCode === 0) return;
+  const cause = result.stderr?.trim();
   throw new Error(
-    `Homebrew a refusé de ${action} le cask «\u00a0${cask}\u00a0» (code ${exitCode}).`,
+    `Homebrew a refusé de ${action} le cask «\u00a0${cask}\u00a0» (code ${result.exitCode})` +
+      (cause ? `\u00a0: ${cause}` : "."),
   );
 }
 
@@ -34,8 +43,7 @@ export const moonlightInstallStep: Step<MoonlightState> = {
   },
 
   async apply(config: Config) {
-    const exitCode = await installCask(config.moonlight);
-    ensureAccepted(exitCode, "poser", config.moonlight.cask);
+    ensureAccepted(await installCask(config.moonlight), "poser", config.moonlight.cask);
     const installed = await caskInfo(config.moonlight.cask);
     if (!installed.installed || installed.version !== config.moonlight.version) {
       throw new Error(
@@ -45,7 +53,10 @@ export const moonlightInstallStep: Step<MoonlightState> = {
   },
 
   async restore(config: Config) {
-    const exitCode = await uninstallCask(config.moonlight.cask);
-    ensureAccepted(exitCode, "retirer", config.moonlight.cask);
+    ensureAccepted(
+      await uninstallCask(config.moonlight.cask),
+      "retirer",
+      config.moonlight.cask,
+    );
   },
 };
