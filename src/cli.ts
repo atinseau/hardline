@@ -5,6 +5,7 @@ import { upCommand, type UpCliOptions } from "./commands/up";
 import { downCommand } from "./commands/down";
 import { uninstallCommand } from "./commands/uninstall";
 import { doctorCommand } from "./commands/doctor";
+import { updateCommand } from "./commands/update";
 import type { Config } from "./config";
 import {
   createCommandOutput,
@@ -15,7 +16,8 @@ import {
 import { createTargetResolution, type TargetResolution } from "./target-resolution";
 import type { RunLink } from "./target-resolution/relink";
 
-export const VERSION = "0.1.0";
+export { VERSION } from "./version";
+import { VERSION } from "./version";
 
 type CliDependencies = {
   targetResolution: (output: CommandOutput, link: RunLink) => TargetResolution<Config>;
@@ -161,6 +163,15 @@ export function buildProgram(dependencies: CliDependencies = defaults): Command 
         targetResolution: resolutionFor(command, output),
         output,
       }));
+    });
+
+  // Seule commande qui ne touche aucune des deux machines : elle ne resout
+  // donc pas de cible et n'a pas besoin du lien.
+  program
+    .command("update")
+    .description("Replace this executable with the latest release")
+    .action(async (_options: unknown, command: Command) => {
+      return execute(updateCommand({ output: outputFor(command) }));
     });
 
   return program;
