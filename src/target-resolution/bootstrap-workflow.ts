@@ -46,7 +46,10 @@ export class BootstrapResumeMismatchError extends Error {
     readonly machine: "mac" | "windows",
     readonly fact: "machine-id" | "hardware-id",
   ) {
-    super(`The ${machine} ${fact === "machine-id" ? "machine identity" : "selected hardware"} does not match the Target Profile.`);
+    super(
+      `this ${machine} is not the one the existing pairing describes (${fact === "machine-id" ? "machine identity" : "selected hardware"} differs). ` +
+        "Run 'hardline uninstall' to retire that pairing before starting another.",
+    );
     this.name = "BootstrapResumeMismatchError";
   }
 }
@@ -55,7 +58,9 @@ export class BootstrapWorkflowTimeoutError extends Error {
   readonly code = "BOOTSTRAP_WORKFLOW_TIMEOUT";
 
   constructor() {
-    super("The Bootstrap Rendezvous timed out.");
+    super(
+      "the PC never answered. Run 'hardline install' again when you are at its keyboard, and paste the command into an Administrator PowerShell.",
+    );
     this.name = "BootstrapWorkflowTimeoutError";
   }
 }

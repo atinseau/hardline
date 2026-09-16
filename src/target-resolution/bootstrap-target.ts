@@ -57,7 +57,8 @@ export class NoLinkFoundError extends Error {
     readonly windowsEvidence: readonly NetworkAdapterObservation[],
   ) {
     super(
-      "No path was found between the Mac and the PC: no free adapter to dedicate, and no network where both machines already hold an address.",
+      "no path was found between the Mac and the PC: no free adapter to dedicate at both ends, and no network where both machines already hold an address. " +
+        "Connect an Ethernet cable between them, or put both on the same network, then run 'hardline install' again.",
     );
     this.name = "NoLinkFoundError";
   }

@@ -101,7 +101,10 @@ export class LinkIdentityMismatchError extends Error {
     readonly expected: string,
     readonly observed: string,
   ) {
-    super(`The observed ${machine} ${identity} does not match the Target Profile.`);
+    super(
+      `the ${machine} that answered is not the one Hardline is paired with (${identity} differs). ` +
+        "If you replaced hardware or are pairing another machine, run 'hardline uninstall' first.",
+    );
     this.name = "LinkIdentityMismatchError";
   }
 }
@@ -112,8 +115,8 @@ export class DirectLinkUnavailableError extends Error {
   ) {
     super(
       diagnosis === "pc-alive/direct-link-broken"
-        ? "The paired PC is alive, but the Direct Link is unavailable."
-        : "The paired PC is inaccessible through both the Direct Link and Recovery Channel.",
+        ? "the paired PC answers, but not over the link Hardline uses. Check the cable at both ends, then run 'hardline doctor'."
+        : "the paired PC cannot be reached at all. Turn it on, or put it back on the network it shares with this Mac, then run 'hardline doctor'.",
     );
     this.name = "DirectLinkUnavailableError";
   }
