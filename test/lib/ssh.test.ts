@@ -6,6 +6,7 @@ import {
   buildSSHArgs,
   parseRemoteJson,
   runRemote,
+  RemoteError,
   type SSHTarget,
 } from "../../src/lib/ssh";
 
@@ -128,6 +129,65 @@ describe("transport des scripts volumineux", () => {
     } finally {
       Bun.spawn = originalSpawn;
     }
+  });
+});
+
+describe("un lien qui cligne", () => {
+  /** Un ssh de laboratoire qui rend les codes donnes, dans l'ordre. */
+  function spawnRendant(codes: number[], stderrs: string[] = []) {
+    let appel = 0;
+    return ((_command: string[], _options: unknown) => {
+      const index = appel;
+      appel += 1;
+      return {
+        stdout: new Response(codes[index] === 0 ? "done\n" : "").body,
+        stderr: new Response(stderrs[index] ?? "").body,
+        exited: Promise.resolve(codes[index] ?? 0),
+      };
+    }) as unknown as typeof Bun.spawn;
+  }
+
+  test("une connexion refusée est retentée une fois, et la seconde fait foi", async () => {
+    const originalSpawn = Bun.spawn;
+    try {
+      Bun.spawn = spawnRendant([255, 0], ["ssh: connect to host port 22: Operation timed out"]);
+      const result = await runRemote(TARGET, "Write-Output 'done'");
+      expect(result).toEqual({ exitCode: 0, stdout: "done", stderr: "" });
+    } finally {
+      Bun.spawn = originalSpawn;
+    }
+  });
+
+  test("un script qui a DÉMARRÉ n'est jamais rejoué", async () => {
+    // Rejouer un script distant a moitié appliqué est pire que l'échec : seul
+    // un échec de connexion garantit que rien n'a tourné là-bas.
+    const originalSpawn = Bun.spawn;
+    let appels = 0;
+    try {
+      Bun.spawn = ((..._args: unknown[]) => {
+        appels += 1;
+        return {
+          stdout: new Response("").body,
+          stderr: new Response("PowerShell a levé").body,
+          exited: Promise.resolve(1),
+        };
+      }) as unknown as typeof Bun.spawn;
+
+      const result = await runRemote(TARGET, "Write-Output 'done'");
+      expect(result.exitCode).toBe(1);
+      expect(appels).toBe(1);
+    } finally {
+      Bun.spawn = originalSpawn;
+    }
+  });
+
+  test("l'erreur distante porte ce que ssh a dit, pas seulement son code", () => {
+    const error = new RemoteError("Remote command failed with exit code 255.", {
+      exitCode: 255,
+      stdout: "",
+      stderr: "ssh: connect to host 192.168.1.48 port 22: Operation timed out",
+    });
+    expect(error.message).toContain("Operation timed out");
   });
 });
 
