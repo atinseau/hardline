@@ -56,31 +56,25 @@ No existing SSH key is required. Hardline creates and owns a separate identity u
 
 ## Install the CLI
 
-There are no published binaries, Homebrew formula, or standalone installer yet. On a Mac that already has Bun 1.4+, Git, and the Swift compiler, build and install the latest source with:
+One command, nothing to install first:
 
 ```bash
-tmp="$(mktemp -d)" &&
-git clone --depth 1 https://github.com/atinseau/hardline.git "$tmp/hardline" &&
-(
-  cd "$tmp/hardline" &&
-  bun install --frozen-lockfile &&
-  bun run build &&
-  sudo install -m 0755 dist/hardline /usr/local/bin/hardline
-) &&
-rm -rf "$tmp"
+curl -fsSL https://github.com/atinseau/hardline/releases/latest/download/hardline -o hardline &&
+chmod +x hardline &&
+sudo mv hardline /usr/local/bin/hardline
 ```
 
-Or keep a local checkout for development:
+The release carries a standalone Apple Silicon executable. Bun, Git and Swift are needed only to build it yourself:
 
 ```bash
 git clone https://github.com/atinseau/hardline.git
 cd hardline
-bun install
+bun install --frozen-lockfile
 bun run build
 sudo install -m 0755 dist/hardline /usr/local/bin/hardline
 ```
 
-The build compiles the macOS display probe and produces a standalone Apple Silicon executable at `dist/hardline`. Bun and Swift are not required to run the installed executable. Although the CLI is installed globally, its Target Profile, restoration manifest, SSH identity, and credentials remain scoped to the macOS user who runs it.
+The build compiles the macOS display probe and produces the executable at `dist/hardline`. Although the CLI is installed globally, its Target Profile, restoration manifest and SSH identity remain scoped to the macOS user who runs it.
 
 For development, run the TypeScript entry point directly:
 
@@ -251,6 +245,8 @@ bun run build
 ```
 
 The same three commands run on every push and pull request, on macOS, in [.github/workflows/checks.yml](.github/workflows/checks.yml). They run on macOS because the deliverable is an Apple Silicon executable and the display probe is compiled with `swiftc`: verifying anywhere else would not verify what ships.
+
+Pushing a `vX.Y.Z` tag runs the same checks and attaches the binary to a **draft** release. What becomes public stays a human gesture.
 
 The central module is `src/target-resolution/`. Existing product convergence remains implemented as transactional `Step` modules under `src/steps/`.
 

@@ -1,0 +1,39 @@
+name: release
+
+# Une etiquette vX.Y.Z publie un brouillon de version portant le binaire. Le
+# brouillon, et non la version : ce qui devient public reste un geste humain.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun test --isolate
+      - run: bun run build
+      - name: Verify the artifact runs
+        run: ./dist/hardline --version
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/hardline \
+            --draft \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Apple Silicon macOS build. Install with:
+
+          \`\`\`bash
+          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/hardline -o hardline &&
+          chmod +x hardline &&
+          sudo mv hardline /usr/local/bin/hardline
+          \`\`\`"
