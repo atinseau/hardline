@@ -30,8 +30,16 @@ const listClients = mock(async (..._args: unknown[]) => {
   return clientListAfterPin ?? clientList;
 });
 const unpairClient = mock(async (..._args: unknown[]) => {});
+/** Apollo pret cote GameStream, sauf quand un test veut la course. */
+let gamestreamUp = true;
+const gamestreamListening = mock(async (..._args: unknown[]) => gamestreamUp);
 
-mock.module("../../src/lib/apollo-api", () => ({ listClients, sendPin, unpairClient }));
+mock.module("../../src/lib/apollo-api", () => ({
+  listClients,
+  sendPin,
+  unpairClient,
+  gamestreamListening,
+}));
 /**
  * `moonlight list` est le seul signal fiable cote Mac : il rend 0 quand ce
  * Mac est appaire, 255 sinon. Un Mac deja appaire fait sortir
@@ -90,10 +98,11 @@ function etatApresAppairage(booleensEnChaines: boolean): string {
   });
 }
 
-const { pairingStep } = await import("../../src/steps/pairing");
+const { pairingStep, waitForApollo } = await import("../../src/steps/pairing");
 
 beforeEach(() => {
   order.length = 0;
+  gamestreamUp = true;
   apolloWebSecret = "web-secret";
   clientList = [];
   clientListAfterPin = null;
@@ -505,5 +514,27 @@ describe("Mac déjà appairé sous un autre nom", () => {
 
     await pairingStep.apply(CONFIG);
     expect(spawnPair).toHaveBeenCalled();
+  });
+});
+
+describe("waitForApollo", () => {
+  test("n'ouvre pas l'appairage tant que le port GameStream n'écoute pas", async () => {
+    // Apollo sert son interface web avant ce port. Partir sur l'API seule,
+    // c'est lancer Moonlight contre un serveur qui ne l'écoute pas encore.
+    gamestreamUp = false;
+    let horloge = 0;
+
+    await expect(
+      waitForApollo(CONFIG, { user: "u", password: "p" }, 10, 1, () => horloge, async () => {
+        horloge += 10;
+      }),
+    ).rejects.toThrow(/GameStream 47989/);
+
+    expect(listClients).toHaveBeenCalled();
+  });
+
+  test("part dès que les deux répondent", async () => {
+    gamestreamUp = true;
+    await waitForApollo(CONFIG, { user: "u", password: "p" }, 10, 1, () => 0, async () => {});
   });
 });

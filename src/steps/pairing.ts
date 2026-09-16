@@ -1,5 +1,6 @@
 import {
   listClients,
+  gamestreamListening,
   sendPin,
   unpairClient,
   type ApolloCredentials,
@@ -46,7 +47,7 @@ async function credentials(config: Config): Promise<ApolloCredentials> {
  * qui allait repondre — mesure sur la machine. Le delai plafond est genereux
  * parce qu'il ne coute rien quand tout va bien : on sort a la premiere reponse.
  */
-async function waitForApollo(
+export async function waitForApollo(
   config: Config,
   creds: ApolloCredentials,
   deadlineMs = 90_000,
@@ -61,7 +62,10 @@ async function waitForApollo(
   for (;;) {
     try {
       await listClients(config, creds);
-      return;
+      // L'API qui repond ne prouve pas qu'Apollo est pret : Moonlight parle au
+      // port GameStream, et Apollo l'ouvre apres.
+      if (await gamestreamListening(config)) return;
+      last = `son interface répond mais le port GameStream ${config.apollo.apiPort - 1} n'écoute pas encore`;
     } catch (error) {
       last = errorMessage(error);
     }
