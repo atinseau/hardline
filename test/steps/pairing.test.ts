@@ -196,7 +196,16 @@ describe("apply, sequence nominale", () => {
   test("respecte l'ordre impose par la spec : pair, puis pin, puis relecture", async () => {
     clientListAfterPin = [{ name: "hardline-mac", uuid: "u-3" }];
     await pairingStep.apply(CONFIG);
-    expect(order).toEqual(["listClients", "spawnPair", "sendPin", "listClients"]);
+    // Apollo est sondé avant l'attente initiale ET au début de chaque
+    // tentative : il vient d'être relancé, son état d'il y a une minute ne
+    // prouve rien.
+    expect(order).toEqual([
+      "listClients",
+      "listClients",
+      "spawnPair",
+      "sendPin",
+      "listClients",
+    ]);
     expect(order.slice(order.indexOf("spawnPair"))).toEqual([
       "spawnPair",
       "sendPin",
@@ -261,12 +270,20 @@ describe("apply, le processus Moonlight est toujours arrete", () => {
   });
 
   test("arrete le processus de pairage meme quand sendPin leve", async () => {
-    sendPin.mockImplementationOnce(async () => {
+    sendPin.mockImplementation(async () => {
       order.push("sendPin");
       throw new Error("panne reseau");
     });
-    await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/panne reseau/);
-    expect(killCalls).toBe(1);
+    try {
+      // Trois tentatives, trois processus arrêtés, et la cause nommée.
+      await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/panne reseau/);
+      expect(killCalls).toBe(3);
+    } finally {
+      sendPin.mockImplementation(async () => {
+        order.push("sendPin");
+        return sendPinResult;
+      });
+    }
   });
 });
 
@@ -519,6 +536,50 @@ describe("Mac déjà appairé sous un autre nom", () => {
 
     await pairingStep.apply(CONFIG);
     expect(spawnPair).toHaveBeenCalled();
+  });
+});
+
+describe("Apollo refuse la connexion au mauvais moment", () => {
+  test("une connexion refusée n'échoue pas l'installation, elle est retentée", async () => {
+    // Apollo vient d'être relancé. Une requête refusée n'est pas une réponse :
+    // l'erreur brute de Bun remontait telle quelle et faisait échouer toute
+    // l'installation sur « Was there a typo in the url or port? ».
+    dejaAppaire = false;
+    let appels = 0;
+    sendPin.mockImplementation(async () => {
+      order.push("sendPin");
+      appels += 1;
+      if (appels === 1) throw new Error("Was there a typo in the url or port?");
+      return true;
+    });
+    clientListAfterPin = [{ name: "hardline-mac", uuid: "u-7" }];
+
+    try {
+      await pairingStep.apply(CONFIG);
+      expect(appels).toBe(2);
+    } finally {
+      sendPin.mockImplementation(async () => {
+        order.push("sendPin");
+        return sendPinResult;
+      });
+    }
+  });
+
+  test("quand toutes les tentatives butent dessus, la cause est nommée", async () => {
+    dejaAppaire = false;
+    sendPin.mockImplementation(async () => {
+      order.push("sendPin");
+      throw new Error("Was there a typo in the url or port?");
+    });
+
+    try {
+      await expect(pairingStep.apply(CONFIG)).rejects.toThrow(/typo in the url/);
+    } finally {
+      sendPin.mockImplementation(async () => {
+        order.push("sendPin");
+        return sendPinResult;
+      });
+    }
   });
 });
 
