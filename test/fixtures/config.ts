@@ -6,6 +6,7 @@ import { INSTALLATION_CATALOG } from "../../src/installation-catalog";
 export type { Config };
 
 export const CONFIG: Config = {
+  linkKind: "direct",
   mac: {
     serviceName: "AX88179A",
     ip: "10.10.10.2",
@@ -16,6 +17,7 @@ export const CONFIG: Config = {
     ip: "10.10.10.1",
     prefixLength: 24,
     macAddress: "E8-9C-25-2A-70-E1",
+    wireless: false,
   },
   ssh: {
     host: "10.10.10.1",
@@ -28,12 +30,4 @@ export const CONFIG: Config = {
   bootstrapPort: 8080,
   apollo: INSTALLATION_CATALOG.apollo,
   moonlight: INSTALLATION_CATALOG.moonlight,
-  smb: {
-    user: "arthur",
-    shares: [
-      { name: "arthur", path: null, mountPoint: join(homedir(), "PC", "arthur") },
-      { name: "hardline-d", path: "D:\\", mountPoint: join(homedir(), "PC", "d") },
-      { name: "hardline-e", path: "E:\\", mountPoint: join(homedir(), "PC", "e") },
-    ],
-  },
 };

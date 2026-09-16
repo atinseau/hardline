@@ -6,12 +6,10 @@ import { windowsFastStartupStep } from "./windows-fast-startup";
 import { apolloInstallStep } from "./apollo-install";
 import { apolloConfigStep } from "./apollo-config";
 import { apolloServiceStep } from "./apollo-service";
-import { smbSharesStep } from "./smb-shares";
 import { moonlightInstallStep } from "./moonlight-install";
 import { pairingStep } from "./pairing";
-import { smbCredentialsStep } from "./smb-credentials";
-import { smbMountPointsStep } from "./smb-mountpoints";
 import type { Step } from "./types";
+import type { Config } from "../config";
 
 /**
  * Etapes cote Mac. Elles convergent sans qu'aucune precondition distante ne
@@ -23,8 +21,6 @@ import type { Step } from "./types";
 export const LOCAL_STEPS: Step<any>[] = [
   macNetworkStep,
   moonlightInstallStep,
-  smbCredentialsStep,
-  smbMountPointsStep,
 ];
 
 /**
@@ -57,7 +53,6 @@ export const REMOTE_STEPS: Step<any>[] = [
   apolloInstallStep,
   apolloConfigStep,
   apolloServiceStep,
-  smbSharesStep,
   pairingStep,
 ];
 
@@ -83,3 +78,25 @@ export const ALL_STEPS: Step<any>[] = [
 /** Tout ce qui touche au PC, quelle que soit la phase qui l'applique. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const WINDOWS_STEPS: Step<any>[] = [...CAPTURE_STEPS, ...REMOTE_STEPS];
+
+/**
+ * Les etapes qui n'existent que parce que hardline POSSEDE l'adressage du lien.
+ *
+ * Sur un lien partage il ne le possede pas : l'adressage etait la avant lui et
+ * lui survivra. Poser une adresse, couper le DHCP ou reclasser le profil reseau
+ * y serait modifier ce qui ne lui appartient pas — et la desinstallation devrait
+ * ensuite rendre un etat que personne ne lui avait demande de prendre. Ces
+ * etapes ne sont donc pas neutralisees, elles sont ABSENTES : rien n'entre au
+ * manifeste, donc rien n'est a rendre.
+ */
+const DIRECT_LINK_ONLY = new Set([
+  "network-mac",
+  "network-windows",
+  "network-profile-task",
+]);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function linkSteps(steps: Step<any>[], config: Config): Step<any>[] {
+  if (config.linkKind !== "shared") return steps;
+  return steps.filter((step) => !DIRECT_LINK_ONLY.has(step.name));
+}

@@ -63,12 +63,14 @@ const strictSsh: SSHTarget = {
 
 function projected(candidate: TargetProfile): Config {
   return {
+  linkKind: "direct",
     mac: { serviceName: candidate.mac.ethernet.serviceName, ip: candidate.directLink.macAddress, subnetMask: "255.255.255.252" },
     windows: {
       interfaceAlias: candidate.windows.ethernet.interfaceAlias,
       ip: candidate.directLink.windowsAddress,
       prefixLength: 30,
       macAddress: candidate.windows.ethernet.macAddress,
+      wireless: false,
     },
     ssh: {
       host: candidate.directLink.windowsAddress,
@@ -83,7 +85,6 @@ function projected(candidate: TargetProfile): Config {
     bootstrapPort: 0,
     apollo: {} as Config["apollo"],
     moonlight: {} as Config["moonlight"],
-    smb: {} as Config["smb"],
   };
 }
 
@@ -103,6 +104,7 @@ const macBootstrap: MacBootstrapObservations = {
       linkState: "up",
       inUse: true,
       hasDefaultRoute: false,
+      ipv4Addresses: ["10.0.0.2/30"],
     },
   ],
   routes: [],
@@ -325,7 +327,7 @@ describe("createLinkRecoveryAdapters", () => {
     const { adapters } = harness([[windowsPayload]], wrongHardwareKey);
 
     await expect(adapters.macObservation.observeMacLink()).rejects.toThrow(
-      "persisted Mac Ethernet adapter is unavailable",
+      "mac adapter named by the Target Profile is no longer present",
     );
   });
 

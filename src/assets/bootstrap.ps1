@@ -12,6 +12,10 @@ if (-not ('HardlinePinnedClient' -as [type])) {
     Add-Type -ReferencedAssemblies System.Net.Http -TypeDefinition 'using System;using System.Net.Http;using System.Net.Http.Headers;using System.Security.Cryptography;public static class HardlinePinnedClient{public static HttpClient Create(string fingerprint,string token){var h=new HttpClientHandler();h.ServerCertificateCustomValidationCallback=(r,c,ch,e)=>c!=null&&StringComparer.Ordinal.Equals(c.GetCertHashString(HashAlgorithmName.SHA256),fingerprint);var client=new HttpClient(h);client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Bearer",token);return client;}}'
 }
 $c = [HardlinePinnedClient]::Create($HardlineFingerprint, $HardlineToken)
+# The Mac may have to ask the operator which link to use before it can answer
+# phase one. The default two-minute client timeout would abandon the rendezvous
+# while the question is still on screen.
+$c.Timeout = [TimeSpan]::FromMinutes(10)
 
 function Invoke-HardlinePost($path, $value) {
     $json = $value | ConvertTo-Json -Depth 8 -Compress
@@ -127,7 +131,19 @@ if ($authorization.kind -ne 'plan-authorized') {
 }
 $plan = $authorization.plan
 $authorizedAlias = [string]$plan.directLink.interfaceAlias
-$target = [string]$plan.directLink.address
+# A null address means the link already existed before hardline: the plan
+# authorizes no addressing change, and none of the addressing mutations below
+# run. Same for a null network category, which then belongs to the operator.
+$target = $null
+if ($null -ne $plan.directLink.address) { $target = [string]$plan.directLink.address }
+$category = $null
+if ($null -ne $plan.directLink.networkCategory) {
+    $category = [string]$plan.directLink.networkCategory
+}
+$firewallRemote = $null
+if ($null -ne $plan.ssh.firewallRemoteAddress) {
+    $firewallRemote = [string]$plan.ssh.firewallRemoteAddress
+}
 $prefix = [int]$plan.directLink.prefixLength
 $publicKey = [string]$plan.ssh.administratorPublicKey
 
@@ -161,7 +177,10 @@ if (Test-Path $statePath) {
         -ErrorAction SilentlyContinue
     $netProfile = Get-NetConnectionProfile -InterfaceAlias $alias `
         -ErrorAction SilentlyContinue
-    $hasTarget = [bool](@($addresses | Where-Object { $_.IPAddress -eq $target }).Count)
+    $hasTarget = $true
+    if ($null -ne $target) {
+        $hasTarget = [bool](@($addresses | Where-Object { $_.IPAddress -eq $target }).Count)
+    }
     $keyFileExisted = Test-Path $keyFile
     $keyPresent = $false
     $aclSddl = $null
@@ -217,8 +236,8 @@ if (Test-Path $statePath) {
                 [string]$netProfile.NetworkCategory
             } else { $null }
             addressingChanged = [bool](-not $hasTarget)
-            categoryChanged = [bool]($netProfile -and
-                [string]$netProfile.NetworkCategory -ne 'Private')
+            categoryChanged = [bool]($category -and $netProfile -and
+                [string]$netProfile.NetworkCategory -ne $category)
         }
     }
     $recoveryTemp = "$statePath.tmp"
@@ -247,9 +266,19 @@ if ([bool]$plan.ssh.startService) {
 }
 if ([bool]$plan.ssh.openFirewall -and
     -not (Get-NetFirewallRule -Name 'hardline-sshd' -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -Name 'hardline-sshd' -DisplayName 'hardline - OpenSSH' `
-        -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow `
-        -Profile Private | Out-Null
+    # On a shared network hardline must not reclassify the operator's own
+    # connection as Private, so the rule cannot rest on that profile. It is
+    # opened on every profile but restricted to the subnet of the link, which
+    # leaves sshd closed on every other network the PC ever joins.
+    if ($firewallRemote) {
+        New-NetFirewallRule -Name 'hardline-sshd' -DisplayName 'hardline - OpenSSH' `
+            -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow `
+            -Profile Any -RemoteAddress $firewallRemote | Out-Null
+    } else {
+        New-NetFirewallRule -Name 'hardline-sshd' -DisplayName 'hardline - OpenSSH' `
+            -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow `
+            -Profile Private | Out-Null
+    }
 }
 
 if (-not (Test-Path $keyFile)) {
@@ -262,14 +291,16 @@ if (-not (Select-String -Path $keyFile -SimpleMatch $publicKey -Quiet `
 icacls $keyFile /inheritance:r /grant '*S-1-5-32-544:F' `
     /grant '*S-1-5-18:F' | Out-Null
 
-if (-not (Get-NetIPAddress -InterfaceAlias $alias -IPAddress $target `
+if ($target -and -not (Get-NetIPAddress -InterfaceAlias $alias -IPAddress $target `
     -ErrorAction SilentlyContinue)) {
     New-NetIPAddress -InterfaceAlias $alias -IPAddress $target `
         -PrefixLength $prefix | Out-Null
 }
-Set-NetConnectionProfile -InterfaceAlias $alias `
-    -NetworkCategory ([string]$plan.directLink.networkCategory) `
-    -ErrorAction Stop
+if ($category) {
+    Set-NetConnectionProfile -InterfaceAlias $alias `
+        -NetworkCategory $category `
+        -ErrorAction Stop
+}
 
 if (-not (Test-Path $hostKeyPath)) {
     throw 'The OpenSSH host key was not created.'

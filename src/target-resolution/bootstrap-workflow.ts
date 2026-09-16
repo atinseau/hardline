@@ -3,8 +3,8 @@ import type {
   BootstrapServerOptions,
 } from "../lib/bootstrap-server";
 import {
-  BootstrapTargetSelectionError,
   prepareBootstrapTarget,
+  type AskLink,
   type MacBootstrapObservations,
 } from "./bootstrap-target";
 import {
@@ -13,11 +13,7 @@ import {
   type HostKeyObservation,
 } from "./bootstrap-protocol";
 import type { HardlineIdentityPaths } from "./hardline-identity";
-import {
-  canonicalEthernetHardwareId,
-  selectPhysicalEthernetCandidate,
-  type NetworkAdapterObservation,
-} from "./network";
+import { canonicalEthernetHardwareId } from "./network";
 import type { TargetProfile, TargetProfileStore } from "./types";
 
 export type BootstrapWorkflowDependencies = Readonly<{
@@ -31,10 +27,7 @@ export type BootstrapWorkflowDependencies = Readonly<{
   now: () => number;
   deadline: number;
   reportCommand: (command: string) => void | Promise<void>;
-  chooseEthernetCandidate: (
-    machine: "mac" | "windows",
-    candidates: readonly NetworkAdapterObservation[],
-  ) => string | Promise<string>;
+  ask: AskLink;
 }>;
 
 export class BootstrapIdentityPathMismatchError extends Error {
@@ -53,7 +46,10 @@ export class BootstrapResumeMismatchError extends Error {
     readonly machine: "mac" | "windows",
     readonly fact: "machine-id" | "hardware-id",
   ) {
-    super(`The ${machine} ${fact === "machine-id" ? "machine identity" : "selected hardware"} does not match the Target Profile.`);
+    super(
+      `this ${machine} is not the one the existing pairing describes (${fact === "machine-id" ? "machine identity" : "selected hardware"} differs). ` +
+        "Run 'hardline uninstall' to retire that pairing before starting another.",
+    );
     this.name = "BootstrapResumeMismatchError";
   }
 }
@@ -62,7 +58,9 @@ export class BootstrapWorkflowTimeoutError extends Error {
   readonly code = "BOOTSTRAP_WORKFLOW_TIMEOUT";
 
   constructor() {
-    super("The Bootstrap Rendezvous timed out.");
+    super(
+      "the PC never answered. Run 'hardline install' again when you are at its keyboard, and paste the command into an Administrator PowerShell.",
+    );
     this.name = "BootstrapWorkflowTimeoutError";
   }
 }
@@ -100,16 +98,6 @@ export class BootstrapWorkflow {
       ) {
         throw new BootstrapResumeMismatchError("mac", "hardware-id");
       }
-    }
-    let selectedMacInterfaceId: string | undefined;
-    if (existing === null) {
-      const selection = selectPhysicalEthernetCandidate(mac.adapters);
-      if (selection.kind === "not-found") {
-        throw new BootstrapTargetSelectionError("mac", selection);
-      }
-      selectedMacInterfaceId = selection.kind === "selected"
-        ? selection.candidate.stableId
-        : await this.dependencies.chooseEthernetCandidate("mac", selection.candidates);
     }
     const checkpoint = Promise.withResolvers<TargetProfile>();
     let pendingProfile: TargetProfile | undefined;
@@ -175,12 +163,13 @@ export class BootstrapWorkflow {
               this.dependencies.profilePath,
               pendingProfile,
             );
+            const shared = (existing.linkKind ?? "direct") === "shared";
             return {
               directLink: {
                 interfaceAlias: adapter.alias,
-                address: existing.directLink.windowsAddress,
-                prefixLength: 30 as const,
-                networkCategory: "Private" as const,
+                address: shared ? null : existing.directLink.windowsAddress,
+                prefixLength: existing.directLink.prefixLength ?? 30,
+                networkCategory: shared ? null : ("Private" as const),
               },
               ssh: {
                 installServer: windows.openSsh.capabilityState !== "Installed",
@@ -188,40 +177,18 @@ export class BootstrapWorkflow {
                   windows.openSsh.serviceStartType !== "Automatic" ||
                   windows.openSsh.serviceStatus !== "Running",
                 openFirewall: !windows.openSsh.firewallRulePresent,
+                firewallRemoteAddress: shared ? existing.directLink.subnet : null,
                 administratorPublicKey: publicKey,
               },
             };
           }
-          const prepare = (selectedWindowsHardwareId?: string) =>
-            prepareBootstrapTarget({
-              mac,
-              windows,
-              identity: { ...identityPaths, publicKey },
-              installationCatalogVersion: this.dependencies.installationCatalogVersion,
-              ...(selectedMacInterfaceId
-                ? { selectedMacInterfaceId }
-                : {}),
-              ...(selectedWindowsHardwareId
-                ? { selectedWindowsHardwareId }
-                : {}),
-            });
-          let prepared;
-          try {
-            prepared = prepare();
-          } catch (error) {
-            if (
-              !(error instanceof BootstrapTargetSelectionError) ||
-              error.machine !== "windows" ||
-              error.result.kind !== "ambiguous"
-            ) {
-              throw error;
-            }
-            const selected = await this.dependencies.chooseEthernetCandidate(
-              "windows",
-              error.result.candidates,
-            );
-            prepared = prepare(selected);
-          }
+          const prepared = await prepareBootstrapTarget({
+            mac,
+            windows,
+            identity: { ...identityPaths, publicKey },
+            installationCatalogVersion: this.dependencies.installationCatalogVersion,
+            ask: this.dependencies.ask,
+          });
           pendingProfile = {
             ...prepared.profile,
             revision: 1,

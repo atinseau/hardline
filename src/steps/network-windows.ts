@@ -8,6 +8,13 @@ import type { RestoreContext, Step } from "./types";
 export type WindowsNetworkState = {
   adapterPresent: boolean;
   adapterStatus: string | null;
+  /**
+   * L'interface relevee. Comme le service cote Mac, elle fait partie de l'etat :
+   * si le lien change d'adaptateur, c'est ICI que la restauration doit reposer
+   * l'adressage, pas sur l'interface du lien courant. Absent dans les anciens
+   * manifestes, ecrits quand le lien ne pouvait pas changer.
+   */
+  interfaceAlias?: string;
   /** Toutes les adresses IPv4, au format "adresse/prefixe". */
   addresses: string[];
   /** Celles que quelqu'un a posees a la main : les seules a restaurer. */
@@ -259,7 +266,7 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
 
     return {
       conforming,
-      current,
+      current: { ...current, interfaceAlias: config.windows.interfaceAlias },
       detail: conforming
         ? `${config.windows.interfaceAlias} déjà en ${target}, profil privé`
         : `adresse ${hasAddress ? "correcte" : "absente"}, profil ${current.category ?? "inconnu"}${current.dhcpEnabled ? ", DHCP actif" : ""}`,
@@ -310,7 +317,7 @@ export const windowsNetworkStep: Step<WindowsNetworkState> = {
     }
 
     const { script, marked } = RESTORE(
-      config.windows.interfaceAlias,
+      previous.interfaceAlias ?? config.windows.interfaceAlias,
       config.windows.ip,
       previous,
     );

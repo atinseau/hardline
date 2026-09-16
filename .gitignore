@@ -8,3 +8,4 @@ src/assets/display-probe.bin
 .env.local
 # état local de la machine, jamais versionné
 manifest.json
+graphify-out/

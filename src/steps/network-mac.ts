@@ -26,7 +26,20 @@ function ensureAccepted(
   );
 }
 
-export const macNetworkStep: Step<ServiceIPConfig> = {
+/**
+ * Le service releve fait partie de l'etat, au meme titre que l'adressage.
+ *
+ * Le projet applique deja cette regle a l'amorcage : « le releve est l'autorite
+ * sur l'interface qu'il decrit ». Elle vaut ici pour la meme raison, et le jour
+ * ou le lien change d'adaptateur elle devient la seule chose qui empeche une
+ * desinstallation de rendre le DHCP au mauvais service — celui du lien actuel
+ * plutot que celui qu'on avait modifie. Absent, on retombe sur la
+ * configuration : les anciens manifestes n'ont pas ce champ, et ils decrivent
+ * un temps ou le lien ne pouvait pas changer.
+ */
+export type MacNetworkState = ServiceIPConfig & { serviceName?: string };
+
+export const macNetworkStep: Step<MacNetworkState> = {
   name: "network-mac",
   label: "Adresse fixe sur le lien direct (Mac)",
 
@@ -41,7 +54,7 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
 
     return {
       conforming,
-      current,
+      current: { ...current, serviceName: config.mac.serviceName },
       detail: conforming
         ? `${config.mac.serviceName} déjà en ${config.mac.ip}`
         : `${config.mac.serviceName} en ${current.mode}${current.ip ? ` (${current.ip})` : ""}`,
@@ -58,17 +71,18 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
     ensureAccepted(exitCode, `poser ${config.mac.ip}`, config.mac.serviceName);
   },
 
-  async restore(config: Config, previous: ServiceIPConfig) {
+  async restore(config: Config, previous: MacNetworkState) {
+    const service = previous.serviceName ?? config.mac.serviceName;
     if (previous.mode === "manual" && previous.ip && previous.subnetMask) {
       const exitCode = await setServiceManualIP(
-        config.mac.serviceName,
+        service,
         previous.ip,
         previous.subnetMask,
       );
       ensureAccepted(
         exitCode,
         `rendre ${previous.ip}`,
-        config.mac.serviceName,
+        service,
       );
       return;
     }
@@ -76,12 +90,12 @@ export const macNetworkStep: Step<ServiceIPConfig> = {
       // Restaurer en DHCP un service que l'utilisateur avait desactive serait
       // deviner a sa place : la spec exige de rendre l'etat anterieur, pas un
       // etat plausible.
-      const exitCode = await setServiceIPv4Off(config.mac.serviceName);
-      ensureAccepted(exitCode, "redésactiver IPv4", config.mac.serviceName);
+      const exitCode = await setServiceIPv4Off(service);
+      ensureAccepted(exitCode, "redésactiver IPv4", service);
       return;
     }
 
-    const exitCode = await setServiceDHCP(config.mac.serviceName);
-    ensureAccepted(exitCode, "rendre le DHCP", config.mac.serviceName);
+    const exitCode = await setServiceDHCP(service);
+    ensureAccepted(exitCode, "rendre le DHCP", service);
   },
 };

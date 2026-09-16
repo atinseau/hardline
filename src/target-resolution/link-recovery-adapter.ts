@@ -13,6 +13,7 @@ import type {
   OccupiedCidrObservation,
   WindowsLinkObservation,
 } from "./link-recovery";
+import { LinkAdapterUnavailableError } from "./link-recovery";
 import {
   MacObservationCommandError,
   observeMacBootstrap as defaultObserveMac,
@@ -270,7 +271,7 @@ function normalizeWindows(
   };
 }
 
-function recoveryTarget(target: SSHTarget, host: string): SSHTarget {
+export function recoveryTarget(target: SSHTarget, host: string): SSHTarget {
   if (target.knownHostsFile === undefined) {
     throw new Error("Link Recovery requires a strict SSH target with a pinned host key.");
   }
@@ -362,7 +363,7 @@ export function createLinkRecoveryAdapters(
           ({ interfaceId }) => interfaceId === adapter?.stableId,
         );
         if (!adapter || !networkInterface || !networkInterface.macAddress) {
-          throw new Error("The persisted Mac Ethernet adapter is unavailable.");
+          throw new LinkAdapterUnavailableError("mac");
         }
         const interfaces = parseMacIfconfig(interfacesResult.stdout);
         const routes = parseMacRoutes(routesResult.stdout);

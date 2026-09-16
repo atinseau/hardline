@@ -341,14 +341,6 @@ describe("runUp, PC deja joignable", () => {
     expect(waitForRemote).not.toHaveBeenCalled();
   });
 
-  test("monte les trois partages, dans l'ordre de la configuration, puis lance le flux", async () => {
-    await runUp(CONFIG, NO_OPTIONS);
-    expect(mountShare).toHaveBeenCalledTimes(3);
-    const names = mountShare.mock.calls.map((c) => (c[0] as { name: string }).name);
-    expect(names).toEqual(["arthur", "hardline-d", "hardline-e"]);
-    expect(runStream).toHaveBeenCalledTimes(1);
-  });
-
   test("clot une session residuelle avant le flux pour forcer le nouveau mode video", async () => {
     await runUp(CONFIG, NO_OPTIONS);
     const firstQuit = order.indexOf("runQuit");
@@ -357,37 +349,15 @@ describe("runUp, PC deja joignable", () => {
     expect(firstQuit).toBeLessThan(stream);
   });
 
-  test("demonte les trois partages et clot la session a la fin d'une session reussie", async () => {
-    await runUp(CONFIG, NO_OPTIONS);
-    expect(unmountShare).toHaveBeenCalledTimes(3);
-    expect(runQuit).toHaveBeenCalledTimes(2);
-  });
-
-  test("le demontage et la fermeture surviennent APRES le flux", async () => {
-    await runUp(CONFIG, NO_OPTIONS);
-    const streamIndex = order.indexOf("runStream");
-    const firstUnmount = order.findIndex((e) => e.startsWith("unmount:"));
-    expect(streamIndex).toBeGreaterThanOrEqual(0);
-    expect(firstUnmount).toBeGreaterThan(streamIndex);
-    expect(order.lastIndexOf("runQuit")).toBeGreaterThan(firstUnmount);
-  });
-
   test("rend le code de sortie du flux", async () => {
     streamExitCode = 7;
     expect(await runUp(CONFIG, NO_OPTIONS)).toBe(7);
-  });
-
-  test("rejette explicitement si aucun mot de passe Windows n'est au trousseau", async () => {
-    windowsPassword = null;
-    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/hardline install/);
-    expect(mountShare).not.toHaveBeenCalled();
   });
 
   test("ne consulte pas le trousseau et lance le flux sans partage SMB", async () => {
     windowsPassword = null;
     await runUp({
       ...CONFIG,
-      smb: { ...CONFIG.smb, shares: [] },
     }, NO_OPTIONS);
 
     expect(getSecret).not.toHaveBeenCalled();
@@ -474,37 +444,6 @@ describe("runUp, PC injoignable au depart", () => {
 });
 
 describe("runUp, nettoyage garanti par le finally", () => {
-  test("demonte tous les partages et clot la session MEME QUAND le flux echoue", async () => {
-    streamThrows = new Error("moonlight a planté");
-    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toBeInstanceOf(Error);
-    expect(unmountShare).toHaveBeenCalledTimes(3);
-    expect(runQuit).toHaveBeenCalledTimes(2);
-    // Ce qui est monte est demonte, nommement, et la fermeture vient apres.
-    const demontes = order.filter((e) => e.startsWith("unmount:"));
-    expect(demontes).toEqual(["unmount:arthur", "unmount:hardline-d", "unmount:hardline-e"]);
-    expect(order.lastIndexOf("runQuit")).toBeGreaterThan(order.lastIndexOf("unmount:hardline-e"));
-  });
-
-  test("demonte et clot meme quand un montage echoue en cours de route", async () => {
-    mountThrowsOn = "hardline-e";
-    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/hardline-e/);
-    // Le flux n'a jamais demarre, mais le nettoyage porte quand meme sur les
-    // trois partages : unmountShare ne leve jamais pour un partage jamais
-    // monte, et l'appeler sur tous est donc sans risque.
-    expect(runStream).not.toHaveBeenCalled();
-    expect(unmountShare).toHaveBeenCalledTimes(3);
-    expect(runQuit).toHaveBeenCalledTimes(2);
-  });
-
-  test("le demontage d'un partage qui echoue n'empeche pas les autres ni la fermeture", async () => {
-    unmountShare.mockImplementationOnce(async () => {
-      throw new Error("demontage refuse");
-    });
-    streamThrows = new Error("moonlight a planté");
-    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toBeInstanceOf(Error);
-    expect(unmountShare).toHaveBeenCalledTimes(3);
-    expect(runQuit).toHaveBeenCalledTimes(2);
-  });
 
   test("une fermeture de session en echec ne masque pas l'erreur du flux", async () => {
     runQuit
@@ -514,15 +453,6 @@ describe("runUp, nettoyage garanti par le finally", () => {
       });
     streamThrows = new Error("moonlight a planté");
     await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toBeInstanceOf(Error);
-  });
-
-  test("ne monte rien et ne nettoie rien si le PC ne se reveille jamais", async () => {
-    reachable = false;
-    wakeSucceeds = false;
-    await expect(runUp(CONFIG, NO_OPTIONS)).rejects.toThrow(/did not respond/);
-    expect(mountShare).not.toHaveBeenCalled();
-    expect(unmountShare).not.toHaveBeenCalled();
-    expect(runQuit).not.toHaveBeenCalled();
   });
 });
 
@@ -707,16 +637,6 @@ describe("upCommand, le secret ne s'affiche jamais", () => {
     expect(sortie).not.toContain("correct-horse-battery-staple");
   });
 
-  test("aucune trace ne porte le mot de passe quand un montage echoue", async () => {
-    windowsPassword = "correct-horse-battery-staple";
-    mountThrowsOn = "hardline-d";
-    const sortie = await captureSortie(() =>
-      upCommand({ fullscreen: false, resolution: null, fps: null }),
-    );
-    expect(failures.join("\n")).toContain("hardline-d");
-    expect(sortie).not.toContain("correct-horse-battery-staple");
-  });
-
   test("le mot de passe n'est jamais un argument de commande visible", async () => {
     windowsPassword = "correct-horse-battery-staple";
     await runUp(CONFIG, NO_OPTIONS);
@@ -773,7 +693,7 @@ describe("upCommand, le spinner ne tourne jamais par-dessus le flux", () => {
     const debut = order.indexOf("spinner:start:Prepare Session");
     const arret = order.indexOf("spinner:stop:Prepare Session");
     expect(debut).toBeGreaterThanOrEqual(0);
-    for (const evenement of ["sendMagicPacket", "waitForRemote", "mount:arthur"]) {
+    for (const evenement of ["sendMagicPacket", "waitForRemote"]) {
       const index = order.indexOf(evenement);
       expect(index).toBeGreaterThan(debut);
       expect(index).toBeLessThan(arret);
@@ -785,14 +705,12 @@ describe("upCommand, le spinner ne tourne jamais par-dessus le flux", () => {
     expect(spinnerLabels).toEqual(["Prepare Session"]);
   });
 
-  test("le demontage et la fermeture surviennent hors du spinner, apres le flux", async () => {
+  test("la fermeture de session survient hors du spinner, apres le flux", async () => {
     streamThrows = new Error("moonlight a planté");
     await upCommand({ fullscreen: false });
 
     const arret = order.lastIndexOf("spinner:stop:Prepare Session");
-    expect(order.indexOf("unmount:arthur")).toBeGreaterThan(arret);
     expect(order.lastIndexOf("runQuit")).toBeGreaterThan(arret);
-    expect(unmountShare).toHaveBeenCalledTimes(3);
     expect(runQuit).toHaveBeenCalledTimes(2);
   });
 
@@ -807,6 +725,37 @@ describe("upCommand, le spinner ne tourne jamais par-dessus le flux", () => {
     await upCommand({ fullscreen: false });
     expect(spinnerProgress).toContain("Wake PC");
     expect(spinnerProgress).toContain("Start Apollo service");
-    expect(spinnerProgress).toContain("Mount shares");
+  });
+});
+
+describe("reveil sur un lien radio", () => {
+  test("le dit tout de suite au lieu d'attendre un paquet magique qui n'arrivera pas", async () => {
+    // Une carte Wi-Fi eteinte n'est plus alimentee : elle ne peut pas recevoir
+    // le paquet. Trois minutes d'attente ne changeraient rien a ce fait.
+    reachable = false;
+    const wireless = {
+      ...CONFIG,
+      linkKind: "shared" as const,
+      windows: { ...CONFIG.windows, wireless: true },
+    };
+
+    await expect(runUp(wireless)).rejects.toThrow("Wake-on-LAN cannot reach it");
+    expect(sendMagicPacket).not.toHaveBeenCalled();
+    expect(waitForRemote).not.toHaveBeenCalled();
+    reachable = true;
+  });
+
+  test("un PC relie par cable sur ce meme reseau partage se reveille normalement", async () => {
+    reachable = false;
+    wakeSucceeds = true;
+    const wired = {
+      ...CONFIG,
+      linkKind: "shared" as const,
+      windows: { ...CONFIG.windows, wireless: false },
+    };
+
+    await runUp(wired);
+    expect(sendMagicPacket).toHaveBeenCalled();
+    reachable = true;
   });
 });

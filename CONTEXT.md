@@ -21,8 +21,20 @@ The dedicated SSH identity through which the paired Mac authenticates to the pai
 _Avoid_: User key, default SSH key, shared SSH identity
 
 **Direct Link**:
-The dedicated physical Ethernet path through which Hardline operates the paired Windows PC. Other connectivity may locate the PC, but carries no operational SSH traffic or machine mutation.
+The path through which Hardline operates the paired Windows PC, described by one adapter on each machine and the addresses they hold on it. Other connectivity may locate the PC, but carries no operational SSH traffic or machine mutation.
 _Avoid_: Network connection, control network, fallback link
+
+**Link Kind**:
+Whether Hardline owns the addressing of the Direct Link. `direct` means a free adapter at each end, where Hardline allocates and imposes a private /30 and gives it back on uninstall. `shared` means a network that existed before Hardline and will outlive it: Hardline observes that addressing and never writes to it, so there is nothing to restore.
+_Avoid_: Wi-Fi mode, LAN mode, transport
+
+**Relink**:
+The adoption of a new path for an already paired Mac and PC, after the adapter named by their Target Profile stops existing. It is restricted to shared links, because adopting one requires no write on either machine; a dedicated link would have to be addressed through the Recovery Channel, which never carries mutation.
+_Avoid_: Reconnect, migration, re-pairing, Link Recovery
+
+**Dormant Link**:
+A dedicated link Hardline established and still remembers while operating over a shared one. Unplugging the cable does not erase it: both interfaces keep the addressing Hardline wrote, so resuming it costs nothing but noticing. Only a dedicated link is ever dormant, because a shared one is found again by observation alone.
+_Avoid_: Saved link, previous link, backup link
 
 **Link Recovery**:
 The automatic recovery of a Direct Link after address drift or collision, using the persisted Target Profile to identify the paired PC before changing either machine.

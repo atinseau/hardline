@@ -195,12 +195,14 @@ describe("runRemotePreflight", () => {
     expect(results.filter((r) => r.name === "windows-version")).toHaveLength(0);
   });
 
-  test("bloque si aucun GPU NVIDIA n'est present", async () => {
+  test("signale un GPU non eprouve sans refuser l'installation", async () => {
+    // Apollo encode aussi en AMF et QuickSync : bloquer ici refuserait tout PC
+    // qui n'est pas celui de l'auteur.
     setup({ gpus: ["Intel UHD Graphics 770"] });
-    const results = await runRemotePreflight(CONFIG);
-    const check = results.find((r) => r.name === "gpu");
+    const check = (await runRemotePreflight(CONFIG)).find((r) => r.name === "gpu");
     expect(check?.ok).toBe(false);
-    expect(check?.blocking).toBe(true);
+    expect(check?.blocking).toBe(false);
+    expect(check?.detail).toContain("untested");
   });
 
   test("ignore les ecrans virtuels dans la detection du GPU", async () => {
@@ -208,11 +210,15 @@ describe("runRemotePreflight", () => {
     expect((await runRemotePreflight(CONFIG)).find((r) => r.name === "gpu")?.ok).toBe(true);
   });
 
-  test("avertit sans bloquer si la version de Windows differe", async () => {
+  test("accepte toute construction Windows 11, et signale plus ancien", async () => {
     setup({ build: 22631 });
-    const check = (await runRemotePreflight(CONFIG)).find((r) => r.name === "windows-version");
-    expect(check?.ok).toBe(false);
-    expect(check?.blocking).toBe(false);
+    expect((await runRemotePreflight(CONFIG)).find((r) => r.name === "windows-version")?.ok)
+      .toBe(true);
+
+    setup({ build: 19045 });
+    const older = (await runRemotePreflight(CONFIG)).find((r) => r.name === "windows-version");
+    expect(older?.ok).toBe(false);
+    expect(older?.blocking).toBe(false);
   });
 
   test("bloque si l'interface Ethernet du PC est debranchee", async () => {

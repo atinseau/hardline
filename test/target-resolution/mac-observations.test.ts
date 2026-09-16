@@ -220,6 +220,7 @@ test("observes phase-one Mac facts using only fixed argv and normalized adapter 
         linkState: "up",
         inUse: true,
         hasDefaultRoute: false,
+        ipv4Addresses: ["127.0.0.1/8"],
       },
       {
         stableId: "en0",
@@ -233,6 +234,7 @@ test("observes phase-one Mac facts using only fixed argv and normalized adapter 
         linkState: "up",
         inUse: true,
         hasDefaultRoute: true,
+        ipv4Addresses: ["192.168.50.14/24"],
       },
       {
         stableId: "en8",
@@ -246,6 +248,7 @@ test("observes phase-one Mac facts using only fixed argv and normalized adapter 
         linkState: "up",
         inUse: false,
         hasDefaultRoute: false,
+        ipv4Addresses: ["169.254.44.2/16"],
       },
       {
         stableId: "en7",
@@ -259,6 +262,7 @@ test("observes phase-one Mac facts using only fixed argv and normalized adapter 
         linkState: "down",
         inUse: false,
         hasDefaultRoute: false,
+        ipv4Addresses: [],
       },
       {
         stableId: "bridge0",
@@ -272,6 +276,7 @@ test("observes phase-one Mac facts using only fixed argv and normalized adapter 
         linkState: "up",
         inUse: true,
         hasDefaultRoute: false,
+        ipv4Addresses: ["172.20.10.1/24"],
       },
       {
         stableId: "utun4",
@@ -285,6 +290,7 @@ test("observes phase-one Mac facts using only fixed argv and normalized adapter 
         linkState: "up",
         inUse: true,
         hasDefaultRoute: false,
+        ipv4Addresses: ["10.8.0.2/32"],
       },
     ],
     routes: [

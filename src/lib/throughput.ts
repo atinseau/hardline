@@ -6,6 +6,30 @@ const IPERF_PORT = 5201;
 const IPERF_CLIENT_SECONDS = 2;
 const SERVER_STARTUP_MS = 300;
 
+/**
+ * La frontiere locale d'iperf3 : le trouver, et le servir.
+ *
+ * Elle est injectable pour la meme raison que toutes les autres du projet — un
+ * test ne doit rien exiger de la machine qui l'execute. Sans cela, ces tests
+ * passaient sur un poste ou iperf3 est installe et echouaient partout ailleurs,
+ * en ne verifiant plus rien du chemin de mesure sur la machine ou il manque.
+ */
+export type LocalIperf3 = {
+  readonly path: () => string | null;
+  readonly serve: () => { readonly kill: () => void };
+};
+
+const systemIperf3: LocalIperf3 = {
+  path: () => Bun.which("iperf3", { PATH: process.env.PATH ?? "" }),
+  // -1 fait sortir le serveur apres un seul client : la mesure se termine
+  // d'elle-meme meme si le kill du finally echouait.
+  serve: () =>
+    Bun.spawn(["iperf3", "-s", "-1", "-p", String(IPERF_PORT)], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }),
+};
+
 export type ThroughputStats = {
   mbitsPerSecond: number | null;
   seconds: number | null;
@@ -86,15 +110,16 @@ export function parseIperf3Json(stdout: string): ThroughputStats {
  * Frontiere systeme. Aucune logique de lecture : le lancement du serveur
  * local, la verification de presence d'iperf3 des deux cotes, et le parsing.
  */
-export async function measureThroughput(config: Config): Promise<ThroughputStats> {
-  let proc: ReturnType<typeof Bun.spawn> | undefined;
+export async function measureThroughput(
+  config: Config,
+  local: LocalIperf3 = systemIperf3,
+): Promise<ThroughputStats> {
+  let proc: { readonly kill: () => void } | undefined;
 
   try {
     // Verification locale, sans aucun aller-retour reseau : si iperf3 manque
     // ici, inutile de deranger le PC.
-    if (!Bun.which("iperf3", { PATH: process.env.PATH ?? "" })) {
-      return unavailableOn("Mac");
-    }
+    if (!local.path()) return unavailableOn("Mac");
 
     // -ErrorAction SilentlyContinue rend l'absence d'iperf3 silencieuse cote
     // PowerShell : un code de sortie non nul ici signale donc un vrai
@@ -110,12 +135,7 @@ export async function measureThroughput(config: Config): Promise<ThroughputStats
       return unavailableOn("PC");
     }
 
-    // -1 fait sortir le serveur apres un seul client : la mesure se termine
-    // d'elle-meme meme si le kill du finally echouait.
-    proc = Bun.spawn(["iperf3", "-s", "-1", "-p", String(IPERF_PORT)], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
+    proc = local.serve();
 
     // Laisse le serveur ouvrir son socket avant que le PC ne s'y connecte.
     await Bun.sleep(SERVER_STARTUP_MS);

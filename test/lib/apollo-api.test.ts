@@ -13,8 +13,9 @@ import {
 } from "../../src/lib/apollo-api";
 
 const CONFIG: Config = {
+  linkKind: "direct",
   mac: { serviceName: "AX88179A", ip: "10.10.10.2", subnetMask: "255.255.255.0" },
-  windows: { interfaceAlias: "Ethernet", ip: "10.10.10.1", prefixLength: 24, macAddress: "E8-9C-25-2A-70-E1" },
+  windows: { interfaceAlias: "Ethernet", ip: "10.10.10.1", prefixLength: 24, macAddress: "E8-9C-25-2A-70-E1", wireless: false },
   ssh: { host: "10.10.10.1", user: "arthur", identityFile: "/dev/null", connectTimeoutSec: 8 },
   bootstrapPort: 8080,
   apollo: {
@@ -29,14 +30,6 @@ const CONFIG: Config = {
   moonlight: {
     ...INSTALLATION_CATALOG.moonlight,
     binary: "/opt/homebrew/bin/moonlight",
-  },
-  smb: {
-    user: "arthur",
-    shares: [
-      { name: "arthur", path: null, mountPoint: "/Volumes/pc-arthur" },
-      { name: "hardline-d", path: "D:\\", mountPoint: "/Volumes/pc-d" },
-      { name: "hardline-e", path: "E:\\", mountPoint: "/Volumes/pc-e" },
-    ],
   },
 };
 

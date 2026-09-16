@@ -1,4 +1,5 @@
 import type { SSHTarget } from "./lib/ssh";
+import type { LinkKind } from "./target-resolution/types";
 
 export type ApolloConfig = {
   /** Version visee. Sert au controle d'idempotence et au message d'ecart. */
@@ -36,23 +37,13 @@ export type MoonlightConfig = {
   app: string;
 };
 
-export type SMBShare = {
-  /** Nom du partage cote Windows. */
-  name: string;
-  /** Chemin Windows partage. `null` quand le partage preexiste et n'est pas a creer. */
-  path: string | null;
-  /** Point de montage sur le Mac, sous /Volumes. */
-  mountPoint: string;
-};
-
-export type SMBConfig = {
-  /** Compte Windows employe pour les partages. */
-  user: string;
-  /** Partages a monter, dans l'ordre. */
-  shares: readonly SMBShare[];
-};
-
 export type Config = {
+  /**
+   * `direct` : hardline possede l'adressage du lien et le pose sur les deux
+   * machines. `shared` : le lien preexistait, hardline l'observe et n'y touche
+   * pas — les etapes qui adressent les interfaces ne s'executent alors pas.
+   */
+  linkKind: LinkKind;
   mac: { serviceName: string; ip: string; subnetMask: string };
   windows: {
     interfaceAlias: string;
@@ -60,10 +51,11 @@ export type Config = {
     prefixLength: number;
     /** Adresse matérielle persistée, disponible même quand ARP ne connaît plus le PC éteint. */
     macAddress: string;
+    /** Vrai quand le PC est relié par radio : aucun paquet magique ne l'atteint. */
+    wireless: boolean;
   };
   ssh: SSHTarget;
   bootstrapPort: number;
   apollo: ApolloConfig;
   moonlight: MoonlightConfig;
-  smb: SMBConfig;
 };

@@ -36,7 +36,11 @@ export type BootstrapCapture = {
   interfaceAlias: string;
   /** InterfaceGuid stable de l'adaptateur, independant de son nom affiche. */
   hardwareId: string;
-  address: string;
+  /**
+   * L'adresse que l'amorcage a posee. null sur un lien partage : le plan n'en
+   * autorisait aucune, l'adressage etait deja la et le reste.
+   */
+  address: string | null;
   capability: { name: string | null; state: string | null; changed: boolean };
   sshd: {
     present: boolean;
@@ -191,7 +195,7 @@ export function readCapture(
     value["interfaceAlias"].length === 0 ||
     typeof value["hardwareId"] !== "string" ||
     value["hardwareId"].length === 0 ||
-    !ipv4(value["address"]) ||
+    !(value["address"] === null || ipv4(value["address"])) ||
     !stringOrNull(capability["name"]) ||
     !stringOrNull(capability["state"]) ||
     !boolean(capability["changed"]) ||
@@ -348,7 +352,7 @@ function restoreAuthorizedKeys(capture: BootstrapCapture): string[] {
  */
 function cuttingTail(
   alias: string,
-  ip: string,
+  ip: string | null,
   capture: BootstrapCapture,
 ): string[] {
   const tail: string[] = [];
@@ -359,9 +363,16 @@ function cuttingTail(
     // L'adresse posee par l'amorcage. Si le PC la portait deja avant, le releve
     // dit addressingChanged = false et on n'arrive jamais ici : la retirer
     // serait detruire l'etat anterieur au lieu de le rendre.
-    tail.push(
-      `Remove-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${psQuote(ip, "adresse cible")} -Confirm:$false -ErrorAction SilentlyContinue`,
-    );
+    //
+    // `ip` vient du releve, jamais de la configuration courante : sur un lien
+    // partage adopte apres coup, la configuration nomme une AUTRE interface et
+    // une AUTRE adresse. Retirer celle-la ne retirerait rien, et laisserait
+    // l'adresse posee par l'amorcage orpheline sur un PC devenu injoignable.
+    if (ip !== null) {
+      tail.push(
+        `Remove-NetIPAddress -InterfaceAlias ${quotedAlias} -IPAddress ${psQuote(ip, "adresse cible")} -Confirm:$false -ErrorAction SilentlyContinue`,
+      );
+    }
   }
 
   const category = capture.network.category;
@@ -456,7 +467,7 @@ function cuttingTail(
  */
 const RESTORE = (
   alias: string,
-  ip: string,
+  ip: string | null,
   capture: BootstrapCapture,
 ): { script: string; detached: boolean } => {
   const tail = cuttingTail(alias, ip, capture);
@@ -532,11 +543,13 @@ export const bootstrapWindowsStep: Step<BootstrapState> = {
     const alias =
       previous.capture.interfaceAlias || config.windows.interfaceAlias;
 
-    const { script, detached } = RESTORE(
-      alias,
-      config.windows.ip,
-      previous.capture,
-    );
+    // Meme regle que pour l'interface, et pour la meme raison : l'adresse a
+    // retirer est celle que l'amorcage a POSEE, pas celle par laquelle hardline
+    // parle au PC aujourd'hui. Les deux different des qu'un lien a ete adopte
+    // apres l'installation. Les anciens releves n'ont pas ce champ.
+    const posed = previous.capture.address ?? config.windows.ip;
+
+    const { script, detached } = RESTORE(alias, posed, previous.capture);
     await runRemoteChecked(config.ssh, script);
 
     if (detached) {

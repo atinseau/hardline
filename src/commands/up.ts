@@ -5,8 +5,6 @@ import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import { sendMagicPacket } from "../lib/wol";
 import { waitForRemote } from "../lib/preflight";
 import { colorProfileIssue, listDisplays, type Display } from "../lib/display";
-import { getSecret } from "../lib/keychain";
-import { mountShare, unmountShare } from "../lib/smb";
 import { runStream, runQuit, type StreamOptions } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
 import type { TargetResolution } from "../target-resolution";
@@ -19,6 +17,7 @@ export type UpCliOptions = {
   resolution?: string | null;
   fps?: string | null;
   monitor?: boolean;
+  bitrate?: string | null;
 };
 
 type UpFact = {
@@ -46,7 +45,9 @@ export function renderUpFact(value: UpFact): string {
     case "stream-failed": return `Session ended with Moonlight exit code ${v.code}.`;
     case "invalid-options": return `Invalid options: ${v.error}`;
     case "preparation-failed": return `Could not prepare the session: ${v.error}`;
-    case "failed": return "Could not open the session. No native command output was included.";
+    case "failed": return v.error
+      ? `Could not open the session: ${v.error}`
+      : "Could not open the session. No native command output was included.";
     case "cancelled": return "Session opening cancelled.";
   }
 }
@@ -65,12 +66,21 @@ export function parseFps(value: string): number {
   return fps;
 }
 
+export function parseBitrate(value: string): number {
+  const bitrate = Number(value);
+  if (!Number.isInteger(bitrate) || bitrate <= 0) {
+    throw new Error(`Invalid bitrate: expected a positive integer in kbit/s (${value})`);
+  }
+  return bitrate;
+}
+
 export function buildStreamOptions(cli: UpCliOptions): StreamOptions {
   return {
     fullscreen: cli.fullscreen,
     resolution: cli.resolution ? parseResolution(cli.resolution) : null,
     fps: cli.fps ? parseFps(cli.fps) : null,
     ...(cli.monitor ? { monitor: true } : {}),
+    ...(cli.bitrate ? { bitrateKbps: parseBitrate(cli.bitrate) } : {}),
   };
 }
 
@@ -125,6 +135,14 @@ async function pcReachable(config: Config): Promise<boolean> {
 }
 
 async function wakePC(config: Config): Promise<void> {
+  // Un paquet magique ne traverse pas la radio depuis une machine eteinte : la
+  // carte Wi-Fi n'est plus alimentee. Attendre trois minutes ne le rendrait pas
+  // vrai ; le dire tout de suite laisse l'operateur agir.
+  if (config.windows.wireless) {
+    throw new Error(
+      "The PC is not answering, and it is linked over Wi-Fi: Wake-on-LAN cannot reach it. Turn it on, or wire it to this network to wake it remotely.",
+    );
+  }
   const broadcast = broadcastAddress(config.mac.ip, config.mac.subnetMask);
   const wake = () => sendMagicPacket(config.windows.macAddress, broadcast);
   await wake();
@@ -161,7 +179,6 @@ export async function runUp(
   options: StreamOptions,
   selectedDisplay: Display | null,
 ): Promise<number> {
-  let mounted = false;
   try {
     await run.phase(fact("prepare"), async () => {
       if (!(await pcReachable(config))) {
@@ -172,15 +189,6 @@ export async function runUp(
       await ensureApolloRunning(config);
       run.activity(fact("activity", { message: "Reset video mode" }));
       await runQuit(config);
-      if (config.smb.shares.length > 0) {
-        const password = await getSecret("windows-account");
-        if (password === null) {
-          throw new Error("No Windows password is stored in the keychain. Run 'hardline install' first.");
-        }
-        run.activity(fact("activity", { message: "Mount shares" }));
-        mounted = true;
-        for (const share of config.smb.shares) await mountShare(share, config, password);
-      }
     });
     // No Command Run phase is active while Moonlight owns the terminal.
     try {
@@ -189,18 +197,13 @@ export async function runUp(
       throw new StreamLaunchError();
     }
   } finally {
-    if (mounted) await releaseSession(config);
+    await releaseSession(config);
   }
 }
 
 class StreamLaunchError extends Error {}
 
 async function releaseSession(config: Config): Promise<void> {
-  for (const share of config.smb.shares) {
-    try {
-      await unmountShare(share);
-    } catch {}
-  }
   try {
     await runQuit(config);
   } catch {}

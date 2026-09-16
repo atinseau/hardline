@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import type { Config } from "../config";
 import { INSTALLATION_CATALOG, getInstallationCatalog } from "../installation-catalog";
 import { serveBootstrap } from "../lib/bootstrap-server";
-import { acquireManifestLock } from "../lib/manifest";
+import { acquireManifestLock, readManifest, writeManifest } from "../lib/manifest";
 import { applySteps } from "../lib/orchestrator";
 import { CAPTURE_STEPS } from "../steps";
 import {
@@ -17,8 +17,21 @@ import {
   removeHardlineIdentity,
 } from "./hardline-identity";
 import { observeMacBootstrap } from "./mac-observations";
-import { DirectLinkUnavailableError, LinkRecovery } from "./link-recovery";
-import { createLinkRecoveryAdapters } from "./link-recovery-adapter";
+import {
+  DirectLinkUnavailableError,
+  LinkAdapterUnavailableError,
+  LinkRecovery,
+} from "./link-recovery";
+import { createLinkRecoveryAdapters, recoveryTarget } from "./link-recovery-adapter";
+import {
+  observeWindowsForRelink,
+  relinkShared,
+  reviveDormantLink,
+  selectLinkForRun,
+  stampLinkOwnership,
+  type RunLink,
+} from "./relink";
+import { recoverSharedLink } from "./shared-link";
 import { projectTargetConfig } from "./project-config";
 import { TargetResolution } from "./resolution";
 import {
@@ -33,7 +46,9 @@ const BOOTSTRAP_DEADLINE_MS = 10 * 60_000;
 export type ProductionTargetResolutionOptions = {
   readonly paths?: TargetStatePaths;
   readonly reportBootstrapCommand: (command: string) => void | Promise<void>;
-  readonly chooseEthernetCandidate: BootstrapWorkflowDependencies["chooseEthernetCandidate"];
+  readonly ask: BootstrapWorkflowDependencies["ask"];
+  /** Le chemin exige pour cette execution. Absent vaut `auto`. */
+  readonly link?: RunLink;
   readonly now?: () => number;
 };
 
@@ -71,6 +86,67 @@ async function validateTargetProfile(profile: TargetProfile): Promise<TargetProf
   return profile;
 }
 
+/**
+ * Un lien partage ne se migre pas : il se relit. Les deux chemins repondent a
+ * la meme question — ou est le PC, et le profil le decrit-il encore ? — mais un
+ * seul des deux a le droit de modifier un adressage.
+ *
+ * Et quand l'adaptateur nomme par le profil a purement disparu, aucun des deux
+ * ne s'applique : il n'y a plus de chemin a relire. Le ré-appariement prend
+ * alors la suite, sous sa propre contrainte — il n'adopte qu'un lien qui
+ * n'exige aucune ecriture.
+ */
+async function recover(
+  profile: TargetProfile,
+  profilePath: string,
+  manifestPath: string,
+  ask: ProductionTargetResolutionOptions["ask"],
+  link: RunLink,
+): Promise<{ readonly profile: TargetProfile; readonly resolution: "validated" | "recovered" }> {
+  return await selectLinkForRun(profile, link, {
+    // Le cable d'abord, a chaque commande et pas seulement a l'installation. Le
+    // reprendre ne coute qu'un regard tant que l'adaptateur est absent.
+    revive: (candidate) =>
+      reviveDormantLink(candidate, {
+        observeMac: observeMacBootstrap,
+        probe: async (proposed) =>
+          (await createLinkRecoveryAdapters({ profile: proposed, profilePath })
+            .strictDirectProbe.probeDirect(proposed)).kind === "reachable",
+        persist: async (proposed) => writeTargetProfile(profilePath, proposed),
+      }),
+    recoverCurrent: async (candidate) => {
+      const adapters = createLinkRecoveryAdapters({ profile: candidate, profilePath });
+      return candidate.linkKind === "shared"
+        ? await recoverSharedLink(candidate, adapters)
+        : await new LinkRecovery(adapters).recover(candidate);
+    },
+    relink: (candidate) => relinkShared(candidate, {
+      observeMac: observeMacBootstrap,
+      observeWindows: (target) => observeWindowsForRelink(target),
+      recoveryTarget: (proposed, host) =>
+        recoveryTarget(projectTargetConfig(proposed).ssh, host),
+      probe: async (proposed) => {
+        const probe = createLinkRecoveryAdapters({ profile: proposed, profilePath });
+        return (await probe.strictDirectProbe.probeDirect(proposed)).kind === "reachable";
+      },
+      persist: async (proposed) => {
+        // L'appartenance s'inscrit AVANT le nouveau profil : si l'ecriture du
+        // profil echoue, un manifeste qui nomme lui-meme son interface reste
+        // correct, tandis que l'inverse laisserait une restauration aveugle.
+        await writeManifest(
+          manifestPath,
+          stampLinkOwnership(await readManifest(manifestPath), {
+            serviceName: candidate.mac.ethernet.serviceName,
+            interfaceAlias: candidate.windows.ethernet.interfaceAlias,
+          }),
+        );
+        await writeTargetProfile(profilePath, proposed);
+      },
+      ask,
+    }),
+  });
+}
+
 export function createTargetResolution(
   options: ProductionTargetResolutionOptions,
 ): TargetResolution<Config> {
@@ -89,9 +165,7 @@ export function createTargetResolution(
     validateProfile: validateTargetProfile,
     projectConfig: projectTargetConfig,
     recoverLink: async (profile) =>
-      new LinkRecovery(
-        createLinkRecoveryAdapters({ profile, profilePath: paths.profile }),
-      ).recover(profile),
+      recover(profile, paths.profile, paths.manifest, options.ask, options.link ?? "auto"),
     prepareOperation: async (profile, intent) => {
       if (intent === "install" || intent === "uninstall") {
         await applySteps(
@@ -113,9 +187,13 @@ export function createTargetResolution(
       if (existing?.sshHostKey) {
         try {
           const validated = await validateTargetProfile(existing);
-          const resumed = await new LinkRecovery(
-            createLinkRecoveryAdapters({ profile: validated, profilePath: paths.profile }),
-          ).recover(validated);
+          const resumed = await recover(
+            validated,
+            paths.profile,
+            paths.manifest,
+            options.ask,
+            options.link ?? "auto",
+          );
           await profiles.write(paths.profile, {
             ...resumed.profile,
             revision: resumed.profile.revision + 1,
@@ -137,7 +215,7 @@ export function createTargetResolution(
         now,
         deadline: now() + BOOTSTRAP_DEADLINE_MS,
         reportCommand: options.reportBootstrapCommand,
-        chooseEthernetCandidate: options.chooseEthernetCandidate,
+        ask: options.ask,
       });
       try {
         await workflow.run(existing);

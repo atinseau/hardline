@@ -100,10 +100,28 @@ describe("authorized mutation and SSH trust", () => {
     expect(SCRIPT).toContain(
       "$authorizedAlias = [string]$plan.directLink.interfaceAlias",
     );
-    expect(SCRIPT).toContain("$target = [string]$plan.directLink.address");
+    expect(SCRIPT).toContain(
+      "if ($null -ne $plan.directLink.address) { $target = [string]$plan.directLink.address }",
+    );
     expect(SCRIPT).toContain("$prefix = [int]$plan.directLink.prefixLength");
     expect(SCRIPT).toContain("$publicKey = [string]$plan.ssh.administratorPublicKey");
     expect(SCRIPT).not.toMatch(/@@[A-Z_]+@@/);
+  });
+
+  test("changes no addressing and no network category when the plan authorizes none", () => {
+    // Un lien partage preexiste a hardline : le plan n'y autorise aucune
+    // adresse, aucune categorie, et le script doit alors ne rien ecrire.
+    expect(SCRIPT).toContain("if ($target -and -not (Get-NetIPAddress");
+    expect(SCRIPT).toContain("if ($category) {");
+    expect(SCRIPT).toContain(
+      "$hasTarget = $true",
+    );
+  });
+
+  test("scopes the firewall rule to the link subnet when it cannot rest on the Private profile", () => {
+    expect(SCRIPT).toContain("-Profile Any -RemoteAddress $firewallRemote");
+    expect(SCRIPT).toContain("if ($firewallRemote) {");
+    expect(SCRIPT).toContain("-Profile Private");
   });
 
   test("writes the administrator key safely using language-independent SIDs", () => {

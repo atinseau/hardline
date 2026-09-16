@@ -54,6 +54,7 @@ test("projects command-only Config from the validated Target Profile and fixed c
     ip: "10.0.0.1",
     prefixLength: 30,
     macAddress: profile.windows.ethernet.macAddress,
+    wireless: false,
   });
   expect(config.ssh).toEqual({
     host: "10.0.0.1",
@@ -67,12 +68,36 @@ test("projects command-only Config from the validated Target Profile and fixed c
   });
   expect(config.apollo).toEqual(INSTALLATION_CATALOG.apollo);
   expect(config.moonlight).toEqual(INSTALLATION_CATALOG.moonlight);
-  expect(config.smb.user).toBe("ShareUser");
-  expect(config.smb.shares).toEqual([]);
 });
 
 test("refuses to project an incomplete trust checkpoint", () => {
   expect(() => projectTargetConfig({ ...profile, sshHostKey: null })).toThrow(
     "SSH host key",
   );
+});
+
+test("projects the observed prefix of a shared link instead of the dedicated /30", () => {
+  const config = projectTargetConfig({
+    ...profile,
+    linkKind: "shared",
+    mac: { ...profile.mac, ethernet: { ...profile.mac.ethernet, interfaceId: "en0", serviceName: "Wi-Fi" } },
+    directLink: {
+      subnet: "192.168.1.0/24",
+      macAddress: "192.168.1.20",
+      windowsAddress: "192.168.1.30",
+      prefixLength: 24,
+    },
+  });
+
+  expect(config.linkKind).toBe("shared");
+  expect(config.mac).toEqual({
+    serviceName: "Wi-Fi",
+    ip: "192.168.1.20",
+    subnetMask: "255.255.255.0",
+  });
+  expect(config.windows.prefixLength).toBe(24);
+  // La sortie reste liee a l'adaptateur choisi : sur un reseau partage, c'est
+  // la seule chose qui garantit que le trafic passe par le chemin decrit.
+  expect(config.ssh.sourceAddress).toBe("192.168.1.20");
+  expect(config.ssh.bindInterface).toBe("en0");
 });

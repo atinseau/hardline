@@ -34,6 +34,23 @@ function isEligible(intent: TargetIntent, lifecycle: TargetLifecycle): boolean {
   return false;
 }
 
+/**
+ * Ce qu'un refus doit dire : l'etat constate, et le geste qui en sort.
+ *
+ * Nommer le cycle de vie sans nommer la suite laissait l'operateur devant un
+ * mot du projet et aucune action — le cas le plus probable etant precisement
+ * celui de quelqu'un qui decouvre l'outil.
+ */
+function ineligibleReason(intent: TargetIntent, lifecycle: TargetLifecycle): string {
+  const resume =
+    lifecycle === "installation-incomplete"
+      ? "the installation is unfinished. Run 'hardline install' to resume it, or 'hardline uninstall' to undo it"
+      : lifecycle === "uninstall-incomplete" || lifecycle === "retirement-incomplete"
+        ? "an uninstall is unfinished. Run 'hardline uninstall' to complete it"
+        : "the pairing was never completed. Run 'hardline install' to finish it";
+  return `cannot ${intent} because ${resume}.`;
+}
+
 async function recordIncomplete<ProjectedConfig>(
   dependencies: TargetResolutionDependencies<ProjectedConfig>,
   profile: ResolvedTarget<ProjectedConfig>["profile"],
@@ -90,13 +107,16 @@ export class TargetResolution<ProjectedConfig> {
       if (!stored) {
         throw new TargetResolutionRefusedError(
           "profile-absent",
-          `No Target Profile exists for ${intent}; bootstrap is required.`,
+          // Le premier message qu'un nouvel operateur puisse lire. Il ne nomme
+          // ni le Target Profile ni l'amorcage : ce sont des mots du projet, pas
+          // des mots de quelqu'un qui vient d'installer le binaire.
+          "no PC is paired with this Mac yet. Run 'hardline install' to pair one.",
         );
       }
       if (!isEligible(intent, stored.lifecycle)) {
         throw new TargetResolutionRefusedError(
           "lifecycle-ineligible",
-          `${intent} is not eligible while target is ${stored.lifecycle}.`,
+          ineligibleReason(intent, stored.lifecycle),
         );
       }
 

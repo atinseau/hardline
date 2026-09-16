@@ -20,6 +20,7 @@ const ethernet = (
   linkState: "up",
   inUse: false,
   hasDefaultRoute: false,
+  ipv4Addresses: [],
   ...overrides,
 });
 

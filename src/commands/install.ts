@@ -2,7 +2,7 @@ import type { Config } from "../config";
 import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
 import { runCommand } from "../command-run";
 import { englishCheckName, englishStepLabel } from "../command-run/english";
-import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
+import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS, linkSteps } from "../steps";
 import { BOOTSTRAP_STEP_NAME } from "../steps/bootstrap-name";
 import { applySteps, type OrchestratorFact } from "../lib/orchestrator";
 import type { Manifest } from "../lib/manifest";
@@ -14,13 +14,12 @@ import {
   runRemotePreflight,
 } from "../lib/preflight";
 import { errorMessage } from "../lib/errors";
+import { brewInstalled } from "../lib/brew";
 import {
   backupApolloConfig,
   ForeignApolloError,
   uninstallApollo,
 } from "../steps/apollo-install";
-import { getSecret } from "../lib/keychain";
-import { forgetPassword, providePassword } from "../steps/smb-credentials";
 import type { Step } from "../steps/types";
 import type { TargetResolution } from "../target-resolution";
 
@@ -34,7 +33,6 @@ type InstallFact = {
     | "configure-pc"
     | "check"
     | "step"
-    | "password"
     | "foreign-apollo"
     | "replace-apollo"
     | "backup"
@@ -42,6 +40,7 @@ type InstallFact = {
     | "success"
     | "cancelled"
     | "mac-not-ready"
+    | "homebrew-missing"
     | "pc-not-ready"
     | "convergence-failed"
     | "foreign-kept"
@@ -75,7 +74,6 @@ export function renderInstallFact(value: InstallFact): string {
       } as const;
       return `${englishStepLabel(String(v.step))}: ${verbs[v.kind as keyof typeof verbs]}.`;
     }
-    case "password": return `Windows account password for ${v.user}`;
     case "foreign-apollo": return `Foreign Apollo installation detected (version ${v.version}, ${v.clients} paired client(s)). ${v.backup}`;
     case "replace-apollo": return "Replace this Apollo installation with Hardline's managed installation?";
     case "backup": return `Foreign Apollo configuration backed up at ${v.path}.`;
@@ -83,6 +81,7 @@ export function renderInstallFact(value: InstallFact): string {
     case "success": return "Hardline is installed. Run 'hardline doctor' to verify the link.";
     case "cancelled": return "Installation cancelled. No unauthorized destructive action was taken.";
     case "mac-not-ready": return "Installation stopped: the Mac is not ready. Nothing was changed.";
+    case "homebrew-missing": return "Installation stopped before touching either machine: Homebrew is required to install the Moonlight client, and it is not on this Mac. Install it from https://brew.sh, then run 'hardline install' again.";
     case "pc-not-ready": return `Installation stopped: the PC is not ready. ${v.recovery}`;
     case "convergence-failed": return `${v.area} failed. Previous state for every touched step is recorded. Fix the problem and run 'hardline install' to resume, or 'hardline uninstall' to restore it. Cause: ${v.error}`;
     case "foreign-kept": return "Installation stopped: the foreign Apollo installation was preserved. Non-interactive replacement requires explicit 'hardline install --yes' authorization.";
@@ -116,7 +115,7 @@ async function converge(
   config: Config,
   manifestPath: string,
 ): Promise<Manifest> {
-  return await applySteps(steps, config, manifestPath, reportStep(run));
+  return await applySteps(linkSteps(steps, config), config, manifestPath, reportStep(run));
 }
 
 async function replaceForeignApollo(
@@ -164,83 +163,65 @@ export async function runInstall(
 ): Promise<CommandResult<InstallFact>> {
   const manifestPath = options.manifestPath;
 
+  const local = await run.phase(fact("check-mac"), async () => {
+    const checks = await runLocalPreflight(config);
+    reportChecks(run, checks);
+    return checks;
+  });
+  if (hasBlockingFailure(local)) return failed(fact("mac-not-ready"));
+
   try {
-    const local = await run.phase(fact("check-mac"), async () => {
-      const checks = await runLocalPreflight(config);
-      reportChecks(run, checks);
-      return checks;
-    });
-    if (hasBlockingFailure(local)) return failed(fact("mac-not-ready"));
+    await run.phase(fact("configure-mac"), () =>
+      converge(run, LOCAL_STEPS, config, manifestPath));
+  } catch (error) {
+    return failed(fact("convergence-failed", { area: "Mac configuration", error: errorMessage(error) }));
+  }
 
-    if (config.smb.shares.length > 0) {
-      const secret = await getSecret("windows-account");
-      if (secret === null) {
-        const answer = await run.secret(fact("password", { user: config.smb.user }));
-        if (answer.status !== "provided") {
-          return failed(fact("convergence-failed", {
-            area: "Credential acquisition",
-            error: "an interactive terminal is required to enter the Windows password",
-          }));
-        }
-        providePassword(answer.value);
-      }
-    }
-
+  const remote = await run.phase(fact("check-pc"), async () => {
+    const checks = await runRemotePreflight(config);
+    reportChecks(run, checks);
+    return checks;
+  });
+  const reachable = remote.some((check) => check.name === SSH_CHECK && check.ok);
+  let recoveryRecorded = false;
+  if (reachable) {
     try {
-      await run.phase(fact("configure-mac"), () =>
-        converge(run, LOCAL_STEPS, config, manifestPath));
+      const manifest = await run.phase(fact("record-recovery"), () =>
+        converge(run, CAPTURE_STEPS, config, manifestPath));
+      recoveryRecorded = BOOTSTRAP_STEP_NAME in manifest.steps;
     } catch (error) {
-      return failed(fact("convergence-failed", { area: "Mac configuration", error: errorMessage(error) }));
+      return failed(fact("convergence-failed", { area: "Recovery capture", error: errorMessage(error) }));
     }
+  }
 
-    const remote = await run.phase(fact("check-pc"), async () => {
-      const checks = await runRemotePreflight(config);
-      reportChecks(run, checks);
-      return checks;
-    });
-    const reachable = remote.some((check) => check.name === SSH_CHECK && check.ok);
-    let recoveryRecorded = false;
-    if (reachable) {
-      try {
-        const manifest = await run.phase(fact("record-recovery"), () =>
-          converge(run, CAPTURE_STEPS, config, manifestPath));
-        recoveryRecorded = BOOTSTRAP_STEP_NAME in manifest.steps;
-      } catch (error) {
-        return failed(fact("convergence-failed", { area: "Recovery capture", error: errorMessage(error) }));
-      }
-    }
+  if (hasBlockingFailure(remote)) {
+    const recovery = recoveryRecorded
+      ? "The Mac is configured and PC bootstrap recovery is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore both machines."
+      : reachable
+        ? "The Mac's previous state is recorded, but the PC supplied no usable bootstrap recovery state. Bootstrap changes cannot be undone; 'hardline uninstall' can still restore the Mac."
+        : "The Mac's previous state is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore the Mac.";
+    return failed(fact("pc-not-ready", { recovery }));
+  }
 
-    if (hasBlockingFailure(remote)) {
-      const recovery = recoveryRecorded
-        ? "The Mac is configured and PC bootstrap recovery is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore both machines."
-        : reachable
-          ? "The Mac's previous state is recorded, but the PC supplied no usable bootstrap recovery state. Bootstrap changes cannot be undone; 'hardline uninstall' can still restore the Mac."
-          : "The Mac's previous state is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore the Mac.";
-      return failed(fact("pc-not-ready", { recovery }));
+  try {
+    await run.phase(fact("configure-pc"), () =>
+      converge(run, REMOTE_STEPS, config, manifestPath));
+    return { status: "succeeded", summary: fact("success") };
+  } catch (error) {
+    if (!(error instanceof ForeignApolloError)) {
+      return failed(fact("convergence-failed", {
+        area: "PC configuration",
+        error: errorMessage(error),
+      }));
     }
-
-    try {
-      await run.phase(fact("configure-pc"), () =>
-        converge(run, REMOTE_STEPS, config, manifestPath));
-      return { status: "succeeded", summary: fact("success") };
-    } catch (error) {
-      if (!(error instanceof ForeignApolloError)) {
-        return failed(fact("convergence-failed", {
-          area: "PC configuration",
-          error: errorMessage(error),
-        }));
-      }
-      const result = await replaceForeignApollo(
-        run,
-        config,
-        manifestPath,
-        options.yes,
-        error,
-      );
-      return result ?? { status: "succeeded", summary: fact("success") };
-    }
-  } finally {
-    forgetPassword();
+    const result = await replaceForeignApollo(
+      run,
+      config,
+      manifestPath,
+      options.yes,
+      error,
+    );
+    return result ?? { status: "succeeded", summary: fact("success") };
   }
 }
 
@@ -248,6 +229,8 @@ export function installCommand(options: {
   targetResolution: TargetResolution<Config>;
   output: CommandOutput;
   yes?: boolean;
+  /** Injectable : un test ne doit pas dependre du Mac qui l'execute. */
+  brewInstalled?: () => boolean;
 }): Promise<CommandResult<InstallFact>> {
   return runCommand({
     title: fact("title"),
@@ -256,6 +239,11 @@ export function installCommand(options: {
     cancelled: fact("cancelled"),
     unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
     execute: async (run) => {
+      // Avant la resolution, donc avant l'amorcage : ce qui manque au Mac ne
+      // doit pas se decouvrir apres que le PC a ete modifie.
+      if (!(options.brewInstalled ?? brewInstalled)()) {
+        return { status: "failed", summary: fact("homebrew-missing") };
+      }
       const outcome = await options.targetResolution.during("install", async (target) => {
         const result = await runInstall(run, target.config, {
           yes: options.yes ?? false,

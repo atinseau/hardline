@@ -120,19 +120,6 @@ mock.module("../../src/lib/keychain", () => ({
   getSecret: getSecretForCredentials,
 }));
 
-const realCredentials = await import("../../src/steps/smb-credentials");
-const providePassword = mock((..._args: unknown[]) => {
-  trace.push("providePassword");
-});
-const forgetPassword = mock(() => {
-  trace.push("forgetPassword");
-});
-mock.module("../../src/steps/smb-credentials", () => ({
-  ...realCredentials,
-  providePassword,
-  forgetPassword,
-}));
-
 const askSecretCalls: string[] = [];
 let askSecretRejects = false;
 const askSecret = mock(async (message: string) => {
@@ -247,11 +234,16 @@ function targetResolution(): TargetResolution<Config> {
   } as TargetResolution<Config>;
 }
 
-async function installCommand(options: { yes?: boolean } = {}): Promise<void> {
+async function installCommand(
+  options: { yes?: boolean; brewInstalled?: () => boolean } = {},
+): Promise<void> {
   const result = await executeInstallCommand({
     targetResolution: targetResolution(),
     output,
     yes: options.yes,
+    // Par defaut Homebrew est la : les tests decrivent la convergence, pas la
+    // machine qui les execute.
+    brewInstalled: options.brewInstalled ?? (() => true),
   });
   process.exitCode = exitCodeFor(result);
 }
@@ -278,8 +270,6 @@ const PC_OK = [ok("ssh"), ok("windows-version"), ok("gpu"), ok("lien-windows")];
 const LOCAL_GROUP = [
   "network-mac",
   "moonlight-install",
-  "smb-credentials",
-  "smb-mountpoints",
 ];
 const CAPTURE_GROUP = ["bootstrap-windows"];
 const REMOTE_GROUP = [
@@ -289,7 +279,6 @@ const REMOTE_GROUP = [
   "apollo-install",
   "apollo-config",
   "apollo-service",
-  "smb-shares",
   "pairing",
 ];
 
@@ -310,8 +299,6 @@ beforeEach(() => {
   askConfirmation.mockClear();
   windowsSecretPresent = false;
   getSecretForCredentials.mockClear();
-  providePassword.mockClear();
-  forgetPassword.mockClear();
   askSecret.mockClear();
   askSecretCalls.length = 0;
   askSecretRejects = false;
@@ -346,12 +333,10 @@ describe("installCommand", () => {
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
-      "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
+      "apply:network-mac+moonlight-install",
       "preflight-remote",
       "apply:bootstrap-windows",
       `apply:${REMOTE_GROUP.join("+")}`,
-      "forgetPassword",
     ]);
     expect(process.exitCode).toBe(0);
   });
@@ -368,7 +353,7 @@ describe("installCommand", () => {
     localChecks = [ko("service-mac")];
     await installCommand();
     // Ni convergence, ni sonde distante.
-    expect(trace).toEqual(["preflight-local", "forgetPassword"]);
+    expect(trace).toEqual(["preflight-local"]);
     expect(process.exitCode).toBe(1);
     expect(finishes.join("\n")).toContain("Nothing was changed");
   });
@@ -403,11 +388,9 @@ describe("installCommand", () => {
     expect(appliedGroups).toEqual([LOCAL_GROUP, CAPTURE_GROUP]);
     expect(trace).toEqual([
       "preflight-local",
-      "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
+      "apply:network-mac+moonlight-install",
       "preflight-remote",
       "apply:bootstrap-windows",
-      "forgetPassword",
     ]);
     expect(process.exitCode).toBe(1);
     expect(finishes.join("\n")).toContain("PC bootstrap recovery is recorded");
@@ -460,20 +443,18 @@ describe("installCommand", () => {
   test("une cle publique manquante bloque en phase 1, avant toute modification", async () => {
     localChecks = [ok("service-mac"), ko("cle-publique")];
     await installCommand();
-    expect(trace).toEqual(["preflight-local", "forgetPassword"]);
+    expect(trace).toEqual(["preflight-local"]);
     expect(appliedGroups).toEqual([]);
     expect(finishes.join("\n")).toContain("Nothing was changed");
     expect(process.exitCode).toBe(1);
   });
 
   test("un echec de la convergence du Mac n'envoie pas sonder le PC", async () => {
-    applyThrowsOn = "network-mac+moonlight-install+smb-credentials+smb-mountpoints";
+    applyThrowsOn = "network-mac+moonlight-install";
     await installCommand();
     expect(trace).toEqual([
       "preflight-local",
-      "providePassword",
-      "apply:network-mac+moonlight-install+smb-credentials+smb-mountpoints",
-      "forgetPassword",
+      "apply:network-mac+moonlight-install",
     ]);
     expect(failures.join("\n")).toContain("Mac configuration failed");
     expect(process.exitCode).toBe(1);
@@ -626,106 +607,6 @@ describe("installCommand, Apollo etranger detecte sur le PC", () => {
   });
 });
 
-describe("installCommand, mot de passe Windows", () => {
-  test("ne consulte ni ne fournit de mot de passe sans partage SMB", async () => {
-    targetConfig = {
-      ...CONFIG,
-      smb: { ...CONFIG.smb, shares: [] },
-    };
-    await installCommand();
-
-    expect(getSecretForCredentials).not.toHaveBeenCalled();
-    expect(askSecret).not.toHaveBeenCalled();
-    expect(providePassword).not.toHaveBeenCalled();
-    expect(process.exitCode).toBe(0);
-  });
-
-  test("le demande une seule fois quand le trousseau est vide, avant la convergence locale", async () => {
-    windowsSecretPresent = false;
-    await installCommand();
-    expect(askSecret).toHaveBeenCalledTimes(1);
-    expect(providePassword).toHaveBeenCalledWith("mot-de-passe-saisi");
-    const depot = trace.indexOf("providePassword");
-    const convergenceLocale = trace.indexOf(`apply:${LOCAL_GROUP.join("+")}`);
-    expect(depot).toBeGreaterThanOrEqual(0);
-    expect(convergenceLocale).toBeGreaterThanOrEqual(0);
-    expect(depot).toBeLessThan(convergenceLocale);
-  });
-
-  test("l'invite ne contient jamais le mot de passe, et le mot de passe ne s'affiche nulle part", async () => {
-    windowsSecretPresent = false;
-    await installCommand();
-    const visible = [
-      ...askSecretCalls,
-      ...finishes,
-      ...failures,
-      ...reports.flat(),
-      ...infos,
-      ...warns,
-    ].join("\n");
-    expect(visible).not.toContain("mot-de-passe-saisi");
-  });
-
-  test("ne demande rien quand un mot de passe est deja au trousseau", async () => {
-    windowsSecretPresent = true;
-    await installCommand();
-    expect(askSecret).not.toHaveBeenCalled();
-    expect(providePassword).not.toHaveBeenCalled();
-  });
-});
-
-describe("installCommand, le mot de passe en memoire est efface en fin de convergence", () => {
-  test("apres une installation reussie", async () => {
-    await installCommand();
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-    // Il est efface EN DERNIER : apres la derniere convergence, pas avant.
-    expect(trace.lastIndexOf("forgetPassword")).toBe(trace.length - 1);
-  });
-
-  test("meme quand la convergence locale echoue", async () => {
-    applyThrowsOn = LOCAL_GROUP.join("+");
-    await installCommand();
-    expect(process.exitCode).toBe(1);
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-  });
-
-  test("meme quand la convergence distante echoue", async () => {
-    applyThrowsOn = REMOTE_GROUP.join("+");
-    await installCommand();
-    expect(process.exitCode).toBe(1);
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-  });
-
-  test("meme quand le Mac bloque en phase 1, avant toute modification", async () => {
-    localChecks = [ko("service-mac")];
-    await installCommand();
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-  });
-
-  test("meme quand la commande sort par une exception, et non par un retour", async () => {
-    // Le seul chemin qui distingue un effacement dans le finally d'un
-    // effacement pose apres l'appel : une exception qui traverse install().
-    preflightThrows = true;
-    await installCommand();
-    expect(process.exitCode).toBe(1);
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-  });
-
-  test("meme quand l'utilisateur annule l'invite du mot de passe", async () => {
-    askSecretRejects = true;
-    await installCommand();
-    expect(process.exitCode).toBe(1);
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-  });
-
-  test("meme quand l'utilisateur refuse d'effacer un Apollo etranger", async () => {
-    applyThrowsForeign = true;
-    confirmForeignAnswer = false;
-    await installCommand({ yes: false });
-    expect(forgetPassword).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("installCommand, Apollo etranger hors terminal", () => {
   test("refuse d'effacer sans --yes quand aucun terminal ne peut repondre", async () => {
     // askConfirmation rend « oui » hors terminal : sans garde-fou en amont, un
@@ -772,5 +653,25 @@ describe("installCommand, Apollo etranger hors terminal", () => {
     await installCommand({ yes: false });
     expect(askConfirmation).toHaveBeenCalledTimes(1);
     expect(uninstallApollo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("installCommand, prerequis du Mac", () => {
+  test("sans Homebrew, rien n'est touche : ni le Mac, ni le PC, ni l'amorcage", async () => {
+    // Le client Moonlight s'installe par Homebrew, et l'amorcage modifie le PC
+    // AVANT que la convergence du Mac ne commence. Constater le manque apres
+    // coup laissait un PC amorce pour une installation qui ne pouvait pas
+    // aboutir.
+    await installCommand({ brewInstalled: () => false });
+
+    expect(trace).toEqual([]);
+    expect(appliedGroups).toEqual([]);
+    expect(finishes.join("\n")).toContain("brew.sh");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("avec Homebrew, l'installation suit son cours", async () => {
+    await installCommand({ brewInstalled: () => true });
+    expect(process.exitCode).toBe(0);
   });
 });

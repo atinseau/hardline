@@ -11,12 +11,60 @@ export type DirectLink = {
   readonly subnet: string;
   readonly macAddress: string;
   readonly windowsAddress: string;
+  /**
+   * Absent sur un lien direct, ou le /30 est impose par hardline. Present sur
+   * un lien partage, ou le prefixe appartient au reseau deja en place.
+   */
+  readonly prefixLength?: number;
+};
+
+/**
+ * La nature du chemin par lequel hardline opere le PC.
+ *
+ * `direct` : un adaptateur libre a chaque bout, dont hardline possede
+ * l'adressage. Il alloue le /30, le pose, et le rend a la desinstallation.
+ *
+ * `shared` : un reseau qui existait avant hardline et qui lui survivra. Les
+ * deux machines s'y voient deja ; hardline OBSERVE cet adressage et n'y touche
+ * jamais. Rien a poser, donc rien a rendre.
+ */
+export type LinkKind = "direct" | "shared";
+
+/** Les deux bouts d'un lien, et l'adressage qui les relie. */
+export type LinkEndpoints = {
+  readonly mac: {
+    readonly hardwareId: string;
+    readonly macAddress: string;
+    readonly interfaceId: string;
+    readonly serviceName: string;
+  };
+  readonly windows: {
+    readonly hardwareId: string;
+    readonly macAddress: string;
+    readonly interfaceAlias: string;
+    readonly wireless?: boolean;
+  };
+  readonly directLink: DirectLink;
 };
 
 export type TargetProfile = {
   readonly version: 1;
   readonly revision: number;
   readonly lifecycle: TargetLifecycle;
+  /** Absent vaut `direct` : les profils anterieurs decrivent tous un cable. */
+  readonly linkKind?: LinkKind;
+  /**
+   * Le lien dedie que hardline connait mais n'emprunte pas en ce moment.
+   *
+   * L'asymetrie avec le lien partage est voulue, et elle dit quelque chose de
+   * vrai : un lien partage se RETROUVE par simple observation, les deux machines
+   * y portant deja leurs adresses. Un lien dedie, non — son adressage, hardline
+   * l'a ecrit, et personne d'autre ne sait le decrire. Debrancher le cable ne
+   * l'efface pas : les deux interfaces gardent leurs adresses, le lien attend.
+   * Ce champ est cette memoire, et il n'existe que pendant qu'un lien partage
+   * tient la place.
+   */
+  readonly dormantLink?: LinkEndpoints;
   readonly mac: {
     readonly machineId: string;
     readonly hostAliases: readonly string[];
@@ -36,6 +84,14 @@ export type TargetProfile = {
       readonly hardwareId: string;
       readonly macAddress: string;
       readonly interfaceAlias: string;
+      /**
+       * Vrai quand le PC est relie par radio. Un paquet magique ne traverse pas
+       * le Wi-Fi depuis une machine eteinte : la carte n'est plus alimentee. Le
+       * fait est releve ici pour que le reveil le DISE au lieu d'attendre trois
+       * minutes un PC qui ne peut pas repondre. Absent des profils anterieurs,
+       * ecrits quand le lien etait toujours un cable.
+       */
+      readonly wireless?: boolean;
     };
   };
   readonly directLink: DirectLink;

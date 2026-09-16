@@ -46,6 +46,7 @@ const plan: MutationPlan = {
     installServer: true,
     startService: true,
     openFirewall: true,
+    firewallRemoteAddress: null,
     administratorPublicKey: "ssh-ed25519 AAAA hardline",
   },
 };

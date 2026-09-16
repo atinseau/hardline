@@ -101,7 +101,10 @@ export class LinkIdentityMismatchError extends Error {
     readonly expected: string,
     readonly observed: string,
   ) {
-    super(`The observed ${machine} ${identity} does not match the Target Profile.`);
+    super(
+      `the ${machine} that answered is not the one Hardline is paired with (${identity} differs). ` +
+        "If you replaced hardware or are pairing another machine, run 'hardline uninstall' first.",
+    );
     this.name = "LinkIdentityMismatchError";
   }
 }
@@ -112,10 +115,27 @@ export class DirectLinkUnavailableError extends Error {
   ) {
     super(
       diagnosis === "pc-alive/direct-link-broken"
-        ? "The paired PC is alive, but the Direct Link is unavailable."
-        : "The paired PC is inaccessible through both the Direct Link and Recovery Channel.",
+        ? "the paired PC answers, but not over the link Hardline uses. Check the cable at both ends, then run 'hardline doctor'."
+        : "the paired PC cannot be reached at all. Turn it on, or put it back on the network it shares with this Mac, then run 'hardline doctor'.",
     );
     this.name = "DirectLinkUnavailableError";
+  }
+}
+
+/**
+ * L'adaptateur que le profil nomme n'existe plus sur cette machine.
+ *
+ * Ce n'est pas une panne de liaison : c'est un chemin qui a disparu. Un dongle
+ * debranche, un port mort, une carte retiree. Rien de ce que sait faire la
+ * recuperation de lien ne s'applique, puisqu'elle repare un adressage sur un
+ * adaptateur qu'elle suppose present. Le type existe pour que l'appelant puisse
+ * en decider autrement plutot que de recevoir une erreur anonyme qui bloque
+ * toutes les commandes.
+ */
+export class LinkAdapterUnavailableError extends Error {
+  constructor(readonly machine: "mac" | "windows") {
+    super(`The ${machine} adapter named by the Target Profile is no longer present.`);
+    this.name = "LinkAdapterUnavailableError";
   }
 }
 
@@ -147,7 +167,10 @@ function isIpv4Address(value: string): boolean {
   return parsed.kind === "parsed" && parsed.prefixLength === 32 && value === parsed.firstAddress;
 }
 
-function validateWindowsIdentity(profile: TargetProfile, windows: WindowsLinkObservation): void {
+export function validateWindowsIdentity(
+  profile: TargetProfile,
+  windows: WindowsLinkObservation,
+): void {
   const comparisons = [
     ["machine-id", profile.windows.machineId, windows.machineId],
     [
@@ -170,6 +193,31 @@ function validateWindowsIdentity(profile: TargetProfile, windows: WindowsLinkObs
       "ethernet-mac-address",
       profile.windows.ethernet.macAddress,
       windows.selectedEthernet.macAddress,
+    );
+  }
+}
+
+export function validateMacIdentity(profile: TargetProfile, mac: MacLinkObservation): void {
+  if (mac.machineId !== profile.mac.machineId) {
+    throw new LinkIdentityMismatchError("mac", "machine-id", profile.mac.machineId, mac.machineId);
+  }
+  if (mac.selectedEthernet.hardwareId !== profile.mac.ethernet.hardwareId) {
+    throw new LinkIdentityMismatchError(
+      "mac",
+      "ethernet-hardware-id",
+      profile.mac.ethernet.hardwareId,
+      mac.selectedEthernet.hardwareId,
+    );
+  }
+  if (
+    normalizedMacAddress(mac.selectedEthernet.macAddress) !==
+    normalizedMacAddress(profile.mac.ethernet.macAddress)
+  ) {
+    throw new LinkIdentityMismatchError(
+      "mac",
+      "ethernet-mac-address",
+      profile.mac.ethernet.macAddress,
+      mac.selectedEthernet.macAddress,
     );
   }
 }
@@ -264,33 +312,7 @@ export class LinkRecovery {
 
   async recover(profile: TargetProfile): Promise<LinkRecoveryResult> {
     const mac = await this.adapters.macObservation.observeMacLink();
-    if (mac.machineId !== profile.mac.machineId) {
-      throw new LinkIdentityMismatchError(
-        "mac",
-        "machine-id",
-        profile.mac.machineId,
-        mac.machineId,
-      );
-    }
-    if (mac.selectedEthernet.hardwareId !== profile.mac.ethernet.hardwareId) {
-      throw new LinkIdentityMismatchError(
-        "mac",
-        "ethernet-hardware-id",
-        profile.mac.ethernet.hardwareId,
-        mac.selectedEthernet.hardwareId,
-      );
-    }
-    if (
-      normalizedMacAddress(mac.selectedEthernet.macAddress) !==
-      normalizedMacAddress(profile.mac.ethernet.macAddress)
-    ) {
-      throw new LinkIdentityMismatchError(
-        "mac",
-        "ethernet-mac-address",
-        profile.mac.ethernet.macAddress,
-        mac.selectedEthernet.macAddress,
-      );
-    }
+    validateMacIdentity(profile, mac);
     const missingInitialMacAddress = !hasDirectAddress(
       mac.selectedEthernet.addresses,
       profile.directLink.macAddress,

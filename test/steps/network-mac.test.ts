@@ -206,3 +206,28 @@ describe("restore, echec de networksetup", () => {
     expect(setDhcp).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("propriete de l'interface", () => {
+  test("inspect enregistre le service releve avec son etat", async () => {
+    currentInfo = { mode: "dhcp", ip: null, subnetMask: null, router: null };
+    const state = await macNetworkStep.inspect(CONFIG);
+    expect(state.current.serviceName).toBe(CONFIG.mac.serviceName);
+  });
+
+  test("restore vise le service ENREGISTRE, pas celui du lien courant", async () => {
+    // Apres un re-appariement, la configuration nomme une autre interface. Rendre
+    // le DHCP a celle-la, c'est defaire un reglage auquel hardline n'a jamais
+    // touche.
+    await macNetworkStep.restore(
+      { ...CONFIG, mac: { ...CONFIG.mac, serviceName: "Wi-Fi" } },
+      { mode: "dhcp", ip: null, subnetMask: null, router: null, serviceName: "AX88179A" },
+      NO_PENDING,
+    );
+    expect(setDhcp).toHaveBeenCalledWith("AX88179A");
+  });
+
+  test("sans service enregistre, la configuration fait foi : les anciens manifestes n'en ont pas", async () => {
+    await macNetworkStep.restore(CONFIG, { mode: "dhcp", ip: null, subnetMask: null, router: null }, NO_PENDING);
+    expect(setDhcp).toHaveBeenCalledWith(CONFIG.mac.serviceName);
+  });
+});
