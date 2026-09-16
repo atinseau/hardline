@@ -41,7 +41,7 @@ export function renderUpdateFact(value: UpdateFact): string {
     case "not-installed":
       return "Update replaces the installed executable, and this Hardline is running from source. Build it with 'bun run build' instead, or run the installed 'hardline update'.";
     case "not-writable":
-      return `Replacing ${value.values?.path} needs administrator rights. Run 'sudo hardline update'.`;
+      return `Replacing ${value.values?.path} needs administrator rights, because that directory belongs to root. Run 'sudo hardline update', or move Hardline once into a directory you own and never need sudo again: 'sudo mv ${value.values?.path} "$(brew --prefix)/bin/hardline"'.`;
     case "failed": return `Could not update Hardline: ${value.values?.error}`;
   }
 }

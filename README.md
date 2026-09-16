@@ -56,13 +56,15 @@ No existing SSH key is required. Hardline creates and owns a separate identity u
 
 ## Install the CLI
 
-One command, nothing to install first:
+One command, nothing to install first, and no `sudo`:
 
 ```bash
 curl -fsSL https://github.com/atinseau/hardline/releases/latest/download/hardline -o hardline &&
 chmod +x hardline &&
-sudo mv hardline /usr/local/bin/hardline
+mv hardline "$(brew --prefix)/bin/hardline"
 ```
+
+Homebrew's `bin` directory belongs to you and is already on your `PATH`, and Hardline requires Homebrew anyway. That ownership is what lets `hardline update` replace the executable later without asking for administrator rights. Installing into `/usr/local/bin` works too, but that directory belongs to root, so every update then needs `sudo`.
 
 The release carries a standalone Apple Silicon executable. Bun, Git and Swift are needed only to build it yourself:
 
@@ -74,12 +76,12 @@ git clone https://github.com/atinseau/hardline.git
 cd hardline
 bun install --frozen-lockfile
 bun run build
-sudo install -m 0755 dist/hardline /usr/local/bin/hardline
+install -m 0755 dist/hardline "$(brew --prefix)/bin/hardline"
 ```
 
 The build compiles the macOS display probe and produces the executable at `dist/hardline`. Although the CLI is installed globally, its Target Profile, restoration manifest and SSH identity remain scoped to the macOS user who runs it.
 
-Once installed, `hardline update` replaces that executable in place with the latest release. It runs the downloaded binary and checks the version it reports before overwriting anything, so a bad download leaves the working CLI untouched. Installed under `/usr/local/bin`, which belongs to root, it asks for `sudo hardline update`.
+Once installed, `hardline update` replaces that executable in place with the latest release. It runs the downloaded binary and checks the version it reports before overwriting anything, so a bad download leaves the working CLI untouched.
 
 For development, run the TypeScript entry point directly:
 
