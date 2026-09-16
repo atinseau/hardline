@@ -2,102 +2,132 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import {
   parseHosts,
   containsHost,
-  rawHostIndex,
+  hostKeys,
+  hostIndex,
+  forgetHostCommands,
   forgetHostArgs,
   forgetHostAtIndex,
-  forgetHostFromJson,
+  forgetHostFromExport,
 } from "../../src/lib/moonlight-plist";
 
-const WITH_HOST = JSON.stringify({
-  hosts: [{ address: "10.10.10.1", name: "PC" }],
-});
-
-const EMPTY = JSON.stringify({ hosts: [] });
+/**
+ * Un export du domaine tel que `defaults export` le rend vraiment : des cles
+ * PLATES, et une donnee binaire que la conversion JSON refusait de traduire.
+ */
+const EXPORT = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>bitrate</key>
+	<integer>10000</integer>
+	<key>certificate</key>
+	<data>
+	LS0tLS1CRUdJTiBDRVJU
+	</data>
+	<key>hosts.1.hostname</key>
+	<string>DESKTOP-4FKFG3L</string>
+	<key>hosts.1.localaddress</key>
+	<string>10.10.10.1</string>
+	<key>hosts.1.manualaddress</key>
+	<string>10.10.10.1</string>
+	<key>hosts.1.srvcert</key>
+	<data>
+	LS0tLS1CRUdJTiBDRVJU
+	</data>
+	<key>hosts.2.hostname</key>
+	<string>DESKTOP-4FKFG3L</string>
+	<key>hosts.2.localaddress</key>
+	<string>192.168.1.48</string>
+	<key>hosts.2.manualaddress</key>
+	<string>192.168.1.48</string>
+	<key>hosts.3.hostname</key>
+	<string>AUTRE-PC</string>
+	<key>hosts.3.localaddress</key>
+	<string>192.168.1.70</string>
+	<key>hosts.size</key>
+	<integer>3</integer>
+</dict>
+</plist>`;
 
 describe("parseHosts", () => {
-  test("lit les hotes connus", () => {
-    expect(parseHosts(WITH_HOST)).toEqual([{ address: "10.10.10.1" }]);
+  test("lit les cles plates que Qt ecrit, pas un tableau", () => {
+    expect(parseHosts(EXPORT)).toEqual([
+      { address: "10.10.10.1" },
+      { address: "192.168.1.48" },
+      { address: "192.168.1.70" },
+    ]);
   });
 
-  test("rend un tableau vide sans cle hosts", () => {
-    expect(parseHosts(JSON.stringify({}))).toEqual([]);
-  });
-
-  test("rend un tableau vide sur une sortie vide", () => {
+  test("un export vide ou sans hote ne leve pas", () => {
     expect(parseHosts("")).toEqual([]);
+    expect(parseHosts("<plist><dict><key>bitrate</key><integer>1</integer></dict></plist>")).toEqual([]);
   });
 
-  test("rend un tableau vide sur un JSON illisible plutot que de lever", () => {
-    expect(parseHosts("pas du json")).toEqual([]);
-  });
-
-  test("ignore une entree sans adresse exploitable", () => {
-    const withGap = JSON.stringify({ hosts: [{ name: "sans adresse" }] });
-    expect(parseHosts(withGap)).toEqual([]);
+  test("hostKeys ignore tout ce qui n'est pas une entree d'hote", () => {
+    const champs = hostKeys(EXPORT).map((k) => k.key);
+    expect(champs).toContain("hosts.2.localaddress");
+    expect(champs).not.toContain("bitrate");
+    // `hosts.size` porte la taille, pas un hote : un index en ferait un.
+    expect(champs).not.toContain("hosts.size");
   });
 });
 
 describe("containsHost", () => {
-  test("trouve un hote present", () => {
-    expect(containsHost([{ address: "10.10.10.1" }], "10.10.10.1")).toBe(true);
-  });
-
-  test("rend faux pour un hote absent", () => {
-    expect(containsHost(parseHosts(EMPTY), "10.10.10.1")).toBe(false);
+  test("reconnait une adresse connue et rejette les autres", () => {
+    const hosts = parseHosts(EXPORT);
+    expect(containsHost(hosts, "192.168.1.48")).toBe(true);
+    expect(containsHost(hosts, "192.168.1.99")).toBe(false);
   });
 });
 
-describe("rawHostIndex", () => {
-  test("trouve l'index brut d'une entree, meme apres une entree mal formee", () => {
-    // La propriete a proteger : une entree mal formee AVANT la notre ne doit
-    // jamais decaler l'index. Si l'implementation calculait cet index sur
-    // une liste filtree (comme parseHosts le fait), l'entree mal formee
-    // serait retiree avant le calcul et l'index rendu vaudrait 0 au lieu de
-    // 1 -- ce qui viserait la mauvaise entree du tableau reel.
-    const withGapBefore = JSON.stringify({
-      hosts: [{ name: "sans adresse" }, { address: "10.10.10.1" }],
-    });
-    expect(rawHostIndex(withGapBefore, "10.10.10.1")).toBe(1);
+describe("hostIndex", () => {
+  test("rend l'index Qt de l'entree, pas sa position dans une liste filtree", () => {
+    expect(hostIndex(EXPORT, "192.168.1.48")).toBe(2);
+    expect(hostIndex(EXPORT, "10.10.10.1")).toBe(1);
   });
 
-  test("trouve l'index brut quand l'hote est la premiere entree", () => {
-    const single = JSON.stringify({ hosts: [{ address: "10.10.10.1" }] });
-    expect(rawHostIndex(single, "10.10.10.1")).toBe(0);
+  test("rend null pour un hote absent ou un export vide", () => {
+    expect(hostIndex(EXPORT, "192.168.1.99")).toBeNull();
+    expect(hostIndex("", "10.10.10.1")).toBeNull();
+  });
+});
+
+describe("forgetHostCommands", () => {
+  test("supprime l'entree visee, y compris ses donnees binaires", () => {
+    const commands = forgetHostCommands(EXPORT, 1);
+    expect(commands).toContain("Delete :hosts.1.hostname");
+    expect(commands).toContain("Delete :hosts.1.srvcert");
   });
 
-  test("rend null si l'hote est absent", () => {
-    expect(rawHostIndex(EMPTY, "10.10.10.1")).toBeNull();
+  test("renumerote ce qui suit, sans quoi Qt cesserait de voir la fin", () => {
+    // Qt lit de 1 a hosts.size : un trou au milieu cache tout ce qui suit.
+    const commands = forgetHostCommands(EXPORT, 1);
+    expect(commands).toContain("Rename :hosts.2.localaddress :hosts.1.localaddress");
+    expect(commands).toContain("Rename :hosts.3.localaddress :hosts.2.localaddress");
+    expect(commands.at(-1)).toBe("Set :hosts.size 2");
   });
 
-  test("rend null sans cle hosts", () => {
-    expect(rawHostIndex(JSON.stringify({}), "10.10.10.1")).toBeNull();
-  });
-
-  test("rend null sur un JSON illisible plutot que de lever", () => {
-    expect(rawHostIndex("pas du json", "10.10.10.1")).toBeNull();
-  });
-
-  test("rend null sur une sortie vide", () => {
-    expect(rawHostIndex("", "10.10.10.1")).toBeNull();
+  test("retirer la derniere entree ne renomme rien", () => {
+    const commands = forgetHostCommands(EXPORT, 3);
+    expect(commands.filter((c) => c.startsWith("Rename"))).toHaveLength(0);
+    expect(commands.at(-1)).toBe("Set :hosts.size 2");
   });
 });
 
 describe("forgetHostArgs", () => {
-  test("compose la commande PlistBuddy avec l'index donne", () => {
-    const args = forgetHostArgs(2);
+  test("passe une instruction -c par commande, et finit par le plist", () => {
+    const args = forgetHostArgs(["Delete :hosts.1.hostname", "Set :hosts.size 0"]);
     expect(args[0]).toBe("/usr/libexec/PlistBuddy");
-    expect(args[1]).toBe("-c");
-    expect(args[2]).toBe("Delete :hosts:2");
-    expect(args[3]).toMatch(/Library\/Preferences\/com\.moonlight-stream\.Moonlight\.plist$/);
-  });
-
-  test("l'index donne se retrouve tel quel dans l'instruction -c", () => {
-    expect(forgetHostArgs(0)[2]).toBe("Delete :hosts:0");
-    expect(forgetHostArgs(7)[2]).toBe("Delete :hosts:7");
+    expect(args.slice(1, 5)).toEqual([
+      "-c",
+      "Delete :hosts.1.hostname",
+      "-c",
+      "Set :hosts.size 0",
+    ]);
+    expect(args.at(-1)).toMatch(/Library\/Preferences\/com\.moonlight-stream\.Moonlight\.plist$/);
   });
 });
 
-describe("forgetHostAtIndex, frontiere systeme", () => {
+describe("frontiere systeme", () => {
   type SpawnCall = { cmd: string[] };
 
   let spawnCalls: SpawnCall[];
@@ -119,82 +149,31 @@ describe("forgetHostAtIndex, frontiere systeme", () => {
     Bun.spawn = originalSpawn;
   });
 
-  test("emet la commande PlistBuddy avec l'index brut recu, jamais defaults delete", () => {
-    void forgetHostAtIndex(3);
-    expect(spawnCalls[0]!.cmd).toEqual(forgetHostArgs(3));
+  test("emet exactement les commandes calculees sur l'export recu", async () => {
+    await forgetHostAtIndex(EXPORT, 2);
+    expect(spawnCalls[0]!.cmd).toEqual(forgetHostArgs(forgetHostCommands(EXPORT, 2)));
   });
 
   test("tue cfprefsd apres une suppression confirmee", async () => {
-    await forgetHostAtIndex(1);
+    await forgetHostAtIndex(EXPORT, 1);
     expect(spawnCalls).toHaveLength(2);
     expect(spawnCalls[1]!.cmd[0]).toBe("killall");
     expect(spawnCalls[1]!.cmd).toContain("cfprefsd");
   });
 
-  test("rend true quand PlistBuddy confirme par un code de sortie nul", async () => {
-    exitCodes = [0, 0];
-    await expect(forgetHostAtIndex(0)).resolves.toBe(true);
-  });
-
-  test("rend false et ne tue pas cfprefsd quand PlistBuddy echoue", async () => {
+  test("un echec de PlistBuddy n'est jamais pris pour un succes", async () => {
     exitCodes = [1];
-    await expect(forgetHostAtIndex(0)).resolves.toBe(false);
+    expect(await forgetHostAtIndex(EXPORT, 1)).toBe(false);
     expect(spawnCalls).toHaveLength(1);
   });
-});
 
-describe("forgetHostFromJson, integration bout en bout", () => {
-  // Le point precis que la revue signale : rawHostIndex est juste en
-  // isolation, mais rien ne prouvait que forgetHost() -- celle que
-  // restore() appelle reellement -- s'en sert correctement. Ces tests
-  // passent par forgetHostFromJson, qui EST le corps de forgetHost() prive
-  // du seul appel non simulable ($ de Bun) : le chemin exerce ici est
-  // exactement celui que restore() emprunte en production.
-  type SpawnCall = { cmd: string[] };
-
-  let spawnCalls: SpawnCall[];
-  let originalSpawn: typeof Bun.spawn;
-
-  beforeEach(() => {
-    spawnCalls = [];
-    originalSpawn = Bun.spawn;
-    Bun.spawn = ((cmd: string[]) => {
-      spawnCalls.push({ cmd });
-      return { exited: Promise.resolve(0) };
-    }) as unknown as typeof Bun.spawn;
-  });
-
-  afterEach(() => {
-    Bun.spawn = originalSpawn;
-  });
-
-  test("vise l'index brut du JSON quand une entree mal formee precede l'hote", async () => {
-    // Les deux index DOIVENT differer : filtre, notre hote serait le
-    // premier element (index 0) puisque parseHosts retire l'entree cassee ;
-    // brut, il est le second (index 1). Le contraste est le test.
-    const withGapBefore = JSON.stringify({
-      hosts: [{ name: "sans adresse" }, { address: "10.10.10.1" }],
-    });
-    const filteredIndex = parseHosts(withGapBefore).findIndex(
-      (h) => h.address === "10.10.10.1",
-    );
-    const rawIndex = rawHostIndex(withGapBefore, "10.10.10.1");
-    expect(rawIndex).not.toBe(filteredIndex);
-    expect(rawIndex).toBe(1);
-    expect(filteredIndex).toBe(0);
-
-    await forgetHostFromJson(withGapBefore, "10.10.10.1");
-
-    expect(spawnCalls[0]!.cmd).toEqual(forgetHostArgs(1));
-    expect(spawnCalls[0]!.cmd).not.toEqual(forgetHostArgs(0));
-  });
-
-  test("n'emet aucune commande de suppression quand l'hote est absent du plist", async () => {
-    const withoutOurHost = JSON.stringify({ hosts: [{ address: "10.10.10.99" }] });
-
-    const forgotten = await forgetHostFromJson(withoutOurHost, "10.10.10.1");
-
+  test("un hote absent rend true sans rien lancer", async () => {
+    expect(await forgetHostFromExport(EXPORT, "192.168.1.99")).toBe(true);
     expect(spawnCalls).toHaveLength(0);
-    expect(forgotten).toBe(true);
+  });
+
+  test("un hote present est retire par son index Qt", async () => {
+    expect(await forgetHostFromExport(EXPORT, "192.168.1.48")).toBe(true);
+    expect(spawnCalls[0]!.cmd).toContain("Delete :hosts.2.localaddress");
   });
 });
