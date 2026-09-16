@@ -20,10 +20,26 @@ export class RemoteError extends Error {
     message: string,
     readonly result: RemoteResult,
   ) {
-    super(message);
+    // Ce que ssh ou PowerShell a ecrit en echouant. Sans cela, « exit code 255 »
+    // est tout ce que l'operateur voit la ou ssh a nomme sa cause : hote
+    // injoignable, connexion coupee, cle refusee.
+    const cause = result.stderr.trim();
+    super(cause ? `${message} ${cause}` : message);
     this.name = "RemoteError";
   }
 }
+
+/**
+ * 255 est le code que ssh rend quand la CONNEXION echoue, avant meme d'avoir
+ * lance quoi que ce soit a distance. Un lien Wi-Fi qui cligne, un sshd qui
+ * redemarre, et une etape tombe alors que la suivante passerait.
+ */
+export function isConnectionFailure(result: RemoteResult): boolean {
+  return result.exitCode === 255;
+}
+
+/** Le temps laissé au lien pour revenir avant la seule reprise accordée. */
+export const RECONNECT_DELAY_MS = 2_000;
 
 /**
  * PowerShell attend du UTF-16LE encode en Base64. Ce detour supprime tout
@@ -130,25 +146,35 @@ export async function runRemote(
   timeoutMs = 120_000,
 ): Promise<RemoteResult> {
   const transport = buildPowerShellTransport(script);
+  const attempt = async (): Promise<RemoteResult> => {
+    const proc = Bun.spawn(buildSSHArgs(target, transport.remoteCommand), {
+      // Une entrée bornée laisse Bun écrire puis fermer le descripteur. Avec un
+      // FileSink manuel, OpenSSH pouvait ne jamais observer l'EOF et le loader
+      // PowerShell restait bloqué dans ReadToEnd().
+      stdin: Buffer.from(transport.stdin, "utf8"),
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+    });
 
-  const proc = Bun.spawn(buildSSHArgs(target, transport.remoteCommand), {
-    // Une entrée bornée laisse Bun écrire puis fermer le descripteur. Avec un
-    // FileSink manuel, OpenSSH pouvait ne jamais observer l'EOF et le loader
-    // PowerShell restait bloqué dans ReadToEnd().
-    stdin: Buffer.from(transport.stdin, "utf8"),
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: timeoutMs,
-    killSignal: "SIGKILL",
-  });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+    return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  };
 
-  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  // Une seule reprise, et seulement quand rien n'a tourne a distance : le lien
+  // que hardline pilote est physique, il cligne. Rejouer un script distant qui
+  // a DEMARRE serait le rejouer a moitie applique ; un echec de connexion, lui,
+  // n'a rien laisse derriere.
+  const first = await attempt();
+  if (!isConnectionFailure(first)) return first;
+  await new Promise((resolve) => setTimeout(resolve, RECONNECT_DELAY_MS));
+  return attempt();
 }
 
 /**
