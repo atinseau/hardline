@@ -540,6 +540,27 @@ describe("Mac déjà appairé sous un autre nom", () => {
 });
 
 describe("Apollo refuse la connexion au mauvais moment", () => {
+  test("inspect ne lève pas quand Apollo n'accepte pas encore de connexion", async () => {
+    // inspect tourne AVANT apply, donc avant waitForApollo. Lever ici faisait
+    // échouer l'étape avant que la moindre attente ait pu servir, sur le
+    // message brut de Bun.
+    listClients.mockImplementation(async () => {
+      order.push("listClients");
+      throw new Error("Was there a typo in the url or port?");
+    });
+
+    try {
+      const etat = await pairingStep.inspect(CONFIG);
+      expect(etat.conforming).toBe(false);
+      expect(etat.detail).toContain("Apollo ne répond pas encore");
+    } finally {
+      listClients.mockImplementation(async () => {
+        order.push("listClients");
+        return clientListAfterPin ?? clientList;
+      });
+    }
+  });
+
   test("une connexion refusée n'échoue pas l'installation, elle est retentée", async () => {
     // Apollo vient d'être relancé. Une requête refusée n'est pas une réponse :
     // l'erreur brute de Bun remontait telle quelle et faisait échouer toute
