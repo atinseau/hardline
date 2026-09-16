@@ -45,7 +45,9 @@ export function renderUpFact(value: UpFact): string {
     case "stream-failed": return `Session ended with Moonlight exit code ${v.code}.`;
     case "invalid-options": return `Invalid options: ${v.error}`;
     case "preparation-failed": return `Could not prepare the session: ${v.error}`;
-    case "failed": return "Could not open the session. No native command output was included.";
+    case "failed": return v.error
+      ? `Could not open the session: ${v.error}`
+      : "Could not open the session. No native command output was included.";
     case "cancelled": return "Session opening cancelled.";
   }
 }

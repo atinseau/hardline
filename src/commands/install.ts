@@ -14,6 +14,7 @@ import {
   runRemotePreflight,
 } from "../lib/preflight";
 import { errorMessage } from "../lib/errors";
+import { brewInstalled } from "../lib/brew";
 import {
   backupApolloConfig,
   ForeignApolloError,
@@ -39,6 +40,7 @@ type InstallFact = {
     | "success"
     | "cancelled"
     | "mac-not-ready"
+    | "homebrew-missing"
     | "pc-not-ready"
     | "convergence-failed"
     | "foreign-kept"
@@ -79,6 +81,7 @@ export function renderInstallFact(value: InstallFact): string {
     case "success": return "Hardline is installed. Run 'hardline doctor' to verify the link.";
     case "cancelled": return "Installation cancelled. No unauthorized destructive action was taken.";
     case "mac-not-ready": return "Installation stopped: the Mac is not ready. Nothing was changed.";
+    case "homebrew-missing": return "Installation stopped before touching either machine: Homebrew is required to install the Moonlight client, and it is not on this Mac. Install it from https://brew.sh, then run 'hardline install' again.";
     case "pc-not-ready": return `Installation stopped: the PC is not ready. ${v.recovery}`;
     case "convergence-failed": return `${v.area} failed. Previous state for every touched step is recorded. Fix the problem and run 'hardline install' to resume, or 'hardline uninstall' to restore it. Cause: ${v.error}`;
     case "foreign-kept": return "Installation stopped: the foreign Apollo installation was preserved. Non-interactive replacement requires explicit 'hardline install --yes' authorization.";
@@ -226,6 +229,8 @@ export function installCommand(options: {
   targetResolution: TargetResolution<Config>;
   output: CommandOutput;
   yes?: boolean;
+  /** Injectable : un test ne doit pas dependre du Mac qui l'execute. */
+  brewInstalled?: () => boolean;
 }): Promise<CommandResult<InstallFact>> {
   return runCommand({
     title: fact("title"),
@@ -234,6 +239,11 @@ export function installCommand(options: {
     cancelled: fact("cancelled"),
     unexpected: (error) => fact("unexpected", { error: errorMessage(error) }),
     execute: async (run) => {
+      // Avant la resolution, donc avant l'amorcage : ce qui manque au Mac ne
+      // doit pas se decouvrir apres que le PC a ete modifie.
+      if (!(options.brewInstalled ?? brewInstalled)()) {
+        return { status: "failed", summary: fact("homebrew-missing") };
+      }
       const outcome = await options.targetResolution.during("install", async (target) => {
         const result = await runInstall(run, target.config, {
           yes: options.yes ?? false,

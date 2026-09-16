@@ -61,7 +61,9 @@ export function renderDoctorFact(value: DoctorFact): string {
       ? `The link is operational. Installation prerequisites not met: ${v.preconditions}.`
       : "The link is operational.";
     case "unhealthy": return "Problems were detected. Run 'hardline install' to reconcile the configuration.";
-    case "unexpected": return "Diagnosis failed safely.";
+    // La cause est la seule chose utile ici, et elle est ecrite par hardline :
+    // la taire laissait l'operateur devant un echec sans aucune prise.
+    case "unexpected": return `Diagnosis stopped, and nothing was changed: ${v.error}`;
   }
 }
 

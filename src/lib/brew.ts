@@ -30,6 +30,19 @@ export type BrewCommandRunner = (
   argv: readonly string[],
 ) => Promise<CommandResult>;
 
+/**
+ * Homebrew est-il installe sur ce Mac ?
+ *
+ * La question se pose AVANT l'amorcage, pas pendant la convergence : le client
+ * Moonlight s'installe par Homebrew, et l'amorcage modifie le PC. Sans cette
+ * porte, un Mac sans Homebrew faisait coller la commande PowerShell, laissait
+ * l'amorcage s'executer, puis echouait chez lui sur un prerequis qu'une ligne
+ * suffisait a constater.
+ */
+export function brewInstalled(): boolean {
+  return Bun.which("brew", { PATH: process.env.PATH ?? "" }) !== null;
+}
+
 type InstallCaskDependencies = {
   fetch: (url: string) => Promise<Response>;
   mkdtemp: (prefix: string) => Promise<string>;

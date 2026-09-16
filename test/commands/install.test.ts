@@ -234,11 +234,16 @@ function targetResolution(): TargetResolution<Config> {
   } as TargetResolution<Config>;
 }
 
-async function installCommand(options: { yes?: boolean } = {}): Promise<void> {
+async function installCommand(
+  options: { yes?: boolean; brewInstalled?: () => boolean } = {},
+): Promise<void> {
   const result = await executeInstallCommand({
     targetResolution: targetResolution(),
     output,
     yes: options.yes,
+    // Par defaut Homebrew est la : les tests decrivent la convergence, pas la
+    // machine qui les execute.
+    brewInstalled: options.brewInstalled ?? (() => true),
   });
   process.exitCode = exitCodeFor(result);
 }
@@ -648,5 +653,25 @@ describe("installCommand, Apollo etranger hors terminal", () => {
     await installCommand({ yes: false });
     expect(askConfirmation).toHaveBeenCalledTimes(1);
     expect(uninstallApollo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("installCommand, prerequis du Mac", () => {
+  test("sans Homebrew, rien n'est touche : ni le Mac, ni le PC, ni l'amorcage", async () => {
+    // Le client Moonlight s'installe par Homebrew, et l'amorcage modifie le PC
+    // AVANT que la convergence du Mac ne commence. Constater le manque apres
+    // coup laissait un PC amorce pour une installation qui ne pouvait pas
+    // aboutir.
+    await installCommand({ brewInstalled: () => false });
+
+    expect(trace).toEqual([]);
+    expect(appliedGroups).toEqual([]);
+    expect(finishes.join("\n")).toContain("brew.sh");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("avec Homebrew, l'installation suit son cours", async () => {
+    await installCommand({ brewInstalled: () => true });
+    expect(process.exitCode).toBe(0);
   });
 });
