@@ -80,6 +80,49 @@ export async function waitForApollo(
   }
 }
 
+/**
+ * Ouvre une session d'appairage, et recommence une fois si le client n'est pas
+ * apparu.
+ *
+ * Le PREMIER lancement de Moonlight qui suit son installation echoue a charger
+ * ses greffons Qt — « module QtQuick.Controls plugin qtquickcontrols2plugin not
+ * found » — et le processus meurt avant d'avoir joint le serveur. Les suivants
+ * partent normalement. Mesure sur la machine : l'appairage arrive quelques
+ * secondes apres la pose du cask, donc il tombe precisement dans cette fenetre.
+ *
+ * Une seconde tentative la traverse. Chaque tentative ouvre son propre code :
+ * un PIN consomme ne vaut plus rien.
+ */
+export async function pairWithRetry(
+  config: Config,
+  creds: ApolloCredentials,
+  attempts = 2,
+): Promise<void> {
+  let said = "";
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const pin = generatePin();
+    const pairing = spawnPair(config, pin);
+    try {
+      await pairing.ready;
+      await sendPin(config, creds, pin, config.moonlight.clientName);
+
+      const confirmed = await listClients(config, creds);
+      if (confirmed.some((c) => c.name === config.moonlight.clientName)) return;
+      said = await pairing.said().catch(() => "");
+    } finally {
+      pairing.kill();
+    }
+  }
+
+  throw new Error(
+    `Appairage non confirmé après ${attempts} tentatives\u00a0: ` +
+      `«\u00a0${config.moonlight.clientName}\u00a0» n'apparaît pas dans la liste des ` +
+      "clients relue après l'envoi du code." +
+      (said ? `\u00a0Moonlight a dit\u00a0: ${said}` : ""),
+  );
+}
+
 export const pairingStep: Step<PairingState> = {
   name: "pairing",
   label: "Mac appairé au serveur (Mac)",
@@ -156,24 +199,7 @@ export const pairingStep: Step<PairingState> = {
       );
     }
 
-    const pin = generatePin();
-    const pairing = spawnPair(config, pin);
-    try {
-      await pairing.ready;
-      await sendPin(config, creds, pin, config.moonlight.clientName);
-
-      const confirmed = await listClients(config, creds);
-      if (!confirmed.some((c) => c.name === config.moonlight.clientName)) {
-        const said = await pairing.said().catch(() => "");
-        throw new Error(
-          `Appairage non confirmé\u00a0: «\u00a0${config.moonlight.clientName}\u00a0» n'apparaît pas ` +
-            "dans la liste des clients relue après l'envoi du code." +
-            (said ? `\u00a0Moonlight a dit\u00a0: ${said}` : ""),
-        );
-      }
-    } finally {
-      pairing.kill();
-    }
+    await pairWithRetry(config, creds);
 
     // HORS du finally : desamorcer un etat qu'on n'a pas reussi a produire
     // n'a pas de sens, et masquerait l'echec d'appairage derriere une erreur
