@@ -1,5 +1,6 @@
 import { $ } from "bun";
-import { homedir, userInfo } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 const DOMAIN = "com.moonlight-stream.Moonlight";
@@ -78,37 +79,81 @@ export function hostIndex(xml: string, host: string): number | null {
 }
 
 /**
- * Fonction pure. Les commandes PlistBuddy qui retirent l'entree d'index donne.
+ * Ou commence et finit la valeur qui suit une cle, en lignes.
  *
- * Retirer ne suffit pas : Qt lit ses entrees de 1 a `hosts.size`, donc un trou
- * au milieu lui cacherait tout ce qui suit. Les entrees suivantes sont donc
- * RENOMMEES d'un cran — ce qui preserve type et valeur, y compris les
- * certificats binaires — et la taille est mise a jour en dernier.
+ * Une valeur tient sur une ligne (`<string>..</string>`, `<true/>`) ou s'etend
+ * sur plusieurs (`<data>`, et un `<dict>` ou un `<array>` imbrique). Sans
+ * suivre cette etendue, retirer une cle laisserait sa valeur orpheline et
+ * produirait un plist que plus rien ne sait lire.
  */
-export function forgetHostCommands(xml: string, index: number): string[] {
-  const keys = hostKeys(xml);
-  const size = Math.max(0, ...keys.map((k) => k.index));
-  const commands: string[] = [];
-
-  for (const key of keys.filter((k) => k.index === index)) {
-    commands.push(`Delete :${key.key}`);
-  }
-  for (let source = index + 1; source <= size; source += 1) {
-    for (const key of keys.filter((k) => k.index === source)) {
-      commands.push(`Rename :${key.key} :hosts.${source - 1}.${key.field}`);
+function valueSpan(lines: string[], start: number): number {
+  const open = /<(data|dict|array)>\s*$/.exec(lines[start] ?? "");
+  if (!open) return start;
+  const tag = open[1]!;
+  let depth = 1;
+  for (let line = start + 1; line < lines.length; line += 1) {
+    if (new RegExp(`<${tag}>\\s*$`).test(lines[line]!)) depth += 1;
+    if (new RegExp(`</${tag}>`).test(lines[line]!)) {
+      depth -= 1;
+      if (depth === 0) return line;
     }
   }
-  commands.push(`Set :hosts.size ${Math.max(0, size - 1)}`);
-  return commands;
+  return lines.length - 1;
 }
 
-/** Fonction pure. L'invocation complete de PlistBuddy pour ces commandes. */
-export function forgetHostArgs(commands: string[]): string[] {
-  return [
-    "/usr/libexec/PlistBuddy",
-    ...commands.flatMap((command) => ["-c", command]),
-    PLIST_PATH,
-  ];
+/**
+ * Fonction pure. L'export XML prive de l'entree d'index donne.
+ *
+ * Retirer ne suffit pas : Qt lit ses entrees de 1 a `hosts.size`, donc un trou
+ * au milieu lui cacherait tout ce qui suit. Les suivantes descendent d'un cran,
+ * par leur seul NOM : leur valeur n'est jamais touchee, certificats binaires
+ * compris.
+ *
+ * La reecriture se fait ici plutot que par PlistBuddy, qui ne connait pas
+ * `Rename` et qui ABANDONNE (SIGABRT) sur les donnees binaires de ce plist —
+ * verifie sur une vraie installation. Le resultat repart par `defaults import`,
+ * donc par cfprefsd, qui sert ces preferences : editer le fichier dans son dos
+ * laisse son cache les reecrire.
+ */
+export function rewriteWithoutHost(xml: string, index: number): string {
+  const lines = xml.split("\n");
+  const size = Math.max(0, ...hostKeys(xml).map((k) => k.index));
+  const kept: string[] = [];
+
+  for (let line = 0; line < lines.length; line += 1) {
+    const key = /<key>([^<]+)<\/key>/.exec(lines[line]!)?.[1];
+    if (key === undefined) {
+      kept.push(lines[line]!);
+      continue;
+    }
+
+    const end = valueSpan(lines, line + 1);
+    const value = lines.slice(line + 1, end + 1);
+
+    if (key === "hosts.size") {
+      kept.push(lines[line]!, `\t<integer>${Math.max(0, size - 1)}</integer>`);
+      line = end;
+      continue;
+    }
+
+    const parts = HOST_KEY.exec(key);
+    if (parts === null) {
+      kept.push(lines[line]!, ...value);
+      line = end;
+      continue;
+    }
+
+    const rank = Number(parts[1]);
+    if (rank === index) {
+      line = end;
+      continue;
+    }
+    const renamed = rank > index ? `hosts.${rank - 1}.${parts[2]}` : key;
+    kept.push(lines[line]!.replace(`<key>${key}</key>`, `<key>${renamed}</key>`), ...value);
+    line = end;
+  }
+
+  return kept.join("\n");
 }
 
 // --- Frontiere systeme. ---
@@ -132,18 +177,34 @@ export async function forgetHostAtIndex(
   xml: string,
   index: number,
 ): Promise<boolean> {
-  const deleteProc = Bun.spawn(forgetHostArgs(forgetHostCommands(xml, index)), {
+  const path = join(tmpdir(), `hardline-moonlight-${process.pid}.plist`);
+  await Bun.write(path, rewriteWithoutHost(xml, index));
+
+  const importProc = Bun.spawn(["defaults", "import", DOMAIN, path], {
     stdout: "ignore",
     stderr: "ignore",
   });
-  const exitCode = await deleteProc.exited;
+  const exitCode = await importProc.exited;
+  await unlink(path).catch(() => {});
   if (exitCode !== 0) return false;
 
-  const killProc = Bun.spawn(["killall", "-u", userInfo().username, "cfprefsd"], {
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  await killProc.exited;
+  // `defaults import` FUSIONNE, il ne remplace pas : il pose les entrees
+  // descendues d'un cran et la nouvelle taille, mais laisse en place le dernier
+  // rang, desormais en trop. C'est ce rang-la qu'il reste a retirer, cle par
+  // cle, seule facon de supprimer par `defaults`.
+  //
+  // Surtout pas de `killall cfprefsd` au bout : il etait la du temps ou l'on
+  // ecrivait le fichier dans le dos du cache ; maintenant que tout PASSE par
+  // cfprefsd, le tuer lui fait recharger un fichier perime et annule le
+  // travail — constate sur la machine.
+  const last = Math.max(0, ...hostKeys(xml).map((k) => k.index));
+  for (const key of hostKeys(xml).filter((k) => k.index === last)) {
+    const removal = Bun.spawn(["defaults", "delete", DOMAIN, key.key], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    if ((await removal.exited) !== 0) return false;
+  }
   return true;
 }
 
