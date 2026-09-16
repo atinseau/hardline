@@ -8,7 +8,7 @@ import { errorMessage } from "../lib/errors";
 import { VERSION } from "../version";
 
 const REPOSITORY = "atinseau/hardline";
-const LATEST_RELEASE = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
+const LATEST_RELEASE = `https://github.com/${REPOSITORY}/releases/latest`;
 const LATEST_BINARY = `https://github.com/${REPOSITORY}/releases/latest/download/hardline`;
 
 type UpdateFact = {
@@ -18,6 +18,7 @@ type UpdateFact = {
     | "download"
     | "replace"
     | "current"
+    | "ahead"
     | "updated"
     | "not-installed"
     | "not-writable"
@@ -37,6 +38,8 @@ export function renderUpdateFact(value: UpdateFact): string {
     case "download": return "Download the Release Binary";
     case "replace": return "Replace the Installed Binary";
     case "current": return `Hardline is already at the latest release (${value.values?.version}).`;
+    case "ahead":
+      return `Hardline is at ${value.values?.version}, ahead of the latest release (${value.values?.latest}). Nothing to do.`;
     case "updated": return `Hardline updated from ${value.values?.from} to ${value.values?.to}.`;
     case "not-installed":
       return "Update replaces the installed executable, and this Hardline is running from source. Build it with 'bun run build' instead, or run the installed 'hardline update'.";
@@ -49,6 +52,36 @@ export function renderUpdateFact(value: UpdateFact): string {
 /** Le tag d'une publication porte un `v` que la version du binaire n'a pas. */
 function versionOfTag(tag: string): string {
   return tag.startsWith("v") ? tag.slice(1) : tag;
+}
+
+/**
+ * Une version est-elle plus recente qu'une autre ? Comparer par egalite suffit
+ * a savoir s'il y a quelque chose a faire, mais pas dans quel sens : un binaire
+ * construit localement, en avance sur la derniere publication, se faisait
+ * remplacer par une version plus ancienne sans un mot.
+ *
+ * Ce qui n'est pas trois nombres n'est jamais plus recent : une etiquette de
+ * pre-publication ne declenche donc aucun remplacement.
+ */
+export function isNewer(candidate: string, current: string): boolean {
+  const numbers = (version: string): number[] => version.split(".").map(Number);
+  const [left, right] = [numbers(candidate), numbers(current)];
+  // Avant toute comparaison : un seul champ illisible suffit a ne plus rien
+  // savoir. Juger sur les champs qui precedent reviendrait a traiter
+  // "0.2.0-beta" comme la version publiee 0.2.0.
+  if ([...left, ...right].some(Number.isNaN)) return false;
+  for (let index = 0; index < 3; index += 1) {
+    const a = left[index] ?? 0;
+    const b = right[index] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return false;
+}
+
+/** Le tag que designe la redirection de /releases/latest, s'il y en a un. */
+export function tagFromRedirect(location: string | null): string | null {
+  const tag = location?.split("/tag/")[1];
+  return tag ? decodeURIComponent(tag) : null;
 }
 
 export type UpdateEnvironment = {
@@ -69,15 +102,16 @@ export const liveUpdateEnvironment: UpdateEnvironment = {
   installedPath: () => (Bun.main.startsWith("/$bunfs") ? process.execPath : null),
 
   latestTag: async () => {
-    const response = await fetch(LATEST_RELEASE, {
-      headers: { accept: "application/vnd.github+json" },
-    });
-    if (!response.ok) {
-      throw new Error(`GitHub answered ${response.status} when asked for the latest release.`);
-    }
-    const tag = ((await response.json()) as { tag_name?: unknown }).tag_name;
-    if (typeof tag !== "string" || tag.length === 0) {
-      throw new Error("The latest release carries no tag.");
+    // La page publique redirige vers la derniere publication. L'API REST le
+    // dirait aussi, mais elle n'accorde que soixante appels anonymes par heure
+    // et par adresse : un quota epuise refuserait la mise a jour avec un 403
+    // que personne ne peut relier a ce qu'il a demande.
+    const response = await fetch(LATEST_RELEASE, { redirect: "manual" });
+    const tag = tagFromRedirect(response.headers.get("location"));
+    if (!tag) {
+      throw new Error(
+        `GitHub did not point at a latest release (HTTP ${response.status}). The repository may carry no published release yet.`,
+      );
     }
     return tag;
   },
@@ -133,6 +167,12 @@ export function updateCommand(options: {
       const latest = versionOfTag(tag);
       if (latest === current) {
         return { status: "succeeded", summary: fact("current", { version: current }) };
+      }
+      if (!isNewer(latest, current)) {
+        return {
+          status: "succeeded",
+          summary: fact("ahead", { version: current, latest }),
+        };
       }
 
       if (!(await environment.writable(dirname(installed)))) {

@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { exitCodeFor, type CommandOutput } from "../../src/command-run";
-import { updateCommand, type UpdateEnvironment } from "../../src/commands/update";
+import {
+  isNewer,
+  tagFromRedirect,
+  updateCommand,
+  type UpdateEnvironment,
+} from "../../src/commands/update";
 
 const phases: string[] = [];
 const finishes: Array<{ message: string; status: string }> = [];
@@ -46,6 +51,16 @@ beforeEach(() => {
 });
 
 describe("updateCommand", () => {
+  test("la derniere publication est lue dans la redirection, pas dans l'API", () => {
+    expect(
+      tagFromRedirect("https://github.com/atinseau/hardline/releases/tag/v0.1.4"),
+    ).toBe("v0.1.4");
+    // Sans publication, GitHub renvoie la liste : il n'y a pas de tag a lire,
+    // et inventer une version ferait telecharger n'importe quoi.
+    expect(tagFromRedirect("https://github.com/atinseau/hardline/releases")).toBeNull();
+    expect(tagFromRedirect(null)).toBeNull();
+  });
+
   test("remplace l'executable installe par la derniere publication", async () => {
     const result = await updateCommand({
       output,
@@ -76,6 +91,32 @@ describe("updateCommand", () => {
     expect(downloaded).toEqual([]);
     expect(replaced).toEqual([]);
     expect(finishes[0]?.message).toContain("already at the latest release (0.1.0)");
+  });
+
+  test("ne retrograde pas un binaire en avance sur la derniere publication", async () => {
+    // Un binaire construit localement porte une version que personne n'a
+    // publiee. Le remplacer par la derniere publication, c'est le remplacer par
+    // plus ancien que lui, sans que rien ne le dise.
+    const result = await updateCommand({
+      output,
+      environment: environment({ latestTag: async () => "v0.1.4" }),
+      currentVersion: "0.1.5",
+    });
+
+    expect(exitCodeFor(result)).toBe(0);
+    expect(downloaded).toEqual([]);
+    expect(replaced).toEqual([]);
+    expect(finishes[0]?.message).toContain("ahead of the latest release (0.1.4)");
+  });
+
+  test("compare les versions par nombre, jamais par chaine", () => {
+    expect(isNewer("0.1.10", "0.1.9")).toBe(true);
+    expect(isNewer("0.2.0", "0.1.9")).toBe(true);
+    expect(isNewer("1.0.0", "0.9.9")).toBe(true);
+    expect(isNewer("0.1.4", "0.1.5")).toBe(false);
+    expect(isNewer("0.1.5", "0.1.5")).toBe(false);
+    // Rien de comparable ne declenche de remplacement.
+    expect(isNewer("0.2.0-beta", "0.1.5")).toBe(false);
   });
 
   test("laisse l'executable intact quand le binaire telecharge annonce une autre version", async () => {
