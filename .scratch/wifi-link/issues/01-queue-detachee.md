@@ -1,6 +1,6 @@
 # La queue détachée ne survit pas à la fermeture de la session SSH
 
-Status: needs-triage
+Status: ready-for-human
 
 ## Ce qui a été observé
 
@@ -69,3 +69,23 @@ Aucune n'est évidente, et c'est pourquoi ceci est une fiche et non un correctif
 
 La piste 1 est la plus prometteuse : le projet sait déjà créer et supprimer une tâche
 planifiée (`network-profile-task`).
+
+## Résolu
+
+La queue passe désormais par une **tâche planifiée** au lieu de `Start-Process`, ce qui
+était la piste 1 de cette fiche. Une tâche appartient au planificateur : la fermeture de
+la session SSH ne l'atteint pas, et son principal SYSTEM lui donne les droits d'arrêter
+sshd et de rendre l'adressage. Elle se déclenche cinq secondes plus tard, une seule
+fois, et se supprime elle-même en terminant — une désinstallation qui promet de ne rien
+laisser ne laisse pas non plus l'outil de son propre ménage.
+
+La charge part encodée en base64, ce qui supprime la question du quoting au lieu de
+l'échapper : plus rien ne la redécoupe entre son émission et son exécution.
+`assertNoDoubleQuote` n'existait que pour refuser les charges que l'ancien second saut
+ne savait pas transporter, et disparaît avec lui.
+
+**Vérifié** : les deux scripts produits — celui qui enregistre la tâche et la charge
+décodée — sont analysés sans erreur par le parseur PowerShell, et la charge se redécode
+exactement. **Non vérifié** : l'exécution réelle sur un PC, l'accès SSH ayant été retiré
+par la désinstallation qui a révélé le défaut. À confirmer au prochain `uninstall` réel :
+le port 22 doit se fermer dans les secondes qui suivent.
