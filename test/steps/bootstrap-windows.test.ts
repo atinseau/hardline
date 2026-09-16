@@ -3,6 +3,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 /** Aucune etape ne suit : cette restauration est la derniere a passer. */
 const NO_PENDING = { pending: [] as string[] };
 import { CONFIG } from "../fixtures/config";
+import { DETACHED_MARKER, detachedPayload, inSession, readable } from "../fixtures/detached";
 import type {
   BootstrapCapture,
   BootstrapState,
@@ -86,21 +87,11 @@ function scriptOf(call: number): string {
   return String((runRemoteChecked.mock.calls[call] as unknown[])[1]);
 }
 
-/** La ligne du processus detache : tout ce qui peut couper le canal y vit. */
+/** La charge confiee au planificateur : tout ce qui peut couper le canal y vit. */
 function detachedLine(script: string): string {
-  const line = script
-    .split("\n")
-    .find((candidate) => candidate.includes("Start-Process powershell"));
-  expect(line).toBeDefined();
-  return line as string;
-}
-
-/** Ce qui reste du script une fois la queue detachee retiree. */
-function inSession(script: string): string {
-  return script
-    .split("\n")
-    .filter((line) => !line.includes("Start-Process powershell"))
-    .join("\n");
+  const payload = detachedPayload(script);
+  expect(payload).not.toBe("");
+  return payload;
 }
 
 async function restoreWith(patch: Partial<BootstrapCapture>): Promise<string> {
@@ -108,7 +99,8 @@ async function restoreWith(patch: Partial<BootstrapCapture>): Promise<string> {
     capture: capture(patch),
     acknowledged: true,
   }, NO_PENDING);
-  return scriptOf(0);
+  // Charge decodee en place : une assertion lit ce que le PC executera.
+  return readable(scriptOf(0));
 }
 
 describe("inspect", () => {
@@ -378,8 +370,8 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     // d'ajouter la ligne. La reecriture re-encodait alors en ascii les cles
     // d'autres administrateurs, et un Get-Content muet tronquait le fichier.
     const script = await restoreWith({});
-    // Dans la queue detachee les $ sont echappes : c'est la forme reelle.
-    const GARDE = "if (`$kept.Count -lt `$lines.Count)";
+    // La charge part encodee : les $ y sont ceux du script, sans echappement.
+    const GARDE = "if ($kept.Count -lt $lines.Count)";
     expect(script).toContain(GARDE);
     // La suppression comme la reecriture vivent dans cette garde.
     const garde = script.indexOf(GARDE);
@@ -562,7 +554,7 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     const state = script.indexOf("bootstrap-state.json");
     expect(acknowledgement).toBeGreaterThanOrEqual(0);
     expect(state).toBeGreaterThan(acknowledgement);
-    expect(script).toContain("Get-ChildItem -Path `$hardlineState");
+    expect(script).toContain("Get-ChildItem -Path $hardlineState");
   });
 
   test("repose l'adressage sur l'interface que le releve decrit", async () => {
@@ -626,8 +618,8 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
       { capture: capture({ interfaceAlias: "Réseau d'Arthur" }), acknowledged: true },
       NO_PENDING,
     );
-    expect(scriptOf(0)).toContain("'Réseau d''Arthur'");
-    expect(scriptOf(0)).not.toContain("'Réseau d'Arthur'");
+    expect(readable(scriptOf(0))).toContain("'Réseau d''Arthur'");
+    expect(readable(scriptOf(0))).not.toContain("'Réseau d'Arthur'");
   });
 
   test("refuse un type de demarrage hors de l'ensemble connu", async () => {
@@ -651,28 +643,19 @@ describe("restore, ce qui est defait et ce qui ne l'est pas", () => {
     ).rejects.toThrow(/démarrage/);
   });
 
-  test("refuse une charge qu'un Start-Process ne saurait pas transmettre", async () => {
-    // psQuote laisse passer le guillemet, qui n'est pas special entre
-    // apostrophes, et le premier saut l'echappe correctement. Le second ne le
-    // recite pas : la ligne de commande du processus detache serait coupee en
-    // deux, dans un processus que le Mac ne verra jamais. Mieux vaut une erreur
-    // nommee qu'une queue muette qui ne rend jamais le PC.
-    await expect(
-      bootstrapWindowsStep.restore(
-        CONFIG,
-        {
-          capture: capture({
-            authorizedKeys: {
-              ...CAPTURE.authorizedKeys,
-              publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1 "arthur@mac"',
-            },
-          }),
-          acknowledged: true,
-        },
-        NO_PENDING,
-      ),
-    ).rejects.toThrow(/guillemet/);
-    expect(runRemoteChecked).not.toHaveBeenCalled();
+  test("transmet une charge qu'aucun echappement n'aurait rendue sure", async () => {
+    // La charge part encodee en base64 : plus aucun shell ne la redecoupe entre
+    // ici et son execution. Un guillemet dans la cle relevee, qui coupait en
+    // deux la ligne de commande de l'ancien processus detache, arrive
+    // desormais intact.
+    const script = await restoreWith({
+      authorizedKeys: {
+        ...CAPTURE.authorizedKeys,
+        publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1 "arthur@mac"',
+      },
+    });
+
+    expect(detachedLine(script)).toContain('ssh-ed25519 AAAAC3NzaC1lZDI1 "arthur@mac"');
   });
 
   test("n'avale pas un code de retour non nul", async () => {
@@ -712,7 +695,7 @@ describe("restore, ordre des operations", () => {
     // la cle. Conditionner le detachement a $sshLocal serait executer en ligne
     // une queue qui coupe malgre tout.
     const script = await restoreWith({});
-    expect(script).toContain("Start-Process powershell");
+    expect(script).toContain(DETACHED_MARKER);
     expect(script).not.toContain("$sshLocal");
     expect(script).not.toContain("Get-NetTCPConnection");
   });
@@ -746,7 +729,7 @@ describe("restore, ordre des operations", () => {
       },
     });
 
-    expect(script).toContain("Start-Process");
+    expect(script).toContain(DETACHED_MARKER);
     expect(script).toContain("bootstrap-state.json");
     // L'accuse de reception part quand meme : une installation ulterieure doit
     // retrouver un releve non acquitte, donc non conforme, donc reenregistre.
@@ -754,7 +737,7 @@ describe("restore, ordre des operations", () => {
   });
 
   test("se declare lancee des qu'une queue detachee existe", async () => {
-    // Elle rend la main des que Start-Process est lance, et ce que la charge
+    // Elle rend la main des que la tache est enregistree, et ce que la charge
     // fait ensuite coupe le seul canal qui permettrait de l'observer.
     const outcome = await bootstrapWindowsStep.restore(
       CONFIG,
@@ -809,7 +792,7 @@ describe("restore, ordre des operations", () => {
     // acquitte, donc non conforme, donc reenregistre.
     const script = await restoreWith({});
     expect(script.indexOf("bootstrap-state.acknowledged")).toBeLessThan(
-      script.indexOf("Start-Process powershell"),
+      script.indexOf(DETACHED_MARKER),
     );
   });
 
@@ -886,12 +869,13 @@ describe("restore, ordre des operations", () => {
     }
   });
 
-  test("echappe les $ confies au processus detache", async () => {
-    // Sans le backtick, le shell appelant developpe $false en chaine vide et
-    // Remove-NetIPAddress reclame une confirmation que personne ne donnera.
+  test("transmet les $ au planificateur sans les echapper", async () => {
+    // La charge part encodee : aucun shell ne la relit entre ici et son
+    // execution, donc $false arrive tel quel. Un backtick, lui, arriverait
+    // aussi tel quel et casserait la commande.
     const line = detachedLine(await restoreWith({}));
-    expect(line).toContain("-Confirm:`$false");
-    expect(line).not.toContain("-Confirm:$false");
+    expect(line).toContain("-Confirm:$false");
+    expect(line).not.toContain("-Confirm:`$false");
   });
 
   test("ne supprime jamais en bloc les adresses de l'interface", async () => {
@@ -919,9 +903,9 @@ describe("l'adresse retiree vient du releve, pas du lien courant", () => {
     );
 
     const script = scriptOf(0);
-    expect(script).toMatch(/Remove-NetIPAddress[^;]*-IPAddress '10\.10\.10\.1'/);
-    expect(script).not.toContain("192.168.1.48");
-    expect(script).toContain("-InterfaceAlias 'Ethernet'");
+    expect(readable(script)).toMatch(/Remove-NetIPAddress[^;]*-IPAddress '10\.10\.10\.1'/);
+    expect(readable(script)).not.toContain("192.168.1.48");
+    expect(readable(script)).toContain("-InterfaceAlias 'Ethernet'");
   });
 
   test("un amorcage qui n'a pose aucune adresse n'en retire aucune", async () => {

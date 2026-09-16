@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG } from "../fixtures/config";
+import { DETACHED_MARKER, readable } from "../fixtures/detached";
 import type { Manifest } from "../../src/lib/manifest";
 
 /**
@@ -145,11 +146,12 @@ async function revertWith(
 async function revert(order: string[]): Promise<string[]> {
   const { scripts, unrestored } = await revertWith(order);
   expect(unrestored).toEqual([]);
-  return scripts;
+  // Charges decodees en place : une assertion lit ce que le PC executera.
+  return scripts.map(readable);
 }
 
 const withTail = (scripts: string[]): string[] =>
-  scripts.filter((s) => s.includes("Start-Process powershell"));
+  scripts.filter((s) => s.includes(DETACHED_MARKER));
 
 beforeEach(() => {
   remoteScripts.length = 0;
@@ -258,12 +260,13 @@ describe("lancer n'est pas restaurer", () => {
   });
 });
 
-describe("une charge que le second saut ne saurait pas transmettre", () => {
-  test("est un ECHEC, rien n'est envoye, et l'enregistrement reste", async () => {
-    // Un guillemet dans la cle publique relevee traverse psQuote sans encombre
-    // et casserait la ligne de commande du processus detache. Refuser est sur
-    // precisement parce que l'enregistrement est conserve : rien n'est perdu,
-    // et une version ulterieure ou un nouvel essai pourra encore s'en servir.
+describe("une charge qu'aucun echappement n'aurait rendue sure", () => {
+  test("part intacte, et l'enregistrement reste puisque nul ne la verra finir", async () => {
+    // Un guillemet dans la cle publique relevee cassait la ligne de commande du
+    // processus detache, et la restauration devait refuser de l'emettre. La
+    // charge partant desormais encodee vers une tache planifiee, plus rien ne
+    // la redecoupe : elle part telle quelle. L'enregistrement reste malgre tout,
+    // parce qu'une queue lancee n'est pas une queue achevee.
     const abimee = {
       ...CAPTURE,
       authorizedKeys: {
@@ -296,12 +299,13 @@ describe("une charge que le second saut ne saurait pas transmettre", () => {
         reporter,
       );
 
-      expect(unrestored).toEqual(["bootstrap-windows"]);
-      expect(unconfirmed).toEqual([]);
-      // Rien n'est parti sur le PC : mieux vaut ne rien envoyer qu'une ligne de
-      // commande dont personne ne sait ce qu'elle fera.
-      expect(remoteScripts).toEqual([]);
-      // Et l'etat anterieur est toujours la, entier.
+      expect(unrestored).toEqual([]);
+      expect(unconfirmed).toEqual(["bootstrap-windows"]);
+      // La cle arrive au PC telle qu'elle a ete relevee, guillemet compris.
+      expect(readable(remoteScripts[0] ?? "")).toContain(
+        'ssh-ed25519 AAAAC3NzaC1lZDI1 "arthur@mac"',
+      );
+      // Et l'etat anterieur est toujours la, entier : la queue n'est pas observable.
       const manifest = await readManifest(path);
       expect(manifest.order).toEqual(["bootstrap-windows"]);
       expect(manifest.steps["bootstrap-windows"]?.previous).toEqual({
@@ -340,7 +344,7 @@ describe("une seule queue detachee par desinstallation", () => {
     ]);
     // Restauration = ordre inverse : profil, reseau, amorcage, Mac. La queue
     // doit donc etre dans le dernier script distant emis, pas avant.
-    const index = scripts.findIndex((s) => s.includes("Start-Process powershell"));
+    const index = scripts.findIndex((s) => s.includes(DETACHED_MARKER));
     expect(index).toBe(scripts.length - 1);
   });
 

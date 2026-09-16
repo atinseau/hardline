@@ -3,6 +3,7 @@ import { test, expect, describe, mock, beforeEach } from "bun:test";
 /** Aucune etape ne suit : cette restauration est la derniere a passer. */
 const NO_PENDING = { pending: [] as string[] };
 import { CONFIG } from "../fixtures/config";
+import { DETACHED_MARKER, detachedPayload } from "../fixtures/detached";
 import type { WindowsNetworkState } from "../../src/steps/network-windows";
 
 let remoteState: unknown[];
@@ -74,13 +75,11 @@ function inlineBranch(script: string): string {
   return script.slice(branche + "} else {".length);
 }
 
-/** La ligne du processus detache, seule ligne ou les $ doivent etre echappes. */
+/** La charge confiee au planificateur, decodee. */
 function detachedLine(script: string): string {
-  const line = script
-    .split("\n")
-    .find((candidate) => candidate.includes("Start-Process powershell"));
-  expect(line).toBeDefined();
-  return line as string;
+  const payload = detachedPayload(script);
+  expect(payload).not.toBe("");
+  return payload;
 }
 
 describe("inspect", () => {
@@ -439,7 +438,9 @@ describe("restore, ordre des operations", () => {
     await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING);
     const line = detachedLine(scriptOf(0));
 
-    expect(line).toContain("Start-Sleep -Seconds 2");
+    // Le delai ne vit plus dans la charge : c'est le declenchement de la tache
+    // qui laisse la session se refermer.
+    expect(scriptOf(0)).toContain("AddSeconds(5)");
     expect(line.indexOf("Remove-NetIPAddress")).toBeGreaterThan(0);
     expect(line.indexOf("-NetworkCategory 'Public'")).toBeGreaterThan(
       line.indexOf("Remove-NetIPAddress"),
@@ -458,13 +459,14 @@ describe("restore, ordre des operations", () => {
     expect(sshLocalIsAssignedBeforeUse(script)).toBe(true);
   });
 
-  test("echappe les $ confies au processus detache", async () => {
-    // Sans le backtick, le shell appelant developpe $false en chaine vide et
-    // Remove-NetIPAddress reclame une confirmation que personne ne donnera.
+  test("transmet les $ au planificateur sans les echapper", async () => {
+    // La charge part encodee : aucun shell ne la relit entre ici et son
+    // execution, donc $false n'a plus a etre protege d'un backtick qui, lui,
+    // arriverait tel quel dans la commande.
     const line = detachedLine((await windowsNetworkStep.restore(CONFIG, SANS_NOTRE_ADRESSE, NO_PENDING), scriptOf(0)));
 
-    expect(line).toContain("-Confirm:`$false");
-    expect(line).not.toContain("-Confirm:$false");
+    expect(line).toContain("-Confirm:$false");
+    expect(line).not.toContain("-Confirm:`$false");
   });
 
   test("n'echappe pas les $ de la branche executee en ligne", async () => {
@@ -483,7 +485,7 @@ describe("restore, ordre des operations", () => {
       "Remove-NetIPAddress -InterfaceAlias 'Ethernet' -IPAddress '10.10.10.1'",
     );
     expect(inline).toContain("-NetworkCategory 'Public'");
-    expect(inline).not.toContain("Start-Process");
+    expect(inline).not.toContain(DETACHED_MARKER);
   });
 
   test("n'ecrit aucune instruction de profil pour DomainAuthenticated", async () => {
@@ -528,7 +530,7 @@ describe("restore, ordre des operations", () => {
     }, NO_PENDING);
     const script = scriptOf(0);
 
-    expect(script).not.toContain("Start-Process");
+    expect(script).not.toContain(DETACHED_MARKER);
     expect(script).not.toContain("$sshLocal");
     expect(script).not.toContain("Get-NetTCPConnection");
     // Et la moitie non coupante est bien emise : l'etape a fait son travail.
