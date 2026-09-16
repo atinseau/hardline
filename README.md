@@ -79,6 +79,8 @@ sudo install -m 0755 dist/hardline /usr/local/bin/hardline
 
 The build compiles the macOS display probe and produces the executable at `dist/hardline`. Although the CLI is installed globally, its Target Profile, restoration manifest and SSH identity remain scoped to the macOS user who runs it.
 
+Once installed, `hardline update` replaces that executable in place with the latest release. It runs the downloaded binary and checks the version it reports before overwriting anything, so a bad download leaves the working CLI untouched. Installed under `/usr/local/bin`, which belongs to root, it asks for `sudo hardline update`.
+
 For development, run the TypeScript entry point directly:
 
 ```bash
@@ -238,6 +240,7 @@ The Target Profile is generated, atomically replaced, owner-readable, and tamper
 | `hardline down` | Validate or repair the link, then request a forced Windows shutdown |
 | `hardline doctor` | Diagnose the link and managed services |
 | `hardline uninstall` | Restore recorded state and retire the pair |
+| `hardline update` | Replace the installed executable with the latest release |
 
 Use `hardline <command> --help` for command-specific flags.
 

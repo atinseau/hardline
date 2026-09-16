@@ -1,11 +1,11 @@
 import { test, expect } from "bun:test";
 import { buildProgram, parseRunLink, VERSION } from "../src/cli";
 
-test("the program exposes all five commands", () => {
+test("the program exposes all six commands", () => {
   const names = buildProgram()
     .commands.map((c) => c.name())
     .sort();
-  expect(names).toEqual(["doctor", "down", "install", "uninstall", "up"]);
+  expect(names).toEqual(["doctor", "down", "install", "uninstall", "up", "update"]);
 });
 
 test("the program has a semantic version", () => {
