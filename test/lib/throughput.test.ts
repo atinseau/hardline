@@ -121,29 +121,36 @@ describe("parseIperf3Json", () => {
 });
 
 describe("measureThroughput", () => {
+  /**
+   * Un iperf3 local de fiction. Sans lui, ces tests exigeaient qu'iperf3 soit
+   * installe sur la machine qui les execute : ils passaient sur le poste de
+   * developpement et n'y verifiaient rien ailleurs.
+   */
+  let served = 0;
+  const present = {
+    path: () => "/usr/local/bin/iperf3",
+    serve: () => { served += 1; return { kill: () => {} }; },
+  };
+  const absent = { ...present, path: () => null };
+
   test("rapporte l'absence d'iperf3 sur le Mac sans interroger le PC", async () => {
-    // Bun.which lit process.env.PATH : le vider simule une machine sans
-    // iperf3 installe, sans toucher au reseau.
-    const originalPath = process.env.PATH;
-    process.env.PATH = "";
-    try {
-      const result = await measureThroughput(CONFIG);
-      expect(result.unavailable).toBe(true);
-      expect(result.mbitsPerSecond).toBeNull();
-      expect(result.error).toContain("Mac");
-    } finally {
-      process.env.PATH = originalPath;
-    }
+    const result = await measureThroughput(CONFIG, absent);
+    expect(result.unavailable).toBe(true);
+    expect(result.mbitsPerSecond).toBeNull();
+    expect(result.error).toContain("Mac");
   });
 
   test("rapporte l'absence d'iperf3 sur le PC sans la confondre avec une panne", async () => {
     // Get-Command reussit (exitCode 0) mais ne trouve rien : c'est une
     // absence, pas un SSH mort.
     presenceResult = { exitCode: 0, stdout: "", stderr: "" };
-    const result = await measureThroughput(CONFIG);
+    const before = served;
+    const result = await measureThroughput(CONFIG, present);
     expect(result.unavailable).toBe(true);
     expect(result.mbitsPerSecond).toBeNull();
     expect(result.error).toContain("PC");
+    // Aucun serveur local n'est ouvert pour un PC qui n'a pas de client.
+    expect(served).toBe(before);
   });
 
   test("distingue un SSH mort pendant la verification de presence d'une simple absence", async () => {
@@ -152,22 +159,24 @@ describe("measureThroughput", () => {
       stdout: "",
       stderr: "ssh: connect to host 10.10.10.1 port 22: Operation timed out",
     };
-    const result = await measureThroughput(CONFIG);
+    const result = await measureThroughput(CONFIG, present);
     expect(result.unavailable).toBe(false);
     expect(result.mbitsPerSecond).toBeNull();
     expect(result.error).not.toBeNull();
   });
 
   test("mesure avec succes quand iperf3 est present des deux cotes", async () => {
-    const result = await measureThroughput(CONFIG);
+    const before = served;
+    const result = await measureThroughput(CONFIG, present);
     expect(result.unavailable).toBe(false);
     expect(result.error).toBeNull();
     expect(result.mbitsPerSecond).toBe(946.5);
+    expect(served).toBe(before + 1);
   });
 
   test("rapporte un echec de connexion comme une mesure ratee, pas comme une absence", async () => {
     clientResult = { exitCode: 1, stdout: IPERF3_KO, stderr: "" };
-    const result = await measureThroughput(CONFIG);
+    const result = await measureThroughput(CONFIG, present);
     expect(result.unavailable).toBe(false);
     expect(result.mbitsPerSecond).toBeNull();
     expect(result.error).toBe("iperf3 reported a measurement failure");
