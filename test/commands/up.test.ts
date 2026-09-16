@@ -810,3 +810,35 @@ describe("upCommand, le spinner ne tourne jamais par-dessus le flux", () => {
     expect(spinnerProgress).toContain("Mount shares");
   });
 });
+
+describe("reveil sur un lien radio", () => {
+  test("le dit tout de suite au lieu d'attendre un paquet magique qui n'arrivera pas", async () => {
+    // Une carte Wi-Fi eteinte n'est plus alimentee : elle ne peut pas recevoir
+    // le paquet. Trois minutes d'attente ne changeraient rien a ce fait.
+    reachable = false;
+    const wireless = {
+      ...CONFIG,
+      linkKind: "shared" as const,
+      windows: { ...CONFIG.windows, wireless: true },
+    };
+
+    await expect(runUp(wireless)).rejects.toThrow("Wake-on-LAN cannot reach it");
+    expect(sendMagicPacket).not.toHaveBeenCalled();
+    expect(waitForRemote).not.toHaveBeenCalled();
+    reachable = true;
+  });
+
+  test("un PC relie par cable sur ce meme reseau partage se reveille normalement", async () => {
+    reachable = false;
+    wakeSucceeds = true;
+    const wired = {
+      ...CONFIG,
+      linkKind: "shared" as const,
+      windows: { ...CONFIG.windows, wireless: false },
+    };
+
+    await runUp(wired);
+    expect(sendMagicPacket).toHaveBeenCalled();
+    reachable = true;
+  });
+});

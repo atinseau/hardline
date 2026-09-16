@@ -286,3 +286,85 @@ test("default durable state is kept under the supplied home directory", () => {
     manifest: "/Users/operator/.config/hardline/manifest.json",
   });
 });
+
+const sharedProfile: TargetProfile = {
+  ...profile,
+  linkKind: "shared",
+  mac: {
+    ...profile.mac,
+    ethernet: { ...profile.mac.ethernet, interfaceId: "en0", serviceName: "Wi-Fi" },
+  },
+  directLink: {
+    subnet: "192.168.1.0/24",
+    macAddress: "192.168.1.20",
+    windowsAddress: "192.168.1.30",
+    prefixLength: 24,
+  },
+};
+
+test("a shared link is persisted with its observed prefix and no pending migration", async () => {
+  directory = await mkdtemp(join(tmpdir(), "hardline-target-profile-"));
+  const path = join(directory, "target-profile.json");
+
+  await writeTargetProfile(path, sharedProfile);
+  expect(await readTargetProfile(path)).toEqual(sharedProfile);
+
+  // Hardline ne possede pas cet adressage : il n'a aucune migration a y mener.
+  await writeSignedProfile(path, {
+    ...sharedProfile,
+    pendingMigration: {
+      operation: "migration",
+      oldLink: sharedProfile.directLink,
+      proposedLink: sharedProfile.directLink,
+    },
+  });
+  await expect(readTargetProfile(path)).rejects.toBeInstanceOf(CorruptTargetProfileError);
+});
+
+test("a shared link must hold both machines inside the subnet it names", async () => {
+  directory = await mkdtemp(join(tmpdir(), "hardline-target-profile-"));
+  const path = join(directory, "target-profile.json");
+
+  for (const directLink of [
+    { subnet: "192.168.1.0/24", macAddress: "192.168.1.20", windowsAddress: "10.0.0.30", prefixLength: 24 },
+    { subnet: "192.168.1.0/24", macAddress: "192.168.1.20", windowsAddress: "192.168.1.30", prefixLength: 16 },
+    { subnet: "192.168.1.0/24", macAddress: "192.168.1.20", windowsAddress: "192.168.1.20", prefixLength: 24 },
+  ]) {
+    await writeSignedProfile(path, { ...sharedProfile, directLink });
+    await expect(readTargetProfile(path)).rejects.toBeInstanceOf(CorruptTargetProfileError);
+  }
+
+  // Et un lien direct conserve exactement ses exigences de /30.
+  await writeSignedProfile(path, { ...profile, directLink: sharedProfile.directLink });
+  await expect(readTargetProfile(path)).rejects.toBeInstanceOf(CorruptTargetProfileError);
+});
+
+test("a dormant dedicated link is persisted only while a shared one holds its place", async () => {
+  directory = await mkdtemp(join(tmpdir(), "hardline-target-profile-"));
+  const path = join(directory, "target-profile.json");
+  const dormant = {
+    mac: profile.mac.ethernet,
+    windows: profile.windows.ethernet,
+    directLink: profile.directLink,
+  };
+  const onShared: TargetProfile = {
+    ...sharedProfile,
+    dormantLink: dormant,
+  };
+
+  await writeTargetProfile(path, onShared);
+  expect(await readTargetProfile(path)).toEqual(onShared);
+
+  // Sur un lien dedie, le lien courant EST le lien dedie : en memoriser un
+  // second decrirait deux fois la meme chose, ou deux fois autre chose.
+  await writeSignedProfile(path, { ...profile, dormantLink: dormant });
+  await expect(readTargetProfile(path)).rejects.toBeInstanceOf(CorruptTargetProfileError);
+
+  // Et ce qui dort est toujours un /30 pose par hardline, jamais un reseau
+  // partage : personne d'autre que lui ne sait le decrire.
+  await writeSignedProfile(path, {
+    ...onShared,
+    dormantLink: { ...dormant, directLink: sharedProfile.directLink },
+  });
+  await expect(readTargetProfile(path)).rejects.toBeInstanceOf(CorruptTargetProfileError);
+});

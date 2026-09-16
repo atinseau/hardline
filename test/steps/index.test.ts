@@ -5,7 +5,9 @@ import {
   LOCAL_STEPS,
   REMOTE_STEPS,
   WINDOWS_STEPS,
+  linkSteps,
 } from "../../src/steps";
+import type { Config } from "../../src/config";
 
 const names = (steps: { name: string }[]) => steps.map((s) => s.name);
 
@@ -156,5 +158,32 @@ describe("decoupage des etapes", () => {
     // « du PC » une restauration qui ne touche que le Mac.
     expect(names(LOCAL_STEPS)).toContain("smb-mountpoints");
     expect(names(WINDOWS_STEPS)).not.toContain("smb-mountpoints");
+  });
+});
+
+describe("lien partage", () => {
+  const shared = { linkKind: "shared" } as Config;
+  const direct = { linkKind: "direct" } as Config;
+
+  test("sur un lien partage, hardline n'applique aucune etape d'adressage", () => {
+    // Elles ne sont pas neutralisees, elles sont absentes : rien n'entre au
+    // manifeste, donc l'uninstall n'a rien a rendre d'un adressage qui ne lui
+    // a jamais appartenu.
+    expect(names(linkSteps(ALL_STEPS, shared))).toEqual([
+      "moonlight-install",
+      "smb-credentials",
+      "smb-mountpoints",
+      "bootstrap-windows",
+      "windows-fast-startup",
+      "apollo-install",
+      "apollo-config",
+      "apollo-service",
+      "smb-shares",
+      "pairing",
+    ]);
+  });
+
+  test("sur un lien direct, la liste est rendue intacte", () => {
+    expect(linkSteps(ALL_STEPS, direct)).toBe(ALL_STEPS);
   });
 });

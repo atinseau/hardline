@@ -6,10 +6,24 @@ export type StreamOptions = {
   resolution: { width: number; height: number } | null;
   fps: number | null;
   monitor?: boolean;
+  /** Debit demande en kbit/s. Absent, il se deduit de la nature du lien. */
+  bitrateKbps?: number;
 };
 
 /** Plafond experimental accepte par Moonlight 6.1 avec Sunshine/Apollo. */
 const DESKTOP_BITRATE_KBPS = 500_000;
+
+/**
+ * Ce qu'un lien partage peut porter sans ruiner l'image.
+ *
+ * Le plafond ci-dessus est un chiffre de cable dedie a un gigabit : personne
+ * d'autre ne passe dessus. Sur un reseau partage, le demander revient a
+ * saturer le lien, et Moonlight rend alors une image qui saute au lieu d'une
+ * image nette. 80 Mbit/s tient sur un Wi-Fi 5 GHz correct pour du bureau en
+ * 4:4:4, et `--bitrate` reste la pour le corriger a la hausse comme a la
+ * baisse : aucun chiffre pose ici ne connait la maison de l'utilisateur.
+ */
+const SHARED_BITRATE_KBPS = 80_000;
 
 /** Fonction pure. Compose `moonlight pair <hote> --pin <code>`. */
 export function pairArgs(config: Config, pin: string): string[] {
@@ -75,7 +89,13 @@ export function streamArgs(
     args.push("--fps", String(fps));
   }
 
-  args.push("--bitrate", String(DESKTOP_BITRATE_KBPS));
+  args.push(
+    "--bitrate",
+    String(
+      options.bitrateKbps ??
+        (config.linkKind === "shared" ? SHARED_BITRATE_KBPS : DESKTOP_BITRATE_KBPS),
+    ),
+  );
 
   return args;
 }

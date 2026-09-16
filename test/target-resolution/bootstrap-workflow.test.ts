@@ -29,6 +29,7 @@ const mac: MacBootstrapObservations = {
     linkState: "up",
     inUse: false,
     hasDefaultRoute: false,
+    ipv4Addresses: [],
   }],
   routes: ["192.168.1.0/24"],
   addresses: ["192.168.1.20/24"],
@@ -141,7 +142,7 @@ function harness(overrides: Partial<BootstrapWorkflowDependencies> = {}) {
     now: () => 1_000,
     deadline: 10_000,
     reportCommand: async (command) => { log.push(`report:${command}`); },
-    chooseEthernetCandidate: async (_machine, candidates) => candidates[0]!.stableId,
+    ask: async () => 0,
     ...overrides,
   };
   return {
@@ -213,7 +214,9 @@ describe("BootstrapWorkflow", () => {
       planReturned = true;
       return plan;
     });
-    await Promise.resolve();
+    // La selection du lien traverse plusieurs microtaches avant la publication :
+    // on laisse la file se vider plutot que d'en compter les tours.
+    await Bun.sleep(0);
 
     expect(writeStarted).toBe(true);
     expect(planReturned).toBe(false);

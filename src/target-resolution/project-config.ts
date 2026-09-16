@@ -14,18 +14,21 @@ export function projectTargetConfig(profile: TargetProfile): Config {
   if (!user || !smbUser) {
     throw new Error("The Target Profile is missing a required Windows account.");
   }
+  const prefixLength = profile.directLink.prefixLength ?? 30;
 
   return {
+    linkKind: profile.linkKind ?? "direct",
     mac: {
       serviceName: profile.mac.ethernet.serviceName,
       ip: profile.directLink.macAddress,
-      subnetMask: "255.255.255.252",
+      subnetMask: subnetMask(prefixLength),
     },
     windows: {
       interfaceAlias: profile.windows.ethernet.interfaceAlias,
       ip: profile.directLink.windowsAddress,
-      prefixLength: 30,
+      prefixLength,
       macAddress: profile.windows.ethernet.macAddress,
+      wireless: profile.windows.ethernet.wireless ?? false,
     },
     ssh: {
       host: profile.directLink.windowsAddress,
@@ -53,4 +56,10 @@ export function projectTargetConfig(profile: TargetProfile): Config {
       shares: [],
     },
   };
+}
+
+/** Le masque pointe est ce qu'attend networksetup ; le prefixe vient du profil. */
+export function subnetMask(prefixLength: number): string {
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return [24, 16, 8, 0].map((shift) => (mask >>> shift) & 0xff).join(".");
 }

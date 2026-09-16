@@ -902,3 +902,42 @@ describe("restore, ordre des operations", () => {
     );
   });
 });
+
+describe("l'adresse retiree vient du releve, pas du lien courant", () => {
+  test("un lien adopte apres l'installation ne detourne pas la restauration", async () => {
+    // Apres un re-appariement, la configuration nomme l'interface et l'adresse
+    // du reseau partage. L'amorcage, lui, avait pose 10.10.10.1 sur 'Ethernet'.
+    // Retirer l'adresse du lien COURANT ne retirerait rien, et laisserait celle
+    // de l'amorcage orpheline sur un PC qu'on ne peut plus joindre.
+    await bootstrapWindowsStep.restore(
+      {
+        ...CONFIG,
+        windows: { ...CONFIG.windows, interfaceAlias: "Wi-Fi", ip: "192.168.1.48" },
+      },
+      { capture: capture({}), acknowledged: true },
+      NO_PENDING,
+    );
+
+    const script = scriptOf(0);
+    expect(script).toMatch(/Remove-NetIPAddress[^;]*-IPAddress '10\.10\.10\.1'/);
+    expect(script).not.toContain("192.168.1.48");
+    expect(script).toContain("-InterfaceAlias 'Ethernet'");
+  });
+
+  test("un amorcage qui n'a pose aucune adresse n'en retire aucune", async () => {
+    // C'est le cas du lien partage : le plan n'autorisait aucun adressage.
+    await bootstrapWindowsStep.restore(
+      CONFIG,
+      {
+        capture: capture({
+          address: null,
+          network: { ...CAPTURE.network, addressingChanged: false },
+        }),
+        acknowledged: true,
+      },
+      NO_PENDING,
+    );
+
+    expect(scriptOf(0)).not.toContain("Remove-NetIPAddress");
+  });
+});

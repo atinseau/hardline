@@ -22,14 +22,21 @@ export type WindowsObservations = {
 export type MutationPlan = {
   readonly directLink: {
     readonly interfaceAlias: string;
-    readonly address: string;
+    /** null quand l'adressage du lien existait avant hardline et lui survivra. */
+    readonly address: string | null;
     readonly prefixLength: number;
-    readonly networkCategory: "Private";
+    /** null quand la categorie reseau appartient a l'utilisateur. */
+    readonly networkCategory: "Private" | null;
   };
   readonly ssh: {
     readonly installServer: boolean;
     readonly startService: boolean;
     readonly openFirewall: boolean;
+    /**
+     * Sous-reseau autorise a joindre sshd quand la regle ne peut pas s'appuyer
+     * sur le profil Private. null vaut "regle limitee au profil Private".
+     */
+    readonly firewallRemoteAddress: string | null;
     readonly administratorPublicKey: string;
   };
 };

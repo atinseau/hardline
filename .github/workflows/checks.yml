@@ -1,0 +1,22 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    # Le binaire livre est un executable Apple Silicon, et la sonde d'affichage
+    # se compile avec swiftc : la verification doit tourner la ou elle est
+    # produite, sinon elle ne verifie pas le livrable.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun test --isolate
+      - run: bun run build

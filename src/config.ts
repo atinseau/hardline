@@ -1,4 +1,5 @@
 import type { SSHTarget } from "./lib/ssh";
+import type { LinkKind } from "./target-resolution/types";
 
 export type ApolloConfig = {
   /** Version visee. Sert au controle d'idempotence et au message d'ecart. */
@@ -53,6 +54,12 @@ export type SMBConfig = {
 };
 
 export type Config = {
+  /**
+   * `direct` : hardline possede l'adressage du lien et le pose sur les deux
+   * machines. `shared` : le lien preexistait, hardline l'observe et n'y touche
+   * pas — les etapes qui adressent les interfaces ne s'executent alors pas.
+   */
+  linkKind: LinkKind;
   mac: { serviceName: string; ip: string; subnetMask: string };
   windows: {
     interfaceAlias: string;
@@ -60,6 +67,8 @@ export type Config = {
     prefixLength: number;
     /** Adresse matérielle persistée, disponible même quand ARP ne connaît plus le PC éteint. */
     macAddress: string;
+    /** Vrai quand le PC est relié par radio : aucun paquet magique ne l'atteint. */
+    wireless: boolean;
   };
   ssh: SSHTarget;
   bootstrapPort: number;

@@ -45,7 +45,7 @@ const RESTORE = (names: string[]) =>
 
 export const smbSharesStep: Step<ShareState[]> = {
   name: "smb-shares",
-  label: "Partages des disques D: et E: (PC)",
+  label: "Partages de disques Windows (PC)",
 
   async inspect(config: Config) {
     const managed = managedShares(config);

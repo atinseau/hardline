@@ -20,6 +20,8 @@ export type NetworkAdapterObservation = {
   linkState: "up" | "down";
   inUse: boolean;
   hasDefaultRoute: boolean;
+  /** Adresses IPv4 portees par l'adaptateur, au format "adresse/prefixe". */
+  ipv4Addresses: readonly string[];
 };
 
 export function canonicalEthernetHardwareId(macAddress: string): string {
@@ -186,23 +188,41 @@ export type CandidateEvidence = NetworkAdapterObservation & {
   exclusions: CandidateExclusion[];
 };
 
-function candidateExclusions(adapter: NetworkAdapterObservation): CandidateExclusion[] {
+/**
+ * Ce qu'exige un candidat. Les valeurs par defaut decrivent le lien direct :
+ * un adaptateur Ethernet physique, branche, que personne n'utilise. Les
+ * relacher sert au lien partage, ou l'adaptateur est justement celui qui porte
+ * deja le reseau de la maison.
+ */
+export type CandidateRequirements = {
+  readonly transports?: readonly NetworkTransport[];
+  /** Faux accepte un adaptateur deja adresse ou portant la route par defaut. */
+  readonly requireIdle?: boolean;
+};
+
+function candidateExclusions(
+  adapter: NetworkAdapterObservation,
+  requirements: CandidateRequirements,
+): CandidateExclusion[] {
+  const transports = requirements.transports ?? ["ethernet"];
+  const requireIdle = requirements.requireIdle ?? true;
   const exclusions: CandidateExclusion[] = [];
   if (!adapter.physical) exclusions.push("nonphysical");
-  if (adapter.transport !== "ethernet") exclusions.push("non-ethernet");
+  if (!transports.includes(adapter.transport)) exclusions.push("non-ethernet");
   if (adapter.virtual) exclusions.push("virtual");
   if (adapter.linkState !== "up") exclusions.push("disconnected");
-  if (adapter.inUse) exclusions.push("in-use");
-  if (adapter.hasDefaultRoute) exclusions.push("default-route");
+  if (requireIdle && adapter.inUse) exclusions.push("in-use");
+  if (requireIdle && adapter.hasDefaultRoute) exclusions.push("default-route");
   return exclusions;
 }
 
 export function selectPhysicalEthernetCandidate(
   observations: readonly NetworkAdapterObservation[],
+  requirements: CandidateRequirements = {},
 ): CandidateSelection {
   const evidence = observations.map((adapter) => ({
     ...adapter,
-    exclusions: candidateExclusions(adapter),
+    exclusions: candidateExclusions(adapter, requirements),
   }));
   const candidates = evidence
     .filter(({ exclusions }) => exclusions.length === 0)
@@ -213,4 +233,71 @@ export function selectPhysicalEthernetCandidate(
   }
   if (candidates.length > 1) return { kind: "ambiguous", candidates };
   return { kind: "not-found", evidence };
+}
+
+/**
+ * Un lien partage ne s'alloue pas, il se CONSTATE : les deux machines portent
+ * deja, sur un adaptateur chacune, deux adresses du meme sous-reseau. Chaque
+ * appariement trouve est une preuve qu'un chemin existe entre elles, sans
+ * qu'aucune ligne de configuration n'ait ete ecrite nulle part.
+ */
+export type SharedLinkCandidate = {
+  readonly mac: NetworkAdapterObservation;
+  readonly windows: NetworkAdapterObservation;
+  readonly subnet: string;
+  readonly prefixLength: number;
+  readonly macAddress: string;
+  readonly windowsAddress: string;
+};
+
+function routableAddresses(
+  adapter: NetworkAdapterObservation,
+): { address: string; prefixLength: number; network: string }[] {
+  if (!adapter.physical || adapter.virtual || adapter.linkState !== "up") return [];
+  const routable = [];
+  for (const entry of adapter.ipv4Addresses) {
+    const parsed = parseIpv4Cidr(entry);
+    if (parsed.kind === "invalid") continue;
+    const address = entry.split("/")[0]!;
+    // Une adresse d'auto-configuration ne prouve aucun reseau commun, et un
+    // /31 ou /32 ne contient pas deux hotes.
+    if (address.startsWith("169.254.") || address.startsWith("127.")) continue;
+    if (parsed.prefixLength > 30 || parsed.prefixLength < 1) continue;
+    routable.push({ address, prefixLength: parsed.prefixLength, network: parsed.cidr });
+  }
+  return routable;
+}
+
+export function sharedLinkCandidates(
+  macAdapters: readonly NetworkAdapterObservation[],
+  windowsAdapters: readonly NetworkAdapterObservation[],
+): SharedLinkCandidate[] {
+  const candidates: SharedLinkCandidate[] = [];
+  for (const mac of macAdapters) {
+    for (const macEntry of routableAddresses(mac)) {
+      for (const windows of windowsAdapters) {
+        for (const windowsEntry of routableAddresses(windows)) {
+          if (
+            macEntry.prefixLength !== windowsEntry.prefixLength ||
+            macEntry.network !== windowsEntry.network ||
+            macEntry.address === windowsEntry.address
+          ) continue;
+          candidates.push({
+            mac,
+            windows,
+            subnet: macEntry.network,
+            prefixLength: macEntry.prefixLength,
+            macAddress: macEntry.address,
+            windowsAddress: windowsEntry.address,
+          });
+        }
+      }
+    }
+  }
+  // A egalite de preuve, le cable passe devant la radio : c'est le lien que le
+  // projet existe pour preferer.
+  const wired = (candidate: SharedLinkCandidate) =>
+    (candidate.mac.transport === "ethernet" ? 1 : 0) +
+    (candidate.windows.transport === "ethernet" ? 1 : 0);
+  return candidates.sort((left, right) => wired(right) - wired(left));
 }

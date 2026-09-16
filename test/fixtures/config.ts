@@ -6,6 +6,7 @@ import { INSTALLATION_CATALOG } from "../../src/installation-catalog";
 export type { Config };
 
 export const CONFIG: Config = {
+  linkKind: "direct",
   mac: {
     serviceName: "AX88179A",
     ip: "10.10.10.2",
@@ -16,6 +17,7 @@ export const CONFIG: Config = {
     ip: "10.10.10.1",
     prefixLength: 24,
     macAddress: "E8-9C-25-2A-70-E1",
+    wireless: false,
   },
   ssh: {
     host: "10.10.10.1",

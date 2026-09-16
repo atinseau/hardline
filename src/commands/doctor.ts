@@ -2,7 +2,7 @@ import type { Config } from "../config";
 import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
 import { runCommand } from "../command-run";
 import { englishCheckName, englishStepLabel } from "../command-run/english";
-import { ALL_STEPS } from "../steps";
+import { ALL_STEPS, linkSteps } from "../steps";
 import { pingFrom, type PingStats } from "../lib/shell";
 import { runLocalPreflight, runRemotePreflight, type CheckResult } from "../lib/preflight";
 import { errorMessage } from "../lib/errors";
@@ -150,7 +150,7 @@ export async function runDoctor(
   });
   const steps = await run.phase(fact("inspect-configuration"), async () => {
     const summaries: StepSummary[] = [];
-    for (const step of ALL_STEPS) {
+    for (const step of linkSteps(ALL_STEPS, config)) {
       try {
         const state = await step.inspect(config);
         summaries.push({ name: step.name, conforming: state.conforming, detail: state.detail });

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildProgram, VERSION } from "../src/cli";
+import { buildProgram, parseRunLink, VERSION } from "../src/cli";
 
 test("the program exposes all five commands", () => {
   const names = buildProgram()
@@ -41,6 +41,28 @@ test("verbose is global and accepted before or after a command", () => {
 
 test("all executable help is English", () => {
   const help = buildProgram().helpInformation();
-  expect(help).toContain("Manage a reversible direct Ethernet link");
+  expect(help).toContain("Manage a reversible direct link");
   expect(help).toContain("show completed semantic details");
+});
+
+test("--link is global and accepted before or after a command", () => {
+  for (const args of [["--link", "direct", "up"], ["up", "--link", "direct"]]) {
+    const program = buildProgram();
+    expect(program.parseOptions(args).unknown).toEqual([]);
+    expect(program.opts().link).toBe("direct");
+  }
+});
+
+test("without the flag every command runs on the best link that answers", () => {
+  const program = buildProgram();
+  program.parseOptions(["up"]);
+  expect(parseRunLink(program.opts().link)).toBe("auto");
+});
+
+test("an unknown link is refused before anything is observed", () => {
+  expect(() => parseRunLink("wifi")).toThrow("Invalid --link");
+  expect(parseRunLink(undefined)).toBe("auto");
+  for (const kind of ["auto", "direct", "shared"] as const) {
+    expect(parseRunLink(kind)).toBe(kind);
+  }
 });

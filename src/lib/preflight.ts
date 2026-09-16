@@ -53,7 +53,16 @@ export function missingPublicKeyMessage(config: Config): string {
 /** Nom de la verification de la cle publique, partage avec la commande install. */
 export const PUBLIC_KEY_CHECK = "cle-publique";
 
-const EXPECTED_BUILD = 26200;
+/**
+ * Windows 11 commence a la construction 22000. En dessous, ce n'est pas un
+ * Windows plus ancien qu'on n'a pas teste : c'est un Windows 10, ou la capacite
+ * OpenSSH, les profils reseau et Apollo ne se comportent pas pareil.
+ *
+ * La verification reste non bloquante : elle renseigne, elle n'interdit pas.
+ * Une construction exacte serait celle du PC de l'auteur, ce qui refuserait le
+ * diagnostic a tout le monde d'autre.
+ */
+const MINIMUM_BUILD = 22000;
 
 const FACTS = (alias: string) => `
 $os = Get-CimInstance Win32_OperatingSystem
@@ -84,7 +93,7 @@ export async function runLocalPreflight(config: Config): Promise<CheckResult[]> 
     // bien la sante de la liaison qui est en cause.
     installOnly: false,
     detail: !macService
-      ? `no network service named '${config.mac.serviceName}'. Is the USB adapter disconnected?`
+      ? `no network service named '${config.mac.serviceName}'. Is the adapter disconnected?`
       : macService.enabled
         ? `service '${config.mac.serviceName}' on ${macService.device}`
         : `service '${config.mac.serviceName}' is disabled in Network Settings`,
@@ -156,21 +165,25 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
 
   results.push({
     name: "windows-version",
-    ok: facts.build === EXPECTED_BUILD,
+    ok: facts.build >= MINIMUM_BUILD,
     blocking: false,
     installOnly: false,
     detail: `${facts.caption} build ${facts.build}${
-      facts.build === EXPECTED_BUILD ? "" : ` (expected: ${EXPECTED_BUILD})`
+      facts.build >= MINIMUM_BUILD ? "" : ` (Windows 11 starts at build ${MINIMUM_BUILD})`
     }`,
   });
 
+  // Apollo encode aussi avec AMF et QuickSync. Exiger NVENC refuserait
+  // l'installation a tout PC qui n'est pas celui de l'auteur, pour un reglage
+  // d'encodeur que le serveur choisit lui-meme. La verification dit ce qu'elle
+  // voit et ce qui est eprouve ; elle ne tranche pas a la place du materiel.
   const nvidia = facts.gpus.find((name) => /nvidia/i.test(name));
   results.push({
     name: "gpu",
     ok: Boolean(nvidia),
-    blocking: true,
+    blocking: false,
     installOnly: false,
-    detail: nvidia ?? `no NVIDIA GPU among: ${facts.gpus.join(", ")}`,
+    detail: nvidia ?? `${facts.gpus.join(", ")} (untested: Hardline's rendering defaults are proven on NVIDIA)`,
   });
 
   const linkUp = facts.adapterPresent && facts.adapterStatus === "Up";
@@ -181,7 +194,11 @@ export async function runRemotePreflight(config: Config): Promise<CheckResult[]>
     installOnly: false,
     detail: linkUp
       ? `interface '${config.windows.interfaceAlias}' is active`
-      : `interface '${config.windows.interfaceAlias}' is ${facts.adapterStatus ?? "absent"}. Check the cable.`,
+      : `interface '${config.windows.interfaceAlias}' is ${facts.adapterStatus ?? "absent"}. ${
+          config.linkKind === "shared"
+            ? "Is the PC still on that network?"
+            : "Check the cable."
+        }`,
   });
 
   return results;

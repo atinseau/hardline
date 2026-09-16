@@ -2,7 +2,7 @@ import type { Config } from "../config";
 import type { CommandOutput, CommandResult, CommandRun } from "../command-run";
 import { runCommand } from "../command-run";
 import { englishCheckName, englishStepLabel } from "../command-run/english";
-import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS } from "../steps";
+import { CAPTURE_STEPS, LOCAL_STEPS, REMOTE_STEPS, linkSteps } from "../steps";
 import { BOOTSTRAP_STEP_NAME } from "../steps/bootstrap-name";
 import { applySteps, type OrchestratorFact } from "../lib/orchestrator";
 import type { Manifest } from "../lib/manifest";
@@ -116,7 +116,7 @@ async function converge(
   config: Config,
   manifestPath: string,
 ): Promise<Manifest> {
-  return await applySteps(steps, config, manifestPath, reportStep(run));
+  return await applySteps(linkSteps(steps, config), config, manifestPath, reportStep(run));
 }
 
 async function replaceForeignApollo(

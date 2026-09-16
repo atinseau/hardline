@@ -257,6 +257,7 @@ function normalizeAdapter(
     linkState: service?.enabled === false ? "down" : networkInterface.linkState,
     inUse: networkInterface.addresses.some((address) => !address.startsWith("169.254.")),
     hasDefaultRoute: defaultRouteInterfaces.has(networkInterface.interfaceId),
+    ipv4Addresses: networkInterface.addresses,
   };
 }
 

@@ -19,6 +19,7 @@ export type UpCliOptions = {
   resolution?: string | null;
   fps?: string | null;
   monitor?: boolean;
+  bitrate?: string | null;
 };
 
 type UpFact = {
@@ -65,12 +66,21 @@ export function parseFps(value: string): number {
   return fps;
 }
 
+export function parseBitrate(value: string): number {
+  const bitrate = Number(value);
+  if (!Number.isInteger(bitrate) || bitrate <= 0) {
+    throw new Error(`Invalid bitrate: expected a positive integer in kbit/s (${value})`);
+  }
+  return bitrate;
+}
+
 export function buildStreamOptions(cli: UpCliOptions): StreamOptions {
   return {
     fullscreen: cli.fullscreen,
     resolution: cli.resolution ? parseResolution(cli.resolution) : null,
     fps: cli.fps ? parseFps(cli.fps) : null,
     ...(cli.monitor ? { monitor: true } : {}),
+    ...(cli.bitrate ? { bitrateKbps: parseBitrate(cli.bitrate) } : {}),
   };
 }
 
@@ -125,6 +135,14 @@ async function pcReachable(config: Config): Promise<boolean> {
 }
 
 async function wakePC(config: Config): Promise<void> {
+  // Un paquet magique ne traverse pas la radio depuis une machine eteinte : la
+  // carte Wi-Fi n'est plus alimentee. Attendre trois minutes ne le rendrait pas
+  // vrai ; le dire tout de suite laisse l'operateur agir.
+  if (config.windows.wireless) {
+    throw new Error(
+      "The PC is not answering, and it is linked over Wi-Fi: Wake-on-LAN cannot reach it. Turn it on, or wire it to this network to wake it remotely.",
+    );
+  }
   const broadcast = broadcastAddress(config.mac.ip, config.mac.subnetMask);
   const wake = () => sendMagicPacket(config.windows.macAddress, broadcast);
   await wake();

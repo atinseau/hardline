@@ -10,7 +10,7 @@ const STEP_LABELS: Record<string, string> = {
   "apollo-install": "Apollo server installed (PC)",
   "apollo-config": "Apollo configuration and credentials (PC)",
   "apollo-service": "Apollo service at startup (PC)",
-  "smb-shares": "D: and E: drive shares (PC)",
+  "smb-shares": "Windows drive shares (PC)",
   pairing: "Mac paired with server (Mac)",
 };
 

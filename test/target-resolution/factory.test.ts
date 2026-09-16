@@ -77,7 +77,7 @@ function createResolution(profilePath: string, manifestPath: string) {
   return createTargetResolution({
     paths: { profile: profilePath, manifest: manifestPath },
     reportBootstrapCommand() {},
-    chooseEthernetCandidate: (_machine, candidates) => candidates[0]!.stableId,
+    ask: () => 0,
   });
 }
 

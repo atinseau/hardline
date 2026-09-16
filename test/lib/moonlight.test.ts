@@ -12,8 +12,9 @@ import {
 } from "../../src/lib/moonlight";
 
 const CONFIG: Config = {
+  linkKind: "direct",
   mac: { serviceName: "AX88179A", ip: "10.10.10.2", subnetMask: "255.255.255.0" },
-  windows: { interfaceAlias: "Ethernet", ip: "10.10.10.1", prefixLength: 24, macAddress: "E8-9C-25-2A-70-E1" },
+  windows: { interfaceAlias: "Ethernet", ip: "10.10.10.1", prefixLength: 24, macAddress: "E8-9C-25-2A-70-E1", wireless: false },
   ssh: { host: "10.10.10.1", user: "arthur", identityFile: "/dev/null", connectTimeoutSec: 8 },
   bootstrapPort: 8080,
   apollo: {
@@ -295,4 +296,20 @@ test("streamArgs demande le 4:4:4, pour que le texte reste net", () => {
   const args = streamArgs(CONFIG, null, { fullscreen: true, resolution: null, fps: null });
   expect(args).toContain("--yuv444");
   expect(args).not.toContain("--no-yuv444");
+});
+
+test("un lien partage ne recoit pas le debit d'un cable dedie, et reste corrigeable", () => {
+  // 500 Mbit/s est un chiffre de gigabit dedie : le demander sur un reseau
+  // partage sature le lien au lieu de l'exploiter.
+  const shared = { ...CONFIG, linkKind: "shared" as const };
+  const args = streamArgs(shared, null, { fullscreen: false, resolution: null, fps: null });
+  expect(args.slice(args.indexOf("--bitrate"))).toEqual(["--bitrate", "80000"]);
+
+  const overridden = streamArgs(shared, null, {
+    fullscreen: false,
+    resolution: null,
+    fps: null,
+    bitrateKbps: 120_000,
+  });
+  expect(overridden.slice(overridden.indexOf("--bitrate"))).toEqual(["--bitrate", "120000"]);
 });

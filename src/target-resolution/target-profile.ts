@@ -56,7 +56,7 @@ const profileKeys = [
   "installationCatalogVersion",
 ] as const;
 
-const profileKeysWithPendingMigration = [...profileKeys, "pendingMigration"] as const;
+const optionalProfileKeys = ["pendingMigration", "linkKind", "dormantLink"] as const;
 const MAC_ADDRESS =
   /^(?:(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}|(?:[0-9a-fA-F]{2}-){5}[0-9a-fA-F]{2})$/;
 const STABLE_ID = /^[A-Za-z0-9{][A-Za-z0-9._:{}-]{0,127}$/;
@@ -65,10 +65,17 @@ const SSH_ALGORITHM =
 const SSH_PUBLIC_KEY =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+function exactRecord(
+  value: unknown,
+  keys: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const actual = Object.keys(value);
-  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+  return (
+    keys.every((key) => actual.includes(key)) &&
+    actual.every((key) => keys.includes(key) || optional.includes(key))
+  );
 }
 
 function nonEmpty(value: unknown): value is string {
@@ -95,7 +102,8 @@ function macEthernet(value: unknown): boolean {
 
 function windowsEthernet(value: unknown): boolean {
   return (
-    exactRecord(value, ["hardwareId", "macAddress", "interfaceAlias"]) &&
+    exactRecord(value, ["hardwareId", "macAddress", "interfaceAlias"], ["wireless"]) &&
+    (value["wireless"] === undefined || typeof value["wireless"] === "boolean") &&
     typeof value["hardwareId"] === "string" &&
     STABLE_ID.test(value["hardwareId"]) &&
     typeof value["macAddress"] === "string" &&
@@ -139,6 +147,53 @@ function sameDirectLink(left: DirectLink, right: DirectLink): boolean {
   );
 }
 
+/**
+ * Un lien partage ne decrit pas un /30 alloue par hardline mais le reseau tel
+ * qu'il existe deja. Le prefixe y est donc une observation, pas une constante,
+ * et la seule exigence est la coherence : deux adresses distinctes, toutes
+ * deux dans le sous-reseau annonce.
+ */
+function isSharedLink(value: unknown): value is DirectLink {
+  if (!exactRecord(value, ["subnet", "macAddress", "windowsAddress", "prefixLength"])) {
+    return false;
+  }
+  if (
+    typeof value["subnet"] !== "string" ||
+    typeof value["macAddress"] !== "string" ||
+    typeof value["windowsAddress"] !== "string" ||
+    !Number.isInteger(value["prefixLength"]) ||
+    (value["prefixLength"] as number) < 1 ||
+    (value["prefixLength"] as number) > 32 ||
+    value["macAddress"] === value["windowsAddress"]
+  ) return false;
+  const subnet = parseIpv4Cidr(value["subnet"]);
+  const mac = parseIpv4Cidr(value["macAddress"]);
+  const windows = parseIpv4Cidr(value["windowsAddress"]);
+  return (
+    subnet.kind === "parsed" &&
+    subnet.cidr === value["subnet"] &&
+    subnet.prefixLength === value["prefixLength"] &&
+    mac.kind === "parsed" &&
+    mac.prefixLength === 32 &&
+    windows.kind === "parsed" &&
+    windows.prefixLength === 32 &&
+    containsIpv4(subnet, value["macAddress"]) &&
+    containsIpv4(subnet, value["windowsAddress"])
+  );
+}
+
+function containsIpv4(
+  subnet: Extract<ReturnType<typeof parseIpv4Cidr>, { kind: "parsed" }>,
+  address: string,
+): boolean {
+  const value = ipv4Value(address);
+  return value >= ipv4Value(subnet.firstAddress) && value <= ipv4Value(subnet.lastAddress);
+}
+
+function ipv4Value(address: string): number {
+  return address.split(".").reduce((total, octet) => total * 256 + Number(octet), 0);
+}
+
 function incrementIpv4(address: string, amount: number): string {
   const octets = address.split(".").map(Number);
   const value = octets.reduce((total, octet) => total * 256 + octet, 0) + amount;
@@ -163,12 +218,31 @@ function sshPublicKey(value: unknown, algorithm: unknown): boolean {
 }
 
 function isTargetProfile(value: unknown): value is TargetProfile {
-  if (!exactRecord(value, profileKeys) && !exactRecord(value, profileKeysWithPendingMigration)) {
-    return false;
+  if (!exactRecord(value, profileKeys, optionalProfileKeys)) return false;
+  const linkKind = value["linkKind"] ?? "direct";
+  if (linkKind !== "direct" && linkKind !== "shared") return false;
+  // Un lien partage n'a aucun adressage a migrer : hardline n'en possede aucun.
+  if (linkKind === "shared" && value["pendingMigration"] !== undefined) return false;
+  // Un lien dedie en sommeil n'a de sens que pendant qu'un autre tient la place.
+  // Sur un lien dedie, le lien courant EST le lien dedie : en memoriser un
+  // second serait decrire deux fois la meme chose, ou pire, deux fois autre
+  // chose.
+  const dormant = value["dormantLink"];
+  if (dormant !== undefined) {
+    if (linkKind !== "shared") return false;
+    if (
+      !exactRecord(dormant, ["mac", "windows", "directLink"]) ||
+      !macEthernet(dormant["mac"]) ||
+      !windowsEthernet(dormant["windows"]) ||
+      !isDirectLink(dormant["directLink"])
+    ) return false;
   }
   const mac = value["mac"];
   const windows = value["windows"];
   const directLink = value["directLink"];
+  if (linkKind === "shared") {
+    if (!isSharedLink(directLink)) return false;
+  } else if (!isDirectLink(directLink)) return false;
   const identity = value["hardlineIdentity"];
   const hostKey = value["sshHostKey"];
   const pendingMigration = value["pendingMigration"];
@@ -198,7 +272,6 @@ function isTargetProfile(value: unknown): value is TargetProfile {
     nonEmpty(windows["administrator"]) &&
     nonEmpty(windows["smbUser"]) &&
     windowsEthernet(windows["ethernet"]) &&
-    isDirectLink(directLink) &&
     (pendingMigration === undefined ||
       (exactRecord(pendingMigration, ["operation", "oldLink", "proposedLink"]) &&
         (pendingMigration["operation"] === "initial-link" ||
