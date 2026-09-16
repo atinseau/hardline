@@ -4,8 +4,7 @@ import {
   containsHost,
   hostKeys,
   hostIndex,
-  forgetHostCommands,
-  forgetHostArgs,
+  rewriteWithoutHost,
   forgetHostAtIndex,
   forgetHostFromExport,
 } from "../../src/lib/moonlight-plist";
@@ -91,39 +90,41 @@ describe("hostIndex", () => {
   });
 });
 
-describe("forgetHostCommands", () => {
-  test("supprime l'entree visee, y compris ses donnees binaires", () => {
-    const commands = forgetHostCommands(EXPORT, 1);
-    expect(commands).toContain("Delete :hosts.1.hostname");
-    expect(commands).toContain("Delete :hosts.1.srvcert");
-  });
-
-  test("renumerote ce qui suit, sans quoi Qt cesserait de voir la fin", () => {
-    // Qt lit de 1 a hosts.size : un trou au milieu cache tout ce qui suit.
-    const commands = forgetHostCommands(EXPORT, 1);
-    expect(commands).toContain("Rename :hosts.2.localaddress :hosts.1.localaddress");
-    expect(commands).toContain("Rename :hosts.3.localaddress :hosts.2.localaddress");
-    expect(commands.at(-1)).toBe("Set :hosts.size 2");
-  });
-
-  test("retirer la derniere entree ne renomme rien", () => {
-    const commands = forgetHostCommands(EXPORT, 3);
-    expect(commands.filter((c) => c.startsWith("Rename"))).toHaveLength(0);
-    expect(commands.at(-1)).toBe("Set :hosts.size 2");
-  });
-});
-
-describe("forgetHostArgs", () => {
-  test("passe une instruction -c par commande, et finit par le plist", () => {
-    const args = forgetHostArgs(["Delete :hosts.1.hostname", "Set :hosts.size 0"]);
-    expect(args[0]).toBe("/usr/libexec/PlistBuddy");
-    expect(args.slice(1, 5)).toEqual([
-      "-c",
-      "Delete :hosts.1.hostname",
-      "-c",
-      "Set :hosts.size 0",
+describe("rewriteWithoutHost", () => {
+  test("l'entrée visée disparaît, valeur binaire comprise", () => {
+    const reecrit = rewriteWithoutHost(EXPORT, 1);
+    expect(reecrit).not.toContain("10.10.10.1");
+    // Le <data> de l'entrée retirée part avec elle, sans laisser sa valeur
+    // orpheline : un plist à moitié réécrit ne se relit plus.
+    expect(parseHosts(reecrit)).toEqual([
+      { address: "192.168.1.48" },
+      { address: "192.168.1.70" },
     ]);
-    expect(args.at(-1)).toMatch(/Library\/Preferences\/com\.moonlight-stream\.Moonlight\.plist$/);
+  });
+
+  test("ce qui suit descend d'un cran, sans quoi Qt cesserait de voir la fin", () => {
+    // Qt lit de 1 a hosts.size : un trou au milieu cache tout ce qui suit.
+    const reecrit = rewriteWithoutHost(EXPORT, 1);
+    expect(reecrit).toContain("<key>hosts.1.localaddress</key>");
+    expect(reecrit).toContain("<key>hosts.2.localaddress</key>");
+    expect(reecrit).not.toContain("<key>hosts.3.localaddress</key>");
+    expect(reecrit).toContain("<key>hosts.size</key>\n\t<integer>2</integer>");
+  });
+
+  test("ce qui n'est pas un hôte n'est pas touché", () => {
+    const reecrit = rewriteWithoutHost(EXPORT, 2);
+    expect(reecrit).toContain("<key>bitrate</key>");
+    expect(reecrit).toContain("<integer>10000</integer>");
+    expect(reecrit).toContain("<key>certificate</key>");
+    expect(reecrit).toContain("LS0tLS1CRUdJTiBDRVJU");
+  });
+
+  test("retirer la dernière entrée ne déplace rien", () => {
+    const reecrit = rewriteWithoutHost(EXPORT, 3);
+    expect(parseHosts(reecrit)).toEqual([
+      { address: "10.10.10.1" },
+      { address: "192.168.1.48" },
+    ]);
   });
 });
 
@@ -149,16 +150,31 @@ describe("frontiere systeme", () => {
     Bun.spawn = originalSpawn;
   });
 
-  test("emet exactement les commandes calculees sur l'export recu", async () => {
+  test("réimporte par defaults, jamais en écrivant le plist dans le dos de cfprefsd", async () => {
     await forgetHostAtIndex(EXPORT, 2);
-    expect(spawnCalls[0]!.cmd).toEqual(forgetHostArgs(forgetHostCommands(EXPORT, 2)));
+    expect(spawnCalls[0]!.cmd.slice(0, 3)).toEqual([
+      "defaults",
+      "import",
+      "com.moonlight-stream.Moonlight",
+    ]);
   });
 
-  test("tue cfprefsd apres une suppression confirmee", async () => {
+  test("retire le dernier rang, que l'import fusionnant laisse en place", async () => {
+    // `defaults import` fusionne : il pose les entrées descendues d'un cran,
+    // mais laisse le rang devenu excédentaire. Sans ces suppressions, Moonlight
+    // garde une entrée de trop et hosts.size ment.
     await forgetHostAtIndex(EXPORT, 1);
-    expect(spawnCalls).toHaveLength(2);
-    expect(spawnCalls[1]!.cmd[0]).toBe("killall");
-    expect(spawnCalls[1]!.cmd).toContain("cfprefsd");
+    const suppressions = spawnCalls.slice(1).map((c) => c.cmd[3]);
+    expect(suppressions).toContain("hosts.3.localaddress");
+    expect(suppressions).not.toContain("hosts.2.localaddress");
+    expect(spawnCalls.every((c) => c.cmd[0] === "defaults")).toBe(true);
+  });
+
+  test("ne tue JAMAIS cfprefsd", async () => {
+    // Tout passe désormais par cfprefsd. Le tuer lui ferait recharger un
+    // fichier périmé et annulerait le travail — constaté sur la machine.
+    await forgetHostAtIndex(EXPORT, 1);
+    expect(spawnCalls.flatMap((c) => c.cmd)).not.toContain("cfprefsd");
   });
 
   test("un echec de PlistBuddy n'est jamais pris pour un succes", async () => {
@@ -174,6 +190,6 @@ describe("frontiere systeme", () => {
 
   test("un hote present est retire par son index Qt", async () => {
     expect(await forgetHostFromExport(EXPORT, "192.168.1.48")).toBe(true);
-    expect(spawnCalls[0]!.cmd).toContain("Delete :hosts.2.localaddress");
+    expect(spawnCalls[0]!.cmd[1]).toBe("import");
   });
 });
