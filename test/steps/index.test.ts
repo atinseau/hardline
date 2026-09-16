@@ -16,8 +16,6 @@ describe("decoupage des etapes", () => {
     expect(names(LOCAL_STEPS)).toEqual([
       "network-mac",
       "moonlight-install",
-      "smb-credentials",
-      "smb-mountpoints",
     ]);
   });
 
@@ -35,8 +33,7 @@ describe("decoupage des etapes", () => {
       "apollo-install",
       "apollo-config",
       "apollo-service",
-      "smb-shares",
-      "pairing",
+          "pairing",
     ]);
   });
 
@@ -52,8 +49,7 @@ describe("decoupage des etapes", () => {
       "apollo-install",
       "apollo-config",
       "apollo-service",
-      "smb-shares",
-      "pairing",
+          "pairing",
     ]);
   });
 
@@ -64,8 +60,6 @@ describe("decoupage des etapes", () => {
     expect(names(ALL_STEPS)).toEqual([
       "network-mac",
       "moonlight-install",
-      "smb-credentials",
-      "smb-mountpoints",
       "bootstrap-windows",
       "network-windows",
       "network-profile-task",
@@ -73,8 +67,7 @@ describe("decoupage des etapes", () => {
       "apollo-install",
       "apollo-config",
       "apollo-service",
-      "smb-shares",
-      "pairing",
+          "pairing",
     ]);
     expect(names(ALL_STEPS)).toEqual([
       ...names(LOCAL_STEPS),
@@ -103,11 +96,6 @@ describe("decoupage des etapes", () => {
     expect(names(ALL_STEPS).at(-1)).toBe("pairing");
   });
 
-  test("smb-credentials precede smb-shares : le trousseau porte deja le mot de passe", () => {
-    const order = names(ALL_STEPS);
-    expect(order.indexOf("smb-credentials")).toBeLessThan(order.indexOf("smb-shares"));
-  });
-
   test("moonlight-install et smb-credentials tournent avant meme l'amorcage du PC", () => {
     const order = names(ALL_STEPS);
     expect(order.indexOf("moonlight-install")).toBeLessThan(
@@ -132,33 +120,6 @@ describe("decoupage des etapes", () => {
     // locale tant que le PC n'est pas restaure.
     expect(order.indexOf("network-mac")).toBeLessThan(order.indexOf("bootstrap-windows"));
   });
-
-  test("les points de montage se restaurent APRES le retrait des partages du PC", () => {
-    // La garantie que porte le commentaire de smb-mountpoints.restore, et la
-    // seule chose qui empeche un demontage en double d'y etre ajoute.
-    //
-    // revertSteps parcourt l'ordre du manifeste INVERSE, et le manifeste suit
-    // l'ordre d'application : une etape appliquee TOT se restaure TARD. Le
-    // demontage cote Mac est fait par smb-shares.restore ; il doit donc passer
-    // avant que les repertoires ne soient retires, c'est-a-dire que
-    // smb-mountpoints doit venir AVANT smb-shares dans ALL_STEPS.
-    //
-    // Deplacer smb-mountpoints dans REMOTE_STEPS apres smb-shares casserait
-    // cette garantie en silence : ce test est la pour que ce ne soit pas le cas.
-    const order = names(ALL_STEPS);
-    expect(order.indexOf("smb-mountpoints")).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf("smb-shares")).toBeGreaterThan(
-      order.indexOf("smb-mountpoints"),
-    );
-  });
-
-  test("smb-mountpoints est une etape du Mac, jamais du PC", () => {
-    // uninstall nomme les machines concernees a partir de ces deux listes :
-    // un geste purement local range parmi les etapes Windows ferait annoncer
-    // « du PC » une restauration qui ne touche que le Mac.
-    expect(names(LOCAL_STEPS)).toContain("smb-mountpoints");
-    expect(names(WINDOWS_STEPS)).not.toContain("smb-mountpoints");
-  });
 });
 
 describe("lien partage", () => {
@@ -171,15 +132,12 @@ describe("lien partage", () => {
     // a jamais appartenu.
     expect(names(linkSteps(ALL_STEPS, shared))).toEqual([
       "moonlight-install",
-      "smb-credentials",
-      "smb-mountpoints",
       "bootstrap-windows",
       "windows-fast-startup",
       "apollo-install",
       "apollo-config",
       "apollo-service",
-      "smb-shares",
-      "pairing",
+          "pairing",
     ]);
   });
 

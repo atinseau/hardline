@@ -1,8 +1,6 @@
 const STEP_LABELS: Record<string, string> = {
   "network-mac": "Static address on the direct link (Mac)",
   "moonlight-install": "Moonlight client installed (Mac)",
-  "smb-credentials": "Share credentials in Keychain (Mac)",
-  "smb-mountpoints": "Share mount points in the home folder (Mac)",
   "bootstrap-windows": "PC bootstrap: OpenSSH, firewall, key, and addressing (PC)",
   "network-windows": "Static address and private direct-link profile (PC)",
   "network-profile-task": "Private profile at startup (PC)",
@@ -10,7 +8,6 @@ const STEP_LABELS: Record<string, string> = {
   "apollo-install": "Apollo server installed (PC)",
   "apollo-config": "Apollo configuration and credentials (PC)",
   "apollo-service": "Apollo service at startup (PC)",
-  "smb-shares": "Windows drive shares (PC)",
   pairing: "Mac paired with server (Mac)",
 };
 

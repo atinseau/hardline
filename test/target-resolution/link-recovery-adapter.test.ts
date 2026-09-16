@@ -85,7 +85,6 @@ function projected(candidate: TargetProfile): Config {
     bootstrapPort: 0,
     apollo: {} as Config["apollo"],
     moonlight: {} as Config["moonlight"],
-    smb: {} as Config["smb"],
   };
 }
 

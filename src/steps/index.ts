@@ -6,11 +6,8 @@ import { windowsFastStartupStep } from "./windows-fast-startup";
 import { apolloInstallStep } from "./apollo-install";
 import { apolloConfigStep } from "./apollo-config";
 import { apolloServiceStep } from "./apollo-service";
-import { smbSharesStep } from "./smb-shares";
 import { moonlightInstallStep } from "./moonlight-install";
 import { pairingStep } from "./pairing";
-import { smbCredentialsStep } from "./smb-credentials";
-import { smbMountPointsStep } from "./smb-mountpoints";
 import type { Step } from "./types";
 import type { Config } from "../config";
 
@@ -24,8 +21,6 @@ import type { Config } from "../config";
 export const LOCAL_STEPS: Step<any>[] = [
   macNetworkStep,
   moonlightInstallStep,
-  smbCredentialsStep,
-  smbMountPointsStep,
 ];
 
 /**
@@ -58,7 +53,6 @@ export const REMOTE_STEPS: Step<any>[] = [
   apolloInstallStep,
   apolloConfigStep,
   apolloServiceStep,
-  smbSharesStep,
   pairingStep,
 ];
 

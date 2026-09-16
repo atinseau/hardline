@@ -68,8 +68,6 @@ test("projects command-only Config from the validated Target Profile and fixed c
   });
   expect(config.apollo).toEqual(INSTALLATION_CATALOG.apollo);
   expect(config.moonlight).toEqual(INSTALLATION_CATALOG.moonlight);
-  expect(config.smb.user).toBe("ShareUser");
-  expect(config.smb.shares).toEqual([]);
 });
 
 test("refuses to project an incomplete trust checkpoint", () => {

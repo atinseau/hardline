@@ -37,22 +37,6 @@ export type MoonlightConfig = {
   app: string;
 };
 
-export type SMBShare = {
-  /** Nom du partage cote Windows. */
-  name: string;
-  /** Chemin Windows partage. `null` quand le partage preexiste et n'est pas a creer. */
-  path: string | null;
-  /** Point de montage sur le Mac, sous /Volumes. */
-  mountPoint: string;
-};
-
-export type SMBConfig = {
-  /** Compte Windows employe pour les partages. */
-  user: string;
-  /** Partages a monter, dans l'ordre. */
-  shares: readonly SMBShare[];
-};
-
 export type Config = {
   /**
    * `direct` : hardline possede l'adressage du lien et le pose sur les deux
@@ -74,5 +58,4 @@ export type Config = {
   bootstrapPort: number;
   apollo: ApolloConfig;
   moonlight: MoonlightConfig;
-  smb: SMBConfig;
 };

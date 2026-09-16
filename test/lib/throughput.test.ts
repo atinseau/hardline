@@ -53,14 +53,6 @@ const CONFIG: Config = {
     ...INSTALLATION_CATALOG.moonlight,
     binary: "/opt/homebrew/bin/moonlight",
   },
-  smb: {
-    user: "arthur",
-    shares: [
-      { name: "arthur", path: null, mountPoint: "/Volumes/pc-arthur" },
-      { name: "hardline-d", path: "D:\\", mountPoint: "/Volumes/pc-d" },
-      { name: "hardline-e", path: "E:\\", mountPoint: "/Volumes/pc-e" },
-    ],
-  },
 };
 
 beforeEach(() => {

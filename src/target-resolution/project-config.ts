@@ -9,9 +9,8 @@ export function projectTargetConfig(profile: TargetProfile): Config {
   }
   const catalog = getInstallationCatalog(profile.installationCatalogVersion);
   const user = profile.windows.administrator.split("\\").at(-1);
-  const smbUser = profile.windows.smbUser.split("\\").at(-1);
   const sshTrust = hardlineKnownHostsSettings(profile.hardlineIdentity.privateKeyPath);
-  if (!user || !smbUser) {
+  if (!user) {
     throw new Error("The Target Profile is missing a required Windows account.");
   }
   const prefixLength = profile.directLink.prefixLength ?? 30;
@@ -50,10 +49,6 @@ export function projectTargetConfig(profile: TargetProfile): Config {
       binary: catalog.moonlight.binary,
       clientName: catalog.moonlight.clientName,
       app: catalog.moonlight.app,
-    },
-    smb: {
-      user: smbUser,
-      shares: [],
     },
   };
 }

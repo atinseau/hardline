@@ -30,12 +30,4 @@ export const CONFIG: Config = {
   bootstrapPort: 8080,
   apollo: INSTALLATION_CATALOG.apollo,
   moonlight: INSTALLATION_CATALOG.moonlight,
-  smb: {
-    user: "arthur",
-    shares: [
-      { name: "arthur", path: null, mountPoint: join(homedir(), "PC", "arthur") },
-      { name: "hardline-d", path: "D:\\", mountPoint: join(homedir(), "PC", "d") },
-      { name: "hardline-e", path: "E:\\", mountPoint: join(homedir(), "PC", "e") },
-    ],
-  },
 };

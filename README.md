@@ -115,7 +115,7 @@ A shared link is not a dedicated one, and Hardline does not pretend otherwise:
 
 - **Hardline writes no addressing.** No address, no DHCP change, no network-category change on either machine. Nothing to restore, and nothing that can be left behind.
 - **The firewall rule is scoped, not profiled.** On a dedicated link the OpenSSH rule rests on the Private profile that Hardline sets. On a shared one, Hardline must not reclassify the operator's own network, so the rule is opened on every profile but restricted to the subnet of the link. Hardline's rule alone leaves sshd closed on every other network the PC joins. Note that installing the Windows OpenSSH Server feature also creates its own `OpenSSH Server` rule, unrestricted on every profile and every remote address; where that rule is present, sshd is already reachable from the whole network regardless of what Hardline adds.
-- **SMB and the Apollo web interface become reachable from the rest of the network.** On a cable, traffic never leaves the two machines. SSH stays as safe either way, since it only accepts the Hardline Identity against a pinned host key.
+- **The Apollo web interface becomes reachable from the rest of the network.** On a cable, traffic never leaves the two machines. SSH stays as safe either way, since it only accepts the Hardline Identity against a pinned host key.
 - **Addresses drift.** DHCP leases change; Link Recovery re-reads where both machines are and rewrites the Target Profile. It never repairs by writing.
 - **Wake-on-LAN only works where the PC is wired.** A sleeping Wi-Fi card is unpowered and no magic packet reaches it. Hardline records whether the PC's side of the link is wireless and, when it is, says so immediately instead of waiting three minutes for a wake that cannot happen. Where the PC is wired to the same network, waking works normally, and Hardline prefers that pairing when both are available.
 - **The stream bitrate drops to 80 Mbit/s**, against 500 on a dedicated gigabit link. That default is deliberately careful: sustained capacity, not peak throughput, is what keeps a stream from stuttering. A Wi-Fi 6E link measured at 357 Mbit/s with 4.65 ms latency and 0.62 ms jitter, so there is often room above it. Correct it with `hardline up --bitrate <kbps>` in either direction; no default can know your house.
@@ -130,7 +130,7 @@ That adoption is restricted to shared links, and the restriction is the point: a
 
 ### The cable is not forgotten
 
-A dedicated link and a shared network are not two installations, and they are not exclusive. Apollo, Moonlight, the pairing and the shares are identical either way; only the path differs. What Hardline keeps is the path it can use right now, and it prefers the cable whenever the cable answers.
+A dedicated link and a shared network are not two installations, and they are not exclusive. Apollo, Moonlight and the pairing are identical either way; only the path differs. What Hardline keeps is the path it can use right now, and it prefers the cable whenever the cable answers.
 
 Stepping onto a shared network does not erase the dedicated link, because unplugging a cable does not erase anything: both interfaces keep the addressing Hardline wrote at install time. That description is remembered as a dormant link, and every command starts by looking for it. The check is free when the adapter is absent, since nothing is asked of the network until it is back. Plug the cable in, and the next command is on it again, with no address written anywhere.
 

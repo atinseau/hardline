@@ -5,8 +5,6 @@ import { runRemoteChecked, runRemoteJson } from "../lib/ssh";
 import { sendMagicPacket } from "../lib/wol";
 import { waitForRemote } from "../lib/preflight";
 import { colorProfileIssue, listDisplays, type Display } from "../lib/display";
-import { getSecret } from "../lib/keychain";
-import { mountShare, unmountShare } from "../lib/smb";
 import { runStream, runQuit, type StreamOptions } from "../lib/moonlight";
 import { errorMessage } from "../lib/errors";
 import type { TargetResolution } from "../target-resolution";
@@ -179,7 +177,6 @@ export async function runUp(
   options: StreamOptions,
   selectedDisplay: Display | null,
 ): Promise<number> {
-  let mounted = false;
   try {
     await run.phase(fact("prepare"), async () => {
       if (!(await pcReachable(config))) {
@@ -190,15 +187,6 @@ export async function runUp(
       await ensureApolloRunning(config);
       run.activity(fact("activity", { message: "Reset video mode" }));
       await runQuit(config);
-      if (config.smb.shares.length > 0) {
-        const password = await getSecret("windows-account");
-        if (password === null) {
-          throw new Error("No Windows password is stored in the keychain. Run 'hardline install' first.");
-        }
-        run.activity(fact("activity", { message: "Mount shares" }));
-        mounted = true;
-        for (const share of config.smb.shares) await mountShare(share, config, password);
-      }
     });
     // No Command Run phase is active while Moonlight owns the terminal.
     try {
@@ -207,18 +195,13 @@ export async function runUp(
       throw new StreamLaunchError();
     }
   } finally {
-    if (mounted) await releaseSession(config);
+    await releaseSession(config);
   }
 }
 
 class StreamLaunchError extends Error {}
 
 async function releaseSession(config: Config): Promise<void> {
-  for (const share of config.smb.shares) {
-    try {
-      await unmountShare(share);
-    } catch {}
-  }
   try {
     await runQuit(config);
   } catch {}

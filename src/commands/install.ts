@@ -19,8 +19,6 @@ import {
   ForeignApolloError,
   uninstallApollo,
 } from "../steps/apollo-install";
-import { getSecret } from "../lib/keychain";
-import { forgetPassword, providePassword } from "../steps/smb-credentials";
 import type { Step } from "../steps/types";
 import type { TargetResolution } from "../target-resolution";
 
@@ -34,7 +32,6 @@ type InstallFact = {
     | "configure-pc"
     | "check"
     | "step"
-    | "password"
     | "foreign-apollo"
     | "replace-apollo"
     | "backup"
@@ -75,7 +72,6 @@ export function renderInstallFact(value: InstallFact): string {
       } as const;
       return `${englishStepLabel(String(v.step))}: ${verbs[v.kind as keyof typeof verbs]}.`;
     }
-    case "password": return `Windows account password for ${v.user}`;
     case "foreign-apollo": return `Foreign Apollo installation detected (version ${v.version}, ${v.clients} paired client(s)). ${v.backup}`;
     case "replace-apollo": return "Replace this Apollo installation with Hardline's managed installation?";
     case "backup": return `Foreign Apollo configuration backed up at ${v.path}.`;
@@ -164,83 +160,65 @@ export async function runInstall(
 ): Promise<CommandResult<InstallFact>> {
   const manifestPath = options.manifestPath;
 
+  const local = await run.phase(fact("check-mac"), async () => {
+    const checks = await runLocalPreflight(config);
+    reportChecks(run, checks);
+    return checks;
+  });
+  if (hasBlockingFailure(local)) return failed(fact("mac-not-ready"));
+
   try {
-    const local = await run.phase(fact("check-mac"), async () => {
-      const checks = await runLocalPreflight(config);
-      reportChecks(run, checks);
-      return checks;
-    });
-    if (hasBlockingFailure(local)) return failed(fact("mac-not-ready"));
+    await run.phase(fact("configure-mac"), () =>
+      converge(run, LOCAL_STEPS, config, manifestPath));
+  } catch (error) {
+    return failed(fact("convergence-failed", { area: "Mac configuration", error: errorMessage(error) }));
+  }
 
-    if (config.smb.shares.length > 0) {
-      const secret = await getSecret("windows-account");
-      if (secret === null) {
-        const answer = await run.secret(fact("password", { user: config.smb.user }));
-        if (answer.status !== "provided") {
-          return failed(fact("convergence-failed", {
-            area: "Credential acquisition",
-            error: "an interactive terminal is required to enter the Windows password",
-          }));
-        }
-        providePassword(answer.value);
-      }
-    }
-
+  const remote = await run.phase(fact("check-pc"), async () => {
+    const checks = await runRemotePreflight(config);
+    reportChecks(run, checks);
+    return checks;
+  });
+  const reachable = remote.some((check) => check.name === SSH_CHECK && check.ok);
+  let recoveryRecorded = false;
+  if (reachable) {
     try {
-      await run.phase(fact("configure-mac"), () =>
-        converge(run, LOCAL_STEPS, config, manifestPath));
+      const manifest = await run.phase(fact("record-recovery"), () =>
+        converge(run, CAPTURE_STEPS, config, manifestPath));
+      recoveryRecorded = BOOTSTRAP_STEP_NAME in manifest.steps;
     } catch (error) {
-      return failed(fact("convergence-failed", { area: "Mac configuration", error: errorMessage(error) }));
+      return failed(fact("convergence-failed", { area: "Recovery capture", error: errorMessage(error) }));
     }
+  }
 
-    const remote = await run.phase(fact("check-pc"), async () => {
-      const checks = await runRemotePreflight(config);
-      reportChecks(run, checks);
-      return checks;
-    });
-    const reachable = remote.some((check) => check.name === SSH_CHECK && check.ok);
-    let recoveryRecorded = false;
-    if (reachable) {
-      try {
-        const manifest = await run.phase(fact("record-recovery"), () =>
-          converge(run, CAPTURE_STEPS, config, manifestPath));
-        recoveryRecorded = BOOTSTRAP_STEP_NAME in manifest.steps;
-      } catch (error) {
-        return failed(fact("convergence-failed", { area: "Recovery capture", error: errorMessage(error) }));
-      }
-    }
+  if (hasBlockingFailure(remote)) {
+    const recovery = recoveryRecorded
+      ? "The Mac is configured and PC bootstrap recovery is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore both machines."
+      : reachable
+        ? "The Mac's previous state is recorded, but the PC supplied no usable bootstrap recovery state. Bootstrap changes cannot be undone; 'hardline uninstall' can still restore the Mac."
+        : "The Mac's previous state is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore the Mac.";
+    return failed(fact("pc-not-ready", { recovery }));
+  }
 
-    if (hasBlockingFailure(remote)) {
-      const recovery = recoveryRecorded
-        ? "The Mac is configured and PC bootstrap recovery is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore both machines."
-        : reachable
-          ? "The Mac's previous state is recorded, but the PC supplied no usable bootstrap recovery state. Bootstrap changes cannot be undone; 'hardline uninstall' can still restore the Mac."
-          : "The Mac's previous state is recorded. Run 'hardline install' to resume or 'hardline uninstall' to restore the Mac.";
-      return failed(fact("pc-not-ready", { recovery }));
+  try {
+    await run.phase(fact("configure-pc"), () =>
+      converge(run, REMOTE_STEPS, config, manifestPath));
+    return { status: "succeeded", summary: fact("success") };
+  } catch (error) {
+    if (!(error instanceof ForeignApolloError)) {
+      return failed(fact("convergence-failed", {
+        area: "PC configuration",
+        error: errorMessage(error),
+      }));
     }
-
-    try {
-      await run.phase(fact("configure-pc"), () =>
-        converge(run, REMOTE_STEPS, config, manifestPath));
-      return { status: "succeeded", summary: fact("success") };
-    } catch (error) {
-      if (!(error instanceof ForeignApolloError)) {
-        return failed(fact("convergence-failed", {
-          area: "PC configuration",
-          error: errorMessage(error),
-        }));
-      }
-      const result = await replaceForeignApollo(
-        run,
-        config,
-        manifestPath,
-        options.yes,
-        error,
-      );
-      return result ?? { status: "succeeded", summary: fact("success") };
-    }
-  } finally {
-    forgetPassword();
+    const result = await replaceForeignApollo(
+      run,
+      config,
+      manifestPath,
+      options.yes,
+      error,
+    );
+    return result ?? { status: "succeeded", summary: fact("success") };
   }
 }
 
