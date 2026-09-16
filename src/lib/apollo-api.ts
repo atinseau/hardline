@@ -182,6 +182,32 @@ export async function sendPin(
   }
 }
 
+/**
+ * Le port GameStream ecoute-t-il ?
+ *
+ * Apollo ouvre son interface web AVANT ce port-la. Attendre l'API seule, c'est
+ * lancer Moonlight sur un serveur qui ne l'ecoute pas encore : il repond « Was
+ * there a typo in the url or port? » et l'appairage echoue sur un serveur qui
+ * allait etre pret. Mesure sur la machine, sur une premiere installation
+ * d'Apollo.
+ */
+export async function gamestreamListening(
+  config: Config,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  // Apollo sert GameStream en clair un port sous son API. Le point /serverinfo
+  // repond sans appairage, c'est exactement ce que Moonlight interroge.
+  const port = config.apollo.apiPort - 1;
+  try {
+    const response = await fetch(`http://${config.ssh.host}:${port}/serverinfo`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** GET /api/clients/list. C'est LUI qui fait foi, pas la reponse de sendPin. */
 export async function listClients(
   config: Config,
