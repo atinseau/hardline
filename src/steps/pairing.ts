@@ -98,8 +98,14 @@ async function clientApparait(
 ): Promise<boolean> {
   const limit = now() + PAIRING_TIMINGS.waitMs;
   for (;;) {
-    const clients = await listClients(config, creds);
-    if (clients.some((c) => c.name === config.moonlight.clientName)) return true;
+    try {
+      const clients = await listClients(config, creds);
+      if (clients.some((c) => c.name === config.moonlight.clientName)) return true;
+    } catch {
+      // Apollo redemarre, ou refuse la connexion le temps de rouvrir ses
+      // ports : ce n'est pas une reponse, donc ce n'est pas un refus. On
+      // redemande jusqu'a l'echeance.
+    }
     if (now() >= limit) return false;
     await sleep(PAIRING_TIMINGS.pollMs);
   }
@@ -124,9 +130,13 @@ export async function pairWithRetry(
   attempts = 3,
 ): Promise<void> {
   let said = "";
+  let cause = "";
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const pin = generatePin();
+    // Apollo est revérifié à CHAQUE tentative : il vient d'être relancé, et
+    // l'attente initiale ne prouve rien de son état une minute plus tard.
+    await waitForApollo(config, creds);
     const pairing = spawnPair(config, pin);
     try {
       await pairing.ready;
@@ -134,6 +144,12 @@ export async function pairWithRetry(
 
       if (await clientApparait(config, creds)) return;
       said = await pairing.said().catch(() => "");
+    } catch (error) {
+      // Une tentative qui ne PARLE pas au serveur n'est pas un appairage
+      // refuse : Apollo vient d'etre relance, et une connexion refusee au
+      // mauvais instant faisait echouer toute l'installation sur un message
+      // que rien ne reliait a l'appairage.
+      cause = errorMessage(error);
     } finally {
       pairing.kill();
     }
@@ -143,6 +159,7 @@ export async function pairWithRetry(
     `Appairage non confirmé après ${attempts} tentatives\u00a0: ` +
       `«\u00a0${config.moonlight.clientName}\u00a0» n'apparaît pas dans la liste des ` +
       "clients relue après l'envoi du code." +
+      (cause ? `\u00a0Dernière erreur\u00a0: ${cause}` : "") +
       (said ? `\u00a0Moonlight a dit\u00a0: ${said}` : ""),
   );
 }
