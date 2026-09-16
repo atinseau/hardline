@@ -29,9 +29,13 @@ const defaults: CliDependencies = {
   targetResolution: (output, link) =>
     createTargetResolution({
       link,
-      reportBootstrapCommand: (command) => {
+      reportBootstrapCommand: async (command) => {
+        const copied = await copyToClipboard(command);
+        const howToPaste = copied
+          ? "It is already in your clipboard: paste it there with Ctrl+V. Selecting it above would copy the frame with it."
+          : "Copying it to the clipboard failed. Select it above knowing the frame is not part of the command, or run 'hardline install | cat' to print it unframed.";
         output.report("Bootstrap PC", [
-          `Run this command in an Administrator PowerShell on the PC:\n\n  ${command}\n\nInstallation will resume when the PC responds.`,
+          `Run this command in an Administrator PowerShell on the PC:\n\n  ${command}\n\n${howToPaste}\n\nInstallation will resume when the PC responds.`,
         ]);
       },
       ask: async (question) => {
@@ -65,6 +69,20 @@ const defaults: CliDependencies = {
 };
 
 const RUN_LINKS = ["auto", "direct", "shared"] as const;
+
+/**
+ * Le cadre du rapport prefixe chaque ligne d'une bordure : selectionner la
+ * commande a la souris embarque ces bordures et casse ce qu'on colle dans
+ * PowerShell. La copier nous-memes est le seul moyen de la livrer intacte.
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    const pbcopy = Bun.spawn(["pbcopy"], { stdin: new Blob([text]) });
+    return (await pbcopy.exited) === 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Le drapeau est lu ici et nulle part ailleurs : une valeur inconnue doit

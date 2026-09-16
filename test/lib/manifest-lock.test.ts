@@ -79,33 +79,35 @@ async function run(step: Step<{ marker: string }>): Promise<string | null> {
 
 describe("deux executions concurrentes", () => {
   test("la seconde est refusee, et le manifeste garde la premiere entiere", async () => {
-    let ouvrir = (): void => {};
-    const gate = new Promise<void>((resolve) => {
-      ouvrir = resolve;
-    });
+    // La premiere execution tient le verrou et n'a pas encore fini : c'est
+    // exactement l'etat que le verrou existe pour couvrir. Le poser ici plutot
+    // que lancer deux executions et esperer qu'elles se recouvrent enleve
+    // l'ordonnancement du test ; quand la premiere finissait avant que la
+    // seconde ne lise le verrou, la seconde lisait un nom deja rendu.
+    const premiere = await acquireManifestLock(manifestPath);
+    const ouverte = Promise.resolve();
+    try {
+      await applySteps(
+        [makeStep("network-mac", ouverte)],
+        CONFIG,
+        manifestPath,
+        reporter,
+      );
 
-    const executions = Promise.all([
-      run(makeStep("network-mac", gate)),
-      run(makeStep("network-windows", gate)),
-    ]);
-    // Les deux ont demande le verrou avant qu'aucune ne puisse avancer.
-    ouvrir();
-    const resultats = await executions;
+      const refus = await run(makeStep("network-windows", ouverte));
+      // Elle dit clairement qu'une autre execution tient le verrou.
+      expect(refus).toContain("Another Command Run is active");
+      expect(refus).toContain("Nothing was changed");
+    } finally {
+      await premiere.release();
+    }
 
-    const refusees = resultats.filter((r): r is string => r !== null);
-    expect(refusees).toHaveLength(1);
-    // Elle dit clairement qu'une autre execution tient le verrou.
-    expect(refusees[0]).toContain("Another Command Run is active");
-    expect(refusees[0]).toContain("Nothing was changed");
-
-    // Et le manifeste ne porte que l'execution qui a gagne : sans verrou, les
-    // deux ecrivaient et la seconde effacait la premiere.
+    // Et le manifeste ne porte que la premiere : sans verrou, les deux
+    // ecrivaient et la seconde effacait la premiere.
     const manifest = await readManifest(manifestPath);
-    expect(manifest.order).toHaveLength(1);
-    const gagnante = manifest.order[0] as string;
-    expect(resultats[gagnante === "network-mac" ? 0 : 1]).toBeNull();
-    expect(manifest.steps[gagnante]?.previous).toEqual({
-      marker: `avant-${gagnante}`,
+    expect(manifest.order).toEqual(["network-mac"]);
+    expect(manifest.steps["network-mac"]?.previous).toEqual({
+      marker: "avant-network-mac",
     });
   });
 
