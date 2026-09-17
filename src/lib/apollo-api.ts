@@ -43,7 +43,10 @@ async function apolloRequest(url: string, init: RequestInit & { tls: { rejectUna
         "hardline n'a pas l'autorisation «\u00a0Réseau local\u00a0». Le lien SSH, lui, " +
         "fonctionne, parce que les binaires d'Apple en sont exemptés. Ouvrir " +
         "Réglages Système → Confidentialité et sécurité → Réseau local, y activer " +
-        "le terminal utilisé, puis relancer «\u00a0hardline install\u00a0».",
+        "le terminal utilisé, puis relancer «\u00a0hardline install\u00a0». Si la case " +
+        "est DÉJÀ cochée, quitter complètement le terminal et le rouvrir\u00a0: macOS " +
+        "fige cette décision au lancement du processus, et un terminal ouvert avant " +
+        "l'autorisation continue de la refuser à tout ce qu'il lance.",
     );
   }
 }

@@ -1,7 +1,16 @@
 /**
- * Les onze cles que hardline impose. Rien d'autre n'est touche.
+ * Les dix cles que hardline impose. Rien d'autre n'est touche.
  *
- * Les six premieres decident de l'ecran virtuel ; les cinq dernieres, de la
+ * `headless_mode` n'en fait PLUS partie, et c'est mesure : active, il efface
+ * l'ecran de verrouillage de Windows du flux. Le PC repond, Apollo encode sans
+ * une seule erreur, Moonlight decode — et l'image reste noire tant que
+ * personne n'a ouvert la session sur place. Un poste distant qu'on ne peut pas
+ * deverrouiller a distance ne sert a rien. Aucune valeur de
+ * `dd_configuration_option` ne rattrape cela : verifie sur la machine, capture
+ * a l'appui. Sans lui, l'ecran virtuel exclusif fonctionne ET le verrouillage
+ * s'affiche.
+ *
+ * Les quatre premieres decident de l'ecran virtuel ; les cinq dernieres, de la
  * qualite de l'encodage. Le journal d'Apollo revelait
  * « NvEnc: created encoder HEVC P1 » : P1 est le preset le PLUS RAPIDE de
  * NVENC, donc celui de moindre qualite, et c'est le defaut. Sur une carte qui
@@ -18,7 +27,6 @@
  * pixeliser pour respecter strictement le profil ultra-basse latence.
  */
 export const REQUIRED_CONF: Readonly<Record<string, string>> = {
-  headless_mode: "enabled",
   dd_configuration_option: "ensure_only_display",
   dd_resolution_option: "auto",
   dd_refresh_rate_option: "auto",
