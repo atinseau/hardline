@@ -15,6 +15,40 @@ function apolloUrl(config: Config, path: string): string {
 }
 
 /**
+ * macOS ne laisse pas n'importe quel binaire joindre le reseau local.
+ *
+ * Depuis macOS 15, toute connexion vers une adresse du LAN exige l'autorisation
+ * « Reseau local », accordee a l'application RESPONSABLE — le terminal, pour un
+ * outil en ligne de commande. Les binaires d'Apple (`ssh`, `curl`, `nc`) en sont
+ * exemptes, pas les autres. Un terminal sans cette autorisation laisse donc
+ * passer tout le canal SSH de hardline et coupe TOUTES ses requetes vers Apollo,
+ * ce que Bun rapporte par un laconique « Was there a typo in the url or port? ».
+ *
+ * Mesure sur la machine : la meme requete, a la meme seconde, rend 200 depuis un
+ * processus autorise et `FailedToOpenSocket` depuis iTerm, pendant que `curl`
+ * obtient 307 des deux cotes.
+ */
+export function estBloqueParMacos(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "FailedToOpenSocket";
+}
+
+/** Le seul endroit ou une requete Apollo part, donc le seul ou ce refus se nomme. */
+async function apolloRequest(url: string, init: RequestInit & { tls: { rejectUnauthorized: boolean } }): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    if (!estBloqueParMacos(error)) throw error;
+    throw new Error(
+      `macOS a refusé la connexion vers ${url}\u00a0: l'application qui a lancé ` +
+        "hardline n'a pas l'autorisation «\u00a0Réseau local\u00a0». Le lien SSH, lui, " +
+        "fonctionne, parce que les binaires d'Apple en sont exemptés. Ouvrir " +
+        "Réglages Système → Confidentialité et sécurité → Réseau local, y activer " +
+        "le terminal utilisé, puis relancer «\u00a0hardline install\u00a0».",
+    );
+  }
+}
+
+/**
  * Apollo 0.4.6 n'accepte PAS l'authentification HTTP « Basic ». Mesure sur la
  * machine : `/` repond 307 vers `/login?redir=./`, et `/api/clients/list`
  * rend 401 avec le meme corps qu'on envoie un en-tete Authorization ou pas —
@@ -76,7 +110,7 @@ export async function login(
   config: Config,
   creds: ApolloCredentials,
 ): Promise<string> {
-  const response = await fetch(apolloUrl(config, "/api/login"), {
+  const response = await apolloRequest(apolloUrl(config, "/api/login"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: creds.user, password: creds.password }),
@@ -118,7 +152,7 @@ async function apolloFetch(
   init: ApolloRequestInit = {},
 ): Promise<Response> {
   const send = (cookie: string) =>
-    fetch(apolloUrl(config, path), {
+    apolloRequest(apolloUrl(config, path), {
       method: init.method,
       body: init.body,
       headers: { ...init.headers, cookie },
@@ -208,8 +242,9 @@ export async function gamestreamListening(
   // repond sans appairage, c'est exactement ce que Moonlight interroge.
   const port = config.apollo.apiPort - 1;
   try {
-    const response = await fetch(`http://${config.ssh.host}:${port}/serverinfo`, {
+    const response = await apolloRequest(`http://${config.ssh.host}:${port}/serverinfo`, {
       signal: AbortSignal.timeout(timeoutMs),
+      tls: { rejectUnauthorized: false },
     });
     return response.ok;
   } catch {
