@@ -2,20 +2,21 @@ import { test, expect, describe } from "bun:test";
 import { REQUIRED_CONF, parseConf, patchConf, confConforms } from "../../src/lib/apollo-conf";
 
 // Le fichier du PC de reference : une cle imposee deja presente mais fausse
-// (headless_mode), cinq absentes, un commentaire, une cle etrangere, et
-// server_cmd dont la valeur JSON doit survivre intacte au passage.
+// (dd_configuration_option), les autres absentes, un commentaire, deux cles
+// etrangeres — dont headless_mode, que hardline n'impose plus et ne doit donc
+// PAS toucher — et server_cmd dont la valeur JSON doit survivre au passage.
 const CONF_FIXTURE = [
   "# Fichier genere par Apollo",
   "sunshine_name = PC-ARTHUR",
   "headless_mode = disabled",
+  "dd_configuration_option = disabled",
   'server_cmd = [{"name":"Bubbles","cmd":"start bubbles.exe","elevated":false}]',
   "",
 ].join("\n");
 
 describe("REQUIRED_CONF", () => {
-  test("contient exactement les onze cles imposees par Apollo", () => {
+  test("contient exactement les dix cles imposees par Apollo", () => {
     expect(REQUIRED_CONF).toEqual({
-      headless_mode: "enabled",
       dd_configuration_option: "ensure_only_display",
       dd_resolution_option: "auto",
       dd_refresh_rate_option: "auto",
@@ -28,6 +29,12 @@ describe("REQUIRED_CONF", () => {
       max_bitrate: "0",
     });
   });
+  test("n'impose JAMAIS headless_mode, qui efface l'écran de verrouillage", () => {
+    // Mesuré sur la machine : activé, le flux reste noir tant que la session
+    // Windows n'est pas ouverte sur place, donc impossible de déverrouiller à
+    // distance. Aucune valeur de dd_configuration_option ne le rattrape.
+    expect(REQUIRED_CONF).not.toHaveProperty("headless_mode");
+  });
 });
 
 describe("parseConf", () => {
@@ -36,6 +43,7 @@ describe("parseConf", () => {
     expect(parsed).toEqual({
       sunshine_name: "PC-ARTHUR",
       headless_mode: "disabled",
+      dd_configuration_option: "disabled",
       server_cmd: '[{"name":"Bubbles","cmd":"start bubbles.exe","elevated":false}]',
     });
   });
@@ -46,13 +54,12 @@ describe("parseConf", () => {
 });
 
 describe("confConforms", () => {
-  test("est faux tant que les onze cles ne sont pas exactement imposees", () => {
+  test("est faux tant que les dix cles ne sont pas exactement imposees", () => {
     expect(confConforms(CONF_FIXTURE, REQUIRED_CONF)).toBe(false);
   });
 
   test("est vrai sur un texte qui porte deja toutes les valeurs imposees", () => {
     const conforming = [
-      "headless_mode = enabled",
       "dd_configuration_option = ensure_only_display",
       "dd_resolution_option = auto",
       "dd_refresh_rate_option = auto",
@@ -69,6 +76,8 @@ describe("patchConf", () => {
 
     expect(patched).toContain("# Fichier genere par Apollo");
     expect(patched).toContain("sunshine_name = PC-ARTHUR");
+    // hardline n'impose plus headless_mode : il le laisse donc tel quel.
+    expect(patched).toContain("headless_mode = disabled");
     expect(patched).toContain(
       'server_cmd = [{"name":"Bubbles","cmd":"start bubbles.exe","elevated":false}]',
     );
@@ -78,22 +87,22 @@ describe("patchConf", () => {
     const patched = patchConf(CONF_FIXTURE, REQUIRED_CONF);
     const lines = patched.split("\n");
 
-    const headlessLines = lines.filter((line) => line.startsWith("headless_mode"));
-    expect(headlessLines).toEqual(["headless_mode = enabled"]);
+    const ddLines = lines.filter((line) => line.startsWith("dd_configuration_option"));
+    expect(ddLines).toEqual(["dd_configuration_option = ensure_only_display"]);
 
     // Remplacee en place, donc toujours avant server_cmd qui suit dans
     // la fixture d'origine - pas rejetee a la fin avec les cles ajoutees.
-    const headlessIndex = lines.indexOf("headless_mode = enabled");
+    const ddIndex = lines.indexOf("dd_configuration_option = ensure_only_display");
     const serverCmdIndex = lines.findIndex((line) => line.startsWith("server_cmd"));
-    expect(headlessIndex).toBeGreaterThanOrEqual(0);
-    expect(headlessIndex).toBeLessThan(serverCmdIndex);
+    expect(ddIndex).toBeGreaterThanOrEqual(0);
+    expect(ddIndex).toBeLessThan(serverCmdIndex);
   });
 
-  test("ajoute a la fin les cinq cles absentes de la fixture, chacune une seule fois", () => {
+  test("ajoute a la fin les cles absentes de la fixture, chacune une seule fois", () => {
     const patched = patchConf(CONF_FIXTURE, REQUIRED_CONF);
 
     for (const [key, value] of Object.entries(REQUIRED_CONF)) {
-      if (key === "headless_mode") continue;
+      if (key === "dd_configuration_option") continue;
       const line = `${key} = ${value}`;
       expect(patched).toContain(line);
       const occurrences = patched.split(line).length - 1;
@@ -115,8 +124,7 @@ describe("patchConf", () => {
   test("ajoute toutes les cles imposees sur un fichier vide", () => {
     const patched = patchConf("", REQUIRED_CONF);
     expect(patched).toBe(
-      "headless_mode = enabled\n" +
-        "dd_configuration_option = ensure_only_display\n" +
+      "dd_configuration_option = ensure_only_display\n" +
         "dd_resolution_option = auto\n" +
         "dd_refresh_rate_option = auto\n" +
         "dd_config_revert_on_disconnect = enabled\n" +

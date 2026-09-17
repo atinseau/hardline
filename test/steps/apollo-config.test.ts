@@ -96,7 +96,7 @@ describe("apply", () => {
     const patch = script.indexOf("WriteAllText");
     expect(creds).toBeGreaterThanOrEqual(0);
     expect(patch).toBeGreaterThan(creds);
-    expect(script).toContain("headless_mode");
+    expect(script).toContain("dd_configuration_option");
     expect(script).not.toContain("Restart-Service");
   });
 
@@ -133,7 +133,10 @@ describe("apply", () => {
     const script = checkedScript(0);
     expect(script).toContain("sunshine_name = mon-pc");
     expect(script).toContain("commentaire perso");
-    expect(script).toContain("headless_mode = enabled");
+    // hardline n'impose plus headless_mode : la ligne de l'utilisateur survit
+    // telle quelle, et c'est ce qui rend l'écran de verrouillage visible.
+    expect(script).toContain("headless_mode = disabled");
+    expect(script).not.toContain("headless_mode = enabled");
   });
 
   test("le mot de passe engendre garde son apostrophe dans le litteral PowerShell", async () => {
